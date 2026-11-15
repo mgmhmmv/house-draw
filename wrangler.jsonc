@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "archstudio",
   "main": "worker/index.ts",
+  "account_id": "c9ca55db2dd0a7943c76df1484b08162",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   // The Vite build is served as static assets; only /api/* reaches the Worker first.
@@ -15,8 +16,7 @@
     {
       "binding": "DB",
       "database_name": "archstudio",
-      // Replace with the id from `wrangler d1 create archstudio` before the first remote deploy.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "0e29c08e-27e8-45ec-aa9a-36bd79549ee7",
       "migrations_dir": "migrations"
     }
   ],
@@ -26,6 +26,7 @@
       "bucket_name": "archstudio-files"
     }
   ],
+  "routes": [{ "pattern": "draw.picadgroup.com", "custom_domain": true }],
   "observability": { "enabled": true }
   // Secrets (set with `wrangler secret put`, or .dev.vars locally): ANTHROPIC_API_KEY, ISLEPOS_KEY_SECRET
 }
