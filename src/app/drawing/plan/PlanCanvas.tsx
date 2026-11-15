@@ -17,7 +17,7 @@ import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEI
 import { useViewport } from '../useViewport';
 import { usePrintMode } from '../printMode';
 import { composeSheet, placeDrawing, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
-import { RoofPlan, roofPlanBounds, SewagePlan, sewerLayout } from './sheetPlans';
+import { RoofPlan, roofPlanBounds, SewagePlan, sewerLayout, SitePlan, siteBounds } from './sheetPlans';
 import { assetFor, type AssetDef } from '../assets/catalog';
 import { assetPlan, isOverhead, mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
 import { PlanPrims } from '../assets/PlanSymbol';
@@ -126,15 +126,21 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
     [level.openings, geo]
   );
 
+  const siteKey = model.site ? JSON.stringify(model.site) : '';
   const fitBounds = useMemo(() => {
-    if (mode === 'roof') return roofPlanBounds(model);
-    if (sewer) return sewer.bounds;
-    const b = geo.bounds;
-    const m = mode === 'plan' ? 2.6 : 1.8;
-    return { minX: b.minX - m, minY: b.minY - m, maxX: b.maxX + m, maxY: b.maxY + m };
+    const own = (() => {
+      if (mode === 'roof') return roofPlanBounds(model);
+      if (sewer) return sewer.bounds;
+      const b = geo.bounds;
+      const m = mode === 'plan' ? 2.6 : 1.8;
+      return { minX: b.minX - m, minY: b.minY - m, maxX: b.maxX + m, maxY: b.maxY + m };
+    })();
+    // With a site, every plan shows the whole plot (one scale and position for the set).
+    const sb = mode !== 'roof' ? siteBounds(model) : null;
+    return sb ? { minX: Math.min(own.minX, sb.minX), minY: Math.min(own.minY, sb.minY), maxX: Math.max(own.maxX, sb.maxX), maxY: Math.max(own.maxY, sb.maxY) } : own;
     // Fit to the first level's footprint so switching levels keeps the view still.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.levelIndex === 0 ? geo.bounds : null, mode, mode === 'roof' ? model : null, sewer]);
+  }, [p.levelIndex === 0 ? geo.bounds : null, mode, mode === 'roof' ? model : null, sewer, siteKey]);
 
   // On paper: the plan at a true scale on the A3 sheet.
   const layout = useMemo(() => {
@@ -606,6 +612,9 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
 
           {/* Level below, as a faint reference */}
           {ghostGeo && <path d={ghostGeo.pochePath} fill="none" stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="4 3" vectorEffect={NS} opacity={0.5} />}
+
+          {/* Site: plot, boundary wall, gates (ground floor) */}
+          {levelIndex === 0 && <SitePlan model={model} k={kText} />}
 
           {/* Rooms */}
           <g opacity={wallsFaded}>

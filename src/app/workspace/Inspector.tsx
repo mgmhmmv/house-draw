@@ -28,6 +28,8 @@ import {
   getWaterSupply,
   WATER_SUPPLY_META,
   type WaterSupplyMode,
+  getSite,
+  type GateKind,
 } from '../../model/types';
 import { computeTotalFloorArea, polygonArea, uid, wallLength } from '../../engine/geometry';
 import { mepAsset } from '../drawing/assets/render';
@@ -503,6 +505,7 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
   const design = getDesignConfig(model);
   const roofStructure = getRoofStructure(model.roof);
   const waterSupply = getWaterSupply(model);
+  const site = getSite(model);
   const hvac = getHVACConfig(model);
   const solar = getSolarConfig(model);
   const rooms = model.levels.flatMap((l) => l.rooms);
@@ -576,6 +579,66 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
           </Row>
         )}
         <p className="px-4 pb-3 text-2xs leading-relaxed text-ink-3">{WATER_SUPPLY_META[waterSupply.mode].note}</p>
+      </Section>
+
+      <Section title="Site" defaultOpen={!!model.site}>
+        <Row label="Plot">
+          <div className="flex items-center gap-1.5">
+            <Num value={Number(site.plot.w.toFixed(2))} unit="m" step={0.5} min={4} max={200} onChange={(v) => edit((m) => (m.site = { ...site, plot: { ...site.plot, w: v } }))} />
+            <span className="text-ink-3">×</span>
+            <Num value={Number(site.plot.d.toFixed(2))} unit="m" step={0.5} min={4} max={200} onChange={(v) => edit((m) => (m.site = { ...site, plot: { ...site.plot, d: v } }))} />
+          </div>
+        </Row>
+        <Row label="Boundary wall">
+          <Toggle
+            label="Boundary wall"
+            checked={site.boundary}
+            onChange={(v) =>
+              edit((m) => (m.site = { ...site, boundary: v, gates: v && !site.gates.length ? [{ id: `gate${Date.now()}`, side: 'S', at: site.plot.w / 2, width: 3, kind: 'sliding', canopy: 'none', pedestrianWidth: 0.9 }] : site.gates }))
+            }
+          />
+        </Row>
+        {site.boundary && (
+          <Row label="Wall height">
+            <Num value={site.boundaryHeight} unit="m" step={0.1} min={0.6} max={3.5} onChange={(v) => edit((m) => (m.site = { ...site, boundaryHeight: v }))} />
+          </Row>
+        )}
+        {site.gates[0] && (
+          <>
+            <Row label="Gate">
+              <Choice
+                value={site.gates[0].kind}
+                options={[
+                  { value: 'sliding', label: 'Sliding' },
+                  { value: 'swing_double', label: 'Double swing' },
+                  { value: 'timber', label: 'Timber' },
+                  { value: 'pedestrian', label: 'Pedestrian only' },
+                ]}
+                onChange={(v) => edit((m) => (m.site = { ...site, gates: [{ ...site.gates[0], kind: v as GateKind }, ...site.gates.slice(1)] }))}
+              />
+            </Row>
+            <Row label="Gate width">
+              <Num value={site.gates[0].width} unit="m" step={0.1} min={0.8} max={8} onChange={(v) => edit((m) => (m.site = { ...site, gates: [{ ...site.gates[0], width: v }, ...site.gates.slice(1)] }))} />
+            </Row>
+            <Row label="Gate canopy">
+              <Choice
+                value={site.gates[0].canopy}
+                options={[
+                  { value: 'gable', label: 'Gable (two-slope)' },
+                  { value: 'flat', label: 'Flat' },
+                  { value: 'none', label: 'None' },
+                ]}
+                onChange={(v) => edit((m) => (m.site = { ...site, gates: [{ ...site.gates[0], canopy: v as 'gable' | 'flat' | 'none' }, ...site.gates.slice(1)] }))}
+              />
+            </Row>
+            <Row label="Pedestrian door">
+              <Toggle label="Pedestrian door" checked={site.gates[0].pedestrianWidth > 0} onChange={(v) => edit((m) => (m.site = { ...site, gates: [{ ...site.gates[0], pedestrianWidth: v ? 0.9 : 0 }, ...site.gates.slice(1)] }))} />
+            </Row>
+            <Row label="Meter at gate">
+              <Toggle label="Meter at gate" checked={site.meterAtGate} onChange={(v) => edit((m) => (m.site = { ...site, meterAtGate: v }))} />
+            </Row>
+          </>
+        )}
       </Section>
 
       <Section title="Materials">

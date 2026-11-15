@@ -8,7 +8,8 @@ import { uid } from '../../engine/geometry';
 import { autoGenerateStructuralGrid, autoPlaceStructuralColumns } from '../../engine/geometry';
 import { autoPopulateMEPForLevel } from '../../engine/mepEngine';
 import { DEFAULT_BOQ_RATES } from '../../model/presets';
-import type { BuildingProject, FloorLevel, FurnitureItem, Opening, Room, RoomCategory, RoofType, Wall } from '../../model/types';
+import { DEFAULT_SOLAR_CONFIG, type BuildingProject, type FloorLevel, type FurnitureItem, type GateKind, type MEPNode, type Opening, type PlotSide, type Room, type RoomCategory, type RoofType, type Wall } from '../../model/types';
+import { siteLayout } from '../drawing/model3d/site';
 
 export interface AiRoom {
   name: string;
@@ -27,6 +28,17 @@ export interface AiDesign {
   floors: { name: string; rooms: AiRoom[] }[];
   roof: { type: RoofType; pitchDeg: number };
   assumptions?: string[];
+  /** The plot's boundary wall and entrance. */
+  site?: {
+    boundary_wall?: boolean;
+    wall_height?: number;
+    gate?: { side?: PlotSide; centre?: number; width?: number; kind?: GateKind; canopy?: 'gable' | 'flat' | 'none'; pedestrian_width?: number };
+    meter_at_gate?: boolean;
+  };
+  /** Services the brief asked for. */
+  services?: { ac_rooms?: string[]; solar?: boolean; mdb_room?: string; inverter_room?: string };
+  /** Finishes the brief asked for. */
+  finishes?: { floor_tile?: { size_mm?: number; colour?: string; hex?: string }; wet_area_tile?: { size_mm?: number; colour?: string; hex?: string } };
 }
 
 const S = (v: number) => Math.round(v * 20) / 20; // 0.05 m
@@ -336,7 +348,6 @@ function buildLevel(rooms0: AiRoom[], index: number, name: string, below: FloorL
     mepCircuits: [],
   };
   lvl.columns = autoPlaceStructuralColumns(lvl);
-  lvl = autoPopulateMEPForLevel(lvl);
   return lvl;
 }
 
@@ -362,7 +373,23 @@ export function buildFromDesign(d: AiDesign, meta: { title: string; client: stri
     });
   }
   const today = new Date().toISOString().slice(0, 10);
-  return {
+
+  // Finishes: floor tiles everywhere as specified; anti-slip in wet rooms and outside.
+  const tile = d.finishes?.floor_tile;
+  const wet = d.finishes?.wet_area_tile ?? tile;
+  const spec = (t?: { size_mm?: number; colour?: string }, wetRoom = false) =>
+    t ? `${t.size_mm ? `${t.size_mm}×${t.size_mm} ` : ''}${t.colour ?? ''} ${wetRoom && !/slip/i.test(t.colour ?? '') ? 'anti-slip ' : ''}porcelain tiles`.replace(/\s+/g, ' ').trim() : undefined;
+  for (const lvl of levels)
+    for (const r of lvl.rooms) {
+      const wetRoom = r.category === 'bathroom' || r.category === 'utility' || r.category === 'porch' || r.category === 'balcony';
+      const t = wetRoom ? wet : tile;
+      if (!t) continue;
+      r.finish = wetRoom ? 'ceramic_antiskid' : 'porcelain';
+      r.floorSpec = spec(t, wetRoom);
+      if (t.hex && /^#[0-9a-f]{6}$/i.test(t.hex)) r.floorColor = t.hex;
+    }
+
+  const project: BuildingProject = {
     id: uid('proj'),
     meta: {
       title: meta.title,
@@ -384,4 +411,59 @@ export function buildFromDesign(d: AiDesign, meta: { title: string; client: stri
     sections: [],
     rates: { ...DEFAULT_BOQ_RATES },
   };
+
+  // Site: the plot round the building (the design's origin is the building's north-west corner).
+  const st = d.site;
+  if (st || d.plot) {
+    const g = st?.gate;
+    project.site = {
+      plot: { x: -(d.offset?.x ?? 0), y: -(d.offset?.y ?? 0), w: d.plot.width, d: d.plot.depth },
+      boundary: !!st?.boundary_wall,
+      boundaryHeight: Math.min(3, Math.max(0.9, st?.wall_height ?? 1.8)),
+      boundaryThickness: 0.15,
+      gates:
+        st?.boundary_wall || g
+          ? [
+              {
+                id: uid('gate'),
+                side: g?.side ?? 'S',
+                at: g?.centre ?? d.plot.width / 2,
+                width: Math.min(6, Math.max(0.9, g?.width ?? 3.0)),
+                kind: g?.kind ?? 'sliding',
+                canopy: g?.canopy ?? 'none',
+                pedestrianWidth: Math.max(0, Math.min(1.5, g?.pedestrian_width ?? 0.9)),
+              },
+            ]
+          : [],
+      meterAtGate: !!st?.meter_at_gate,
+    };
+  }
+
+  // Services: solar, which rooms get AC, and where the boards go.
+  const sv = d.services ?? {};
+  project.solar = { ...DEFAULT_SOLAR_CONFIG, enabled: sv.solar ?? true };
+  const acNames = sv.ac_rooms?.map((n) => n.trim().toLowerCase()).filter(Boolean);
+  const acRoom = acNames ? (r: Room) => acNames.some((n) => r.name.toLowerCase() === n || r.name.toLowerCase().includes(n) || n.includes(r.name.toLowerCase())) : undefined;
+  const sl = project.site ? siteLayout(project) : null;
+  project.levels = project.levels.map((lvl, i) => {
+    const pre: MEPNode[] = [];
+    const inRoom = (name?: string) => (name ? lvl.rooms.find((r) => r.name.toLowerCase() === name.toLowerCase()) ?? lvl.rooms.find((r) => r.name.toLowerCase().includes(name.toLowerCase())) : undefined);
+    const spot = (r: Room, k: number) => {
+      const xs = r.polygon.map((q) => q.x);
+      const ys = r.polygon.map((q) => q.y);
+      return { x: Math.min(...xs) + 0.4 + k * 0.7, y: Math.min(...ys) + 0.15 };
+    };
+    if (i === 0) {
+      const mdbRoom = inRoom(sv.mdb_room);
+      if (mdbRoom) pre.push({ id: uid('mep'), kind: 'mdb', system: 'electrical', position: spot(mdbRoom, 0), label: 'MDB', roomId: mdbRoom.id });
+      const invRoom = inRoom(sv.inverter_room) ?? mdbRoom;
+      if (invRoom && project.solar?.enabled) {
+        pre.push({ id: uid('mep'), kind: 'solar_inv', system: 'electrical', position: spot(invRoom, 1), label: 'INV', roomId: invRoom.id });
+        pre.push({ id: uid('mep'), kind: 'solar_bess', system: 'electrical', position: spot(invRoom, 2), label: 'BAT', roomId: invRoom.id });
+      }
+      if (sl?.meter) pre.push({ id: uid('mep'), kind: 'utility_meter', system: 'electrical', position: { x: Number(sl.meter.at.x.toFixed(2)), y: Number(sl.meter.at.y.toFixed(2)) }, label: 'M' });
+    }
+    return autoPopulateMEPForLevel({ ...lvl, mepNodes: pre, mepCircuits: [] }, i === 0 && !!project.solar?.enabled, true, false, acRoom);
+  });
+  return project;
 }

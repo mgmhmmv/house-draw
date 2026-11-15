@@ -11,6 +11,7 @@ import {
 import { levelBoundingBox, openingWorldCenter, polygonArea, polygonPerimeter, wallLength } from './geometry';
 import { computeHVACReport, computePlumbingRiser } from './mepEngine';
 import { framingQuantities, roofFraming } from '../app/drawing/model3d/framing';
+import { siteLayout } from '../app/drawing/model3d/site';
 
 export interface BOQLineItem {
   code: string;
@@ -269,7 +270,8 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
   add('05.01', '05 Finishes', `Internal Wall Finish (${designCfg.interiorWalls.replace(/_/g, ' ')}) & Ceiling Skim`, 'm²', internalPlasterArea, r.plasterPerM2);
   add('05.02', '05 Finishes', `External Facade Cladding / Render (${designCfg.exteriorFacade.replace(/_/g, ' ')})`, 'm²', externalPlasterArea, r.plasterPerM2 * 1.15);
   add('05.03', '05 Finishes', 'Interior Emulsion & Exterior Acrylic Paint (3 Coats)', 'm²', totalPaintArea, r.paintPerM2);
-  add('05.04', '05 Finishes', 'Porcelain, Stone, Terrazzo & Anti-Skid Floor Tiling + Skirting', 'm²', tileFloorArea + totalSkirtingLen * 0.1, r.tileFloorPerM2);
+  const tileSpecs = [...new Set(project.levels.flatMap((l) => l.rooms.map((rm) => rm.floorSpec)).filter(Boolean))];
+  add('05.04', '05 Finishes', tileSpecs.length ? `Floor tiling: ${tileSpecs.join('; ')}, on screed, with matching skirting` : 'Porcelain, Stone, Terrazzo & Anti-Skid Floor Tiling + Skirting', 'm²', tileFloorArea + totalSkirtingLen * 0.1, r.tileFloorPerM2);
   if (hardwoodFloorArea > 0) {
     add('05.05', '05 Finishes', 'Engineered Hardwood / Herringbone Oak & Acoustic Underlay', 'm²', hardwoodFloorArea, r.hardwoodFloorPerM2);
   }
@@ -323,6 +325,20 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
   for (const item of items) {
     divMap.set(item.division, (divMap.get(item.division) ?? 0) + item.totalCost);
   }
+  // Division 07: External works (boundary wall, gates, entrance canopy, meter box).
+  const site = siteLayout(project);
+  if (project.site && site.boundary && site.wallLength > 0) {
+    add('07.01', '07 External Works', `Boundary wall ${Math.round(site.thickness * 1000)} mm blockwork, ${site.height.toFixed(1)} m high, piers at 3 m, rendered & painted both sides, coping`, 'm²', site.wallLength * site.height, Number((r.partitionWallPerM2 * 1.55).toFixed(2)));
+    add('07.02', '07 External Works', 'Boundary wall strip footing & plinth beam (excavation, PCC, RC)', 'lm', site.wallLength, 38);
+  }
+  const gateRate: Record<string, number> = { sliding: 1450, swing_double: 1100, timber: 1300, pedestrian: 380 };
+  for (const [i, g] of site.gates.entries()) {
+    add(`07.1${i}`, '07 External Works', `${g.gate.kind === 'sliding' ? 'Sliding' : g.gate.kind === 'swing_double' ? 'Double swing' : g.gate.kind === 'timber' ? 'Timber' : 'Pedestrian'} gate ${g.gate.width.toFixed(1)} m, galvanised & powder-coated, with track/hinges and lock`, 'nr', 1, gateRate[g.gate.kind] ?? 1100);
+    if (g.ped) add(`07.1${i}p`, '07 External Works', `Pedestrian door ${g.gate.pedestrianWidth.toFixed(1)} m beside the gate, with lock`, 'nr', 1, gateRate.pedestrian);
+    if (g.gate.canopy !== 'none') add(`07.1${i}c`, '07 External Works', `${g.gate.canopy === 'gable' ? 'Gable (two-slope)' : 'Flat'} canopy over the entrance: piers, steel frame, roof sheeting to match the house`, 'nr', 1, g.gate.canopy === 'gable' ? 680 : 520);
+  }
+  if (site.meter) add('07.20', '07 External Works', 'Utility meter enclosure built into the boundary pier, with cable duct to the MDB', 'nr', 1, 180);
+
   const subtotal = items.reduce((s, i) => s + i.totalCost, 0);
   const divisionTotals = Array.from(divMap.entries()).map(([division, amount]) => ({
     division,

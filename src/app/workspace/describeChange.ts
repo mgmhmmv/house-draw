@@ -78,6 +78,12 @@ export function describeChange(prev: BuildingProject | null, next: BuildingProje
   else if (!same(prev.roof, next.roof)) out.push('Changed the roof');
   // Compare with defaults filled in, so a config written out in full doesn't count as a change.
   if (!same(getSolarConfig(prev), getSolarConfig(next))) out.push('Changed solar');
+  if (!same(prev.site ?? null, next.site ?? null)) {
+    const pb = !!prev.site?.boundary;
+    const nb = !!next.site?.boundary;
+    out.push(nb && !pb ? 'Added the boundary wall' : pb && !nb ? 'Removed the boundary wall' : (prev.site?.gates?.length ?? 0) !== (next.site?.gates?.length ?? 0) ? 'Changed the gates' : 'Changed the site');
+  }
+  if (!same(prev.waterSupply ?? null, next.waterSupply ?? null)) out.push('Changed the water supply');
   if (!same(getHVACConfig(prev), getHVACConfig(next))) out.push('Changed cooling');
   if (!same(getDesignConfig(prev), getDesignConfig(next))) out.push('Changed materials');
   if (!same(prev.rates, next.rates)) out.push('Changed rates');

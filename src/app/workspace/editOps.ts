@@ -3,8 +3,8 @@
  * element by its id, or place items from the asset library. They are applied here, in code,
  * so the result is exactly what was proposed, and every edit is reported back.
  */
-import type { BuildingProject, FloorLevel, Point2D } from '../../model/types';
-import { getSolarConfig } from '../../model/types';
+import type { BuildingProject, FloorLevel, GateKind, PlotSide, Point2D } from '../../model/types';
+import { getSite, getSolarConfig } from '../../model/types';
 import { uid } from '../../engine/geometry';
 import { ASSET_BY_ID, ASSETS, cleanSpec, registerCustomAssets } from '../drawing/assets/catalog';
 
@@ -18,7 +18,8 @@ export type EditOp =
   | { op: 'set'; id: string; props: Record<string, unknown> }
   | { op: 'delete'; id: string }
   | { op: 'set_roof'; props: Record<string, unknown> }
-  | { op: 'set_solar'; props: Record<string, unknown> };
+  | { op: 'set_solar'; props: Record<string, unknown> }
+  | { op: 'set_site'; props?: Record<string, unknown> };
 
 type Found =
   | { kind: 'wall'; lvl: FloorLevel; i: number }
@@ -284,6 +285,35 @@ export function applyEdits(model: BuildingProject, ops: EditOp[]): EditResult {
             ...(['south', 'north', 'east', 'west'].includes(p.roofFace as string) ? { roofFace: p.roofFace as never } : {}),
           };
           applied.push('Changed the solar array');
+          break;
+        }
+        case 'set_site': {
+          const p = e.props ?? {};
+          const cur = getSite(next);
+          const plot = p.plot as { x?: number; y?: number; w?: number; d?: number } | undefined;
+          const gates = Array.isArray(p.gates)
+            ? (p.gates as Record<string, unknown>[]).slice(0, 3).map((g) => ({
+                id: typeof g.id === 'string' ? g.id : uid('gate'),
+                side: (['N', 'S', 'E', 'W'].includes(g.side as string) ? g.side : 'S') as PlotSide,
+                at: num(g.at, 0, 200) ?? cur.plot.w / 2,
+                width: num(g.width, 0.8, 8) ?? 3,
+                kind: (['sliding', 'swing_double', 'timber', 'pedestrian'].includes(g.kind as string) ? g.kind : 'sliding') as GateKind,
+                canopy: (['gable', 'flat', 'none'].includes(g.canopy as string) ? g.canopy : 'none') as 'gable' | 'flat' | 'none',
+                pedestrianWidth: num(g.pedestrianWidth, 0, 2) ?? 0,
+              }))
+            : cur.gates;
+          next.site = {
+            plot:
+              plot && [plot.x, plot.y, plot.w, plot.d].every((v) => typeof v === 'number' && isFinite(v)) && plot.w! > 2 && plot.d! > 2
+                ? { x: plot.x!, y: plot.y!, w: plot.w!, d: plot.d! }
+                : cur.plot,
+            boundary: typeof p.boundary === 'boolean' ? p.boundary : cur.boundary,
+            boundaryHeight: num(p.boundaryHeight, 0.6, 3.5) ?? cur.boundaryHeight,
+            boundaryThickness: num(p.boundaryThickness, 0.1, 0.4) ?? cur.boundaryThickness,
+            gates,
+            meterAtGate: typeof p.meterAtGate === 'boolean' ? p.meterAtGate : cur.meterAtGate,
+          };
+          applied.push('Changed the site (plot, boundary wall, gates)');
           break;
         }
         default:

@@ -1792,11 +1792,14 @@ export function autoPopulateMEPForLevel(
   level: FloorLevel,
   solarEnabled = true,
   hvacEnabled = true,
-  ceilingFansEnabled = false
+  ceilingFansEnabled = false,
+  /** Which rooms get a split AC (default: every habitable room). */
+  acRoom?: (room: Room) => boolean
 ): FloorLevel {
   const bb = levelBoundingBox(level);
-  const preserveNode = (kind: MEPNode['kind'], fallback: Point2D): { id: string; pos: Point2D } => {
+  const preserveNode = (kind: MEPNode['kind'], fallback: Point2D, anywhere = false): { id: string; pos: Point2D } => {
     const prev = level.mepNodes.find((n) => n.kind === kind);
+    if (prev && anywhere) return { id: prev.id, pos: { x: Number(prev.position.x.toFixed(2)), y: Number(prev.position.y.toFixed(2)) } };
     if (
       prev &&
       prev.position.x >= bb.minX - 2.5 &&
@@ -1845,10 +1848,15 @@ export function autoPopulateMEPForLevel(
 
   const mdbSaved = preserveNode('mdb', defaultMdbPos);
   const mdbPos: Point2D = mdbSaved.pos;
-  const meterSaved = preserveNode('utility_meter', {
-    x: Number((bb.minX - 0.12).toFixed(2)),
-    y: Number((bb.minY + 1.35).toFixed(2)),
-  });
+  // The meter may stand away from the house (on the boundary wall at the gate).
+  const meterSaved = preserveNode(
+    'utility_meter',
+    {
+      x: Number((bb.minX - 0.12).toFixed(2)),
+      y: Number((bb.minY + 1.35).toFixed(2)),
+    },
+    true
+  );
   const meterPos: Point2D = meterSaved.pos;
   const waterMainPos: Point2D = {
     x: Number((bb.minX + 0.4).toFixed(2)),
@@ -2059,11 +2067,9 @@ export function autoPopulateMEPForLevel(
     const roomHvacPts: Point2D[] = [];
     if (
       hvacEnabled &&
-      (r.category === 'living' ||
-        r.category === 'dining' ||
-        r.category === 'kitchen' ||
-        r.category === 'bedroom' ||
-        r.category === 'office')
+      (acRoom
+        ? acRoom(r)
+        : r.category === 'living' || r.category === 'dining' || r.category === 'kitchen' || r.category === 'bedroom' || r.category === 'office')
     ) {
       const btuK = rArea > 26 ? 24 : rArea > 18 ? 18 : rArea > 12 ? 12 : 9;
       const acW = Math.round((btuK / 3.412) * 280);

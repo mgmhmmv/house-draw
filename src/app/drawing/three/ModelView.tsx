@@ -204,7 +204,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     disposeParts(c);
     c.parts = parts;
     parts.levels.forEach((g) => c.scene.add(g));
-    c.scene.add(parts.roof, parts.roofFrame, parts.site);
+    c.scene.add(parts.roof, parts.roofFrame, parts.boundary, parts.site);
     if (!c.fitted) {
       applyPreset(c, 'iso');
       c.fitted = true;
@@ -606,7 +606,7 @@ const fmtHour = (h: number) => `${Math.floor(h)}:${String(Math.round((h % 1) * 6
 function disposeParts(c: { scene: THREE.Scene; parts: SceneParts | null }) {
   const p = c.parts;
   if (!p) return;
-  for (const g of [...p.levels, p.roof, p.roofFrame, p.site]) {
+  for (const g of [...p.levels, p.roof, p.roofFrame, p.boundary, p.site]) {
     c.scene.remove(g);
     g.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();

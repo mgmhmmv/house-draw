@@ -28,7 +28,13 @@ When you have the minimum, call design_house. Design rules:
 - Multi-storey: one room named "Stair" (category hallway) with the SAME rectangle on every floor it serves, plus circulation on each floor connecting to it.
 - Maldivian practice: a front verandah (fenda / porch) is common; a prayer room, a separate laundry/wash area, a store, and bathrooms for every bedroom or close to them are valued; cross ventilation and shade matter; kitchens often open to a back yard.
 - Name rooms plainly (Master Bedroom, Bedroom 2, Bath 1, Kitchen, Living, Dining, Hall, Porch, Stair, Laundry, Prayer, Store).
-- Roof: hip or gable for houses, pitch 20-25°; flat only if asked (roof terrace).
+- Roof: hip or gable for houses, pitch 20-25°; flat only if asked (roof terrace). Use the form the user asks for.
+- Units: work in metres. Convert feet (1 ft = 0.3048 m) and square feet (1 sq ft = 0.0929 m²): a 40 × 50 ft plot is 12.19 × 15.24 m. "2000 square" for a house plot means square feet. Room sizes: never smaller than the minimums above.
+- Street / front: the street side is south (y increases to the south) unless the user says otherwise; the building's entrance and the plot gate face the street.
+- A patio / sit-out is an outdoor room (category porch) beside the house, under the main roof only if it is inside the footprint.
+SITE (fill "site"): if the user mentions a boundary / compound wall, gate, fence or plot edge, set boundary_wall true (height 1.8 m unless told). The gate is on the street side: give its centre (m from the plot's west corner for N/S sides), clear width (sliding or double-swing vehicle gate 3.0-3.6 m; just a pedestrian gate 1.0 m), a pedestrian door beside it (pedestrian_width 0.9, or 0 if not wanted), and canopy "gable" for a split / two-slope roof over the entrance ("flat" or "none" otherwise). meter_at_gate true when the electricity meter goes on the boundary wall or at the gate. Keep at least 1.5 m between the gate and the house for the entrance path.
+SERVICES (fill "services"): ac_rooms = exact names of rooms that get a split AC (when the user says "all rooms except X", list every other habitable room; bedrooms always unless excluded); solar true/false; mdb_room and inverter_room = the exact name of an inside room with an outside wall and good ventilation (a store, laundry or utility; add a small "Store" or "Utility" room for them if needed).
+FINISHES (fill "finishes"): floor_tile {size_mm, colour, hex} from the brief (2×2 ft = 600 mm; light grey ≈ #D9D9D6); wet_area_tile only if different. Choose good, durable finishes when the user leaves it to you, and say so in assumptions.
 Always reply by calling exactly one tool (ask_clarification or design_house), never with plain text.
 Reasoning: in "reasoning", explain briefly what you understood, what you assumed, and the key layout decisions (zoning, orientation, circulation, ventilation). Keep it under 120 words.`;
 
@@ -100,6 +106,41 @@ const TOOLS = [
         },
         roof: { type: 'object', properties: { type: { type: 'string', enum: ['hip', 'gable', 'shed', 'flat'] }, pitchDeg: { type: 'number' } }, required: ['type', 'pitchDeg'] },
         assumptions: { type: 'array', items: { type: 'string' } },
+        site: {
+          type: 'object',
+          properties: {
+            boundary_wall: { type: 'boolean' },
+            wall_height: { type: 'number' },
+            gate: {
+              type: 'object',
+              properties: {
+                side: { type: 'string', enum: ['N', 'S', 'E', 'W'] },
+                centre: { type: 'number', description: 'Metres along the side from its west (N/S) or north (E/W) corner.' },
+                width: { type: 'number' },
+                kind: { type: 'string', enum: ['sliding', 'swing_double', 'timber', 'pedestrian'] },
+                canopy: { type: 'string', enum: ['gable', 'flat', 'none'] },
+                pedestrian_width: { type: 'number' },
+              },
+            },
+            meter_at_gate: { type: 'boolean' },
+          },
+        },
+        services: {
+          type: 'object',
+          properties: {
+            ac_rooms: { type: 'array', items: { type: 'string' } },
+            solar: { type: 'boolean' },
+            mdb_room: { type: 'string' },
+            inverter_room: { type: 'string' },
+          },
+        },
+        finishes: {
+          type: 'object',
+          properties: {
+            floor_tile: { type: 'object', properties: { size_mm: { type: 'number' }, colour: { type: 'string' }, hex: { type: 'string' } } },
+            wet_area_tile: { type: 'object', properties: { size_mm: { type: 'number' }, colour: { type: 'string' }, hex: { type: 'string' } } },
+          },
+        },
       },
       required: ['reasoning', 'name', 'summary', 'plot', 'offset', 'floors', 'roof'],
     },

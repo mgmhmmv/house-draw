@@ -2,7 +2,7 @@
  * A compact, factual summary of the project for the AI Architect to answer questions from.
  * Numbers come from the same engines as the drawings and BOQ, so answers match the sheets.
  */
-import { getDesignConfig, getHVACConfig, getRoofDrainageConfig, getSolarConfig, type BuildingProject } from '../../model/types';
+import { getSite, getDesignConfig, getHVACConfig, getRoofDrainageConfig, getSolarConfig, type BuildingProject } from '../../model/types';
 import { calculateBOQ } from '../../engine/boqCalculator';
 import { computeTotalFloorArea, polygonArea, wallLength } from '../../engine/geometry';
 
@@ -74,6 +74,10 @@ export function projectBrief(model: BuildingProject) {
     planAxes: 'x grows east, y grows south (plan north up); metres',
     levels,
     roof: { type: model.roof.type, pitch_deg: model.roof.pitchDeg, overhang_m: model.roof.overhang, covering: model.roof.material, parapet_m: model.roof.parapetHeight },
+    site: (() => {
+      const st = getSite(model);
+      return { plot_m: st.plot, boundary_wall: st.boundary, boundary_height_m: st.boundaryHeight, gates: st.gates, meter_at_gate: st.meterAtGate, note: model.site ? 'set' : 'not set yet: plot assumed round the building' };
+    })(),
     rainwater: rain,
     finishes: design,
     climateAndCooling: { climate: hvac.climateZone, ac: hvac.enabled, system: hvac.systemType, refrigerant: hvac.refrigerant, outdoor_C: hvac.designOutdoorTempC, indoor_C: hvac.designIndoorTempC, humidity_pct: hvac.designHumidityPct, ceilingFans: hvac.ceilingFansEnabled },

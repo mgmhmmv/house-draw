@@ -8,6 +8,10 @@ import { useMemo } from 'react';
 import type { BuildingProject, FloorLevel } from '../../../model/types';
 import { buildFrame } from '../model3d/faces';
 import { roofFraming } from '../model3d/framing';
+import { siteLayout } from '../model3d/site';
+import { assetFor } from '../assets/catalog';
+import { assetPlan } from '../assets/render';
+import { PlanPrims } from '../assets/PlanSymbol';
 import { buildPlanGeometry, fmtMM } from './kernel';
 import { INK, INK_2, INK_3, MEP_COLOR, WEIGHT } from '../style';
 
@@ -485,3 +489,107 @@ export function SewagePlan({ layout, k }: { layout: SewerLayout; k: number }) {
   );
 }
 
+
+/* ── Site: plot line, boundary wall, gates, entrance canopy, meter ─── */
+
+export function SitePlan({ model, k }: { model: BuildingProject; k: number }) {
+  const sl = useMemo(() => siteLayout(model), [model]);
+  const fs = (size: number, px: number) => Math.max(size, px / k);
+  const t = sl.thickness;
+  const p = sl.plot;
+  const hasSite = !!model.site;
+  if (!hasSite) return null;
+  return (
+    <g pointerEvents="none">
+      {/* Plot boundary (property line) */}
+      <rect x={p.x} y={p.y} width={p.w} height={p.d} fill="none" stroke={INK_3} strokeWidth={WEIGHT.light} strokeDasharray="9 3 2 3" vectorEffect={NS} />
+      {/* Boundary wall, inside the property line */}
+      {sl.runs.map((r, i) => {
+        const horiz = Math.abs(r.a.y - r.b.y) < 1e-6;
+        const inward = r.side === 'N' ? 1 : r.side === 'S' ? -1 : r.side === 'W' ? 1 : -1;
+        const x = horiz ? Math.min(r.a.x, r.b.x) : r.a.x + (inward > 0 ? 0 : -t);
+        const y = horiz ? r.a.y + (inward > 0 ? 0 : -t) : Math.min(r.a.y, r.b.y);
+        return <rect key={i} x={x} y={y} width={horiz ? Math.abs(r.b.x - r.a.x) : t} height={horiz ? t : Math.abs(r.b.y - r.a.y)} fill="#8A857D" stroke={INK} strokeWidth={WEIGHT.medium} vectorEffect={NS} />;
+      })}
+      {/* Gates and pedestrian doors, with the canopy dashed overhead */}
+      {sl.gates.map((g, i) => {
+        const inset = { x: -g.out.x * (t / 2), y: -g.out.y * (t / 2) };
+        const main = assetFor(g.main.asset);
+        const ped = assetFor('gate_pedestrian');
+        const ax = g.span.a;
+        const bx = g.span.b;
+        const along = { x: bx.x - ax.x, y: bx.y - ax.y };
+        const L = Math.hypot(along.x, along.y) || 1;
+        const u = { x: along.x / L, y: along.y / L };
+        const half = 0.75;
+        const over = 0.45;
+        const c1 = { x: ax.x - u.x * over, y: ax.y - u.y * over };
+        const c2 = { x: bx.x + u.x * over, y: bx.y + u.y * over };
+        const corner = (q: P, s: number) => ({ x: q.x + g.out.x * half * s, y: q.y + g.out.y * half * s });
+        const canopy = [corner(c1, 1), corner(c2, 1), corner(c2, -1), corner(c1, -1)];
+        return (
+          <g key={i}>
+            {main && (
+              <g transform={`translate(${g.main.center.x + inset.x} ${g.main.center.y + inset.y}) rotate(${g.rot})`}>
+                <PlanPrims prims={assetPlan(main, g.main.width, 0.3)} ink={INK} width={WEIGHT.light} />
+              </g>
+            )}
+            {g.ped && ped && (
+              <g transform={`translate(${g.ped.center.x + inset.x} ${g.ped.center.y + inset.y}) rotate(${g.rot})`}>
+                <PlanPrims prims={assetPlan(ped, g.ped.width, 0.3)} ink={INK} width={WEIGHT.light} />
+              </g>
+            )}
+            {g.gate.canopy !== 'none' && (
+              <g>
+                <polygon points={pts(canopy)} fill="none" stroke={INK_2} strokeWidth={WEIGHT.light} strokeDasharray="5 3" vectorEffect={NS} />
+                {g.gate.canopy === 'gable' && <line x1={c1.x} y1={c1.y} x2={c2.x} y2={c2.y} stroke={INK_2} strokeWidth={WEIGHT.light} strokeDasharray="5 3" vectorEffect={NS} />}
+
+              </g>
+            )}
+            {/* Labels outside the wall, on the street side */}
+            <text x={(c1.x + c2.x) / 2 + g.out.x * (half + 0.35)} y={(c1.y + c2.y) / 2 + g.out.y * (half + 0.35) + fs(0.15, 9) * 0.35} fontSize={fs(0.15, 9)} fill={INK_2} textAnchor="middle">
+              {`${g.gate.kind === 'sliding' ? 'SLIDING' : g.gate.kind === 'pedestrian' ? 'PEDESTRIAN' : 'SWING'} GATE ${fmtMM(g.gate.width)}${g.ped ? ` + DOOR ${fmtMM(g.gate.pedestrianWidth)}` : ''}`}
+            </text>
+            {g.gate.canopy !== 'none' && (
+              <text x={(c1.x + c2.x) / 2 + g.out.x * (half + 0.35) + g.out.x * fs(0.15, 9) * 1.5} y={(c1.y + c2.y) / 2 + g.out.y * (half + 0.35) + g.out.y * fs(0.15, 9) * 1.5 + fs(0.15, 9) * 0.35} fontSize={fs(0.15, 9)} fill={INK_2} textAnchor="middle">
+                {g.gate.canopy === 'gable' ? 'GABLE CANOPY OVER ENTRANCE' : 'CANOPY OVER ENTRANCE'}
+              </text>
+            )}
+          </g>
+        );
+      })}
+      {sl.meter && (
+        <g transform={`translate(${sl.meter.at.x + sl.meter.out.x * (t / 2 + 0.15)} ${sl.meter.at.y + sl.meter.out.y * (t / 2 + 0.15)})`}>
+          <rect x={-0.21} y={-0.12} width={0.42} height={0.24} fill="#fff" stroke={MEP_COLOR.power} strokeWidth={1.2} vectorEffect={NS} />
+          <text y={0.06} fontSize={0.16} fontWeight={700} fill={MEP_COLOR.power} textAnchor="middle">
+            M
+          </text>
+          <text y={-0.28} fontSize={fs(0.14, 8.5)} fill={INK_2} textAnchor="middle">
+            UTILITY METER
+          </text>
+        </g>
+      )}
+      {/* Street name side */}
+      {sl.gates[0] && (
+        <text
+          x={p.x + p.w / 2 + sl.gates[0].out.x * (p.w / 2 + 2.0)}
+          y={p.y + p.d / 2 + sl.gates[0].out.y * (p.d / 2 + 2.0) + fs(0.2, 11) * 0.35}
+          fontSize={fs(0.2, 11)}
+          fontWeight={700}
+          letterSpacing={0.05}
+          fill={INK_3}
+          textAnchor="middle"
+        >
+          STREET
+        </text>
+      )}
+    </g>
+  );
+}
+
+/** Plot extents (with room for the street label), when the project has a site. */
+export function siteBounds(model: BuildingProject) {
+  if (!model.site) return null;
+  const p = siteLayout(model).plot;
+  return { minX: p.x - 1.4, minY: p.y - 1.4, maxX: p.x + p.w + 1.4, maxY: p.y + p.d + 2.6 };
+}

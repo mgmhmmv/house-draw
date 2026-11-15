@@ -99,7 +99,7 @@ Precise edits (preferred whenever possible):
 - The brief lists every element with its id (rooms, walls, openings, furniture, fixtures). Coordinates are plan metres: x east, y south. A level's walls show the building footprint.
 - Use "edits" to change specific elements or place library items. Only use "instruction" alone for whole-design changes the edits can't express (new layout, adding a floor, redesigning rooms).
 - Ops:
-  · add_item {asset, x, y, rotation?, width?, depth?, height?, level?}: place a LIBRARY item (ids in LIBRARY). Rotation in degrees, 0 = item's back to the north. For long runs (boundary walls, fences, hedges) set width to the run length and rotate 90 for north–south runs; place several to go round a plot. x, y is the item's centre.
+  · add_item {asset, x, y, rotation?, width?, depth?, height?, level?}: place a LIBRARY item (ids in LIBRARY). Rotation in degrees, 0 = item's back to the north. For long runs (fences, hedges) set width to the run length and rotate 90 for north–south runs. Boundary walls and gates: use set_site. x, y is the item's centre.
   · add_opening {asset, wall_id, at?, width?, height?, sill?}: put a door/window library item into a wall; "at" = metres from the wall's start point.
   · add_wall {x1,y1,x2,y2, thickness?, height?, exterior?, material?, level?}
   · move {id, x?, y?, dx?, dy?, rotation?} (openings: x/dx are metres along their wall)
@@ -108,6 +108,7 @@ Precise edits (preferred whenever possible):
   · delete {id}
   · set_roof {props: type, pitchDeg, overhang, material, parapetHeight}
   · set_solar {props: enabled, panelCount, panelWattage, inverterKW, batteryKWh, offsetX, offsetY, rotationDeg, roofFace}
+  · set_site {props: plot {x, y, w, d} (plan metres, same axes as the building; the brief's site.plot_m), boundary (true = boundary/compound wall all round the plot), boundaryHeight, boundaryThickness, gates [{side N|S|E|W, at (centre, m along the side from its west/north corner), width (clear, m), kind sliding|swing_double|timber|pedestrian, canopy gable|flat|none, pedestrianWidth (door beside it, 0 = none)}], meterAtGate}. Use THIS for boundary walls, compound walls and gates — never piece them together from library items. The street is south unless the brief says otherwise; put the gate on the street side.
 - Keep things outside the building footprint (gardens, gates, boundary) clear of the walls; keep furniture inside its room's extents and clear of doors.
 - When the user refers to a SELECTED element, it is the one they mean.
 - Fixtures (AC units, fans, lights): change the model with set {model} (e.g. ac_condenser_wall = outdoor unit on L brackets fixed to the wall; its depth = 0.30 m unit + the gap to the wall, so use resize {depth} for the gap), set {elevation, rotation}; rotation 0 = the unit's back to the north.
@@ -139,7 +140,7 @@ const ASSIST_TOOLS = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['create_asset', 'add_item', 'add_opening', 'add_wall', 'move', 'resize', 'set', 'delete', 'set_roof', 'set_solar'] },
+              op: { type: 'string', enum: ['create_asset', 'add_item', 'add_opening', 'add_wall', 'move', 'resize', 'set', 'delete', 'set_roof', 'set_solar', 'set_site'] },
               spec: { type: 'object', description: 'create_asset only: the new object (see MODELLING KIT).' },
               id: { type: 'string' },
               asset: { type: 'string' },

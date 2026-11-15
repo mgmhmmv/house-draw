@@ -5,13 +5,14 @@
  * Plan axes (x east, y south, z up) map to three.js as (x, z, y): y is up in three.js.
  */
 import * as THREE from 'three';
-import type { BuildingProject } from '../../../model/types';
+import { getDesignConfig, type BuildingProject } from '../../../model/types';
 import { buildFrame, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
-import { ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
+import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
 import { AssetMaterials } from '../assets/kit';
 import { furnitureObject, mepObject } from '../assets/render';
 import { roofFraming } from '../model3d/framing';
+import { siteLayout } from '../model3d/site';
 
 const T = (p: V3) => new THREE.Vector3(p.x, p.z, p.y);
 
@@ -21,6 +22,8 @@ export interface SceneParts {
   roof: THREE.Group;
   /** The roof structure under the covering: plates, trusses or rafters, purlins. */
   roofFrame: THREE.Group;
+  /** Boundary wall, gates and the entrance canopy (left out of elevations so they don't hide the house). */
+  boundary: THREE.Group;
   /** Downpipes, rainwater tank: always shown. */
   site: THREE.Group;
   roofTopZ: number;
@@ -140,7 +143,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     for (const r of lvl.rooms) {
       if (r.polygon.length < 3) continue;
       const pts = r.polygon.map((p) => ({ x: p.x, y: p.y, z: lvl.elevation + 0.005 }));
-      triangulate({ pts, n: { x: 0, y: 0, z: 1 } }, bucket(levelBuckets[i], 'floor', ROOM_TINT[r.category] ?? '#EEEDE8'));
+      triangulate({ pts, n: { x: 0, y: 0, z: 1 } }, bucket(levelBuckets[i], 'floor', r.floorColor ?? ROOM_TINT[r.category] ?? '#EEEDE8'));
     }
   });
 
@@ -333,12 +336,92 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   });
   materials.push(...assetMats.all());
 
+  // Boundary wall with coping and piers, gates, and the entrance canopy.
+  const boundary = new THREE.Group();
+  boundary.userData.kind = 'boundary';
+  const sl = siteLayout(model);
+  {
+    const wallMat = metalMat(clay ? '#F1EEE8' : tint(FACADE_MATERIAL_OPTIONS.find((o) => o.id === getDesignConfig(model).exteriorFacade)?.base ?? '#eef2f6', 0.25), 0.9, 0);
+    const capMat = metalMat(clay ? '#E2DED7' : '#B9B4AA', 0.8, 0);
+    const geos: THREE.BufferGeometry[] = [];
+    const caps: THREE.BufferGeometry[] = [];
+    const up = new THREE.Vector3(0, 1, 0);
+    const v3 = (p: { x: number; y: number }, z: number) => new THREE.Vector3(p.x, z, p.y);
+    const piers: { x: number; y: number }[] = [];
+    for (const r of sl.runs) {
+      geos.push(barBetween(v3(r.a, 0), v3(r.b, 0), up, sl.thickness, sl.height, sl.height / 2));
+      caps.push(barBetween(v3(r.a, sl.height), v3(r.b, sl.height), up, sl.thickness + 0.06, 0.05, 0.025));
+      const L = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
+      const n = Math.max(1, Math.round(L / 3));
+      for (let i = 0; i <= n; i++) piers.push({ x: r.a.x + ((r.b.x - r.a.x) * i) / n, y: r.a.y + ((r.b.y - r.a.y) * i) / n });
+    }
+    for (const p of piers) geos.push(barBetween(v3(p, 0), v3(p, sl.height + 0.12), new THREE.Vector3(1, 0, 0), 0.3, 0.3, 0));
+    if (geos.length) {
+      const m = new THREE.Mesh(mergeGeos(geos), wallMat);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      boundary.add(m);
+    }
+    if (caps.length) boundary.add(new THREE.Mesh(mergeGeos(caps), capMat));
+    for (const g of sl.gates) {
+      boundary.add(furnitureObject({ id: `gate-${g.gate.id}`, type: g.main.asset, position: g.main.center, rotation: g.rot, width: g.main.width, depth: 0.3 }, 0, assetMats, 0));
+      if (g.ped) boundary.add(furnitureObject({ id: `ped-${g.gate.id}`, type: 'gate_pedestrian', position: g.ped.center, rotation: g.rot, width: g.ped.width, depth: 0.3 }, 0, assetMats, 0));
+      if (g.gate.canopy !== 'none') {
+        // Posts at the ends of the entrance, then a two-slope (or flat) roof over it.
+        const eave = 2.45;
+        const along = new THREE.Vector3(g.span.b.x - g.span.a.x, 0, g.span.b.y - g.span.a.y).normalize();
+        const outV = new THREE.Vector3(g.out.x, 0, g.out.y);
+        const a = v3(g.span.a, 0).addScaledVector(along, -0.15);
+        const b = v3(g.span.b, 0).addScaledVector(along, 0.15);
+        const posts = [a, b].map((p) => barBetween(p.clone(), p.clone().setY(eave), new THREE.Vector3(1, 0, 0), 0.3, 0.3, 0));
+        boundary.add(new THREE.Mesh(mergeGeos(posts), wallMat));
+        const half = 0.75; // canopy reaches this far each side of the wall line
+        const rise = g.gate.canopy === 'gable' ? 0.45 : 0.05;
+        const roofMatC = metalMat(clay ? '#E2DED7' : ribColor, 0.5, 0.3);
+        const over = 0.3;
+        const a2 = a.clone().addScaledVector(along, -over);
+        const b2 = b.clone().addScaledVector(along, over);
+        const pts = (side: number) => {
+          const e1 = a2.clone().addScaledVector(outV, side * half).setY(eave);
+          const e2 = b2.clone().addScaledVector(outV, side * half).setY(eave);
+          const r1 = a2.clone().setY(eave + rise);
+          const r2 = b2.clone().setY(eave + rise);
+          return [e1, e2, r2, r1];
+        };
+        for (const side of [1, -1]) {
+          const [p1, p2, p3, p4] = pts(side);
+          const geo = new THREE.BufferGeometry().setFromPoints([p1, p2, p3, p1, p3, p4]);
+          geo.computeVertexNormals();
+          const mesh = new THREE.Mesh(geo, roofMatC);
+          (roofMatC as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+          mesh.castShadow = true;
+          boundary.add(mesh);
+        }
+        // Fascia under each eave edge.
+        const fas = [1, -1].map((side) => {
+          const p1 = a2.clone().addScaledVector(outV, side * half).setY(eave - 0.08);
+          const p2 = b2.clone().addScaledVector(outV, side * half).setY(eave - 0.08);
+          return barBetween(p1, p2, up, 0.04, 0.16, 0);
+        });
+        boundary.add(new THREE.Mesh(mergeGeos(fas), wallMat));
+      }
+    }
+    if (sl.meter) {
+      // Meter box let into the pier, street face.
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.6, 0.22), metalMat(clay ? '#F4F2EE' : '#F1F1EF', 0.6, 0.1));
+      m.position.set(sl.meter.at.x + sl.meter.out.x * (sl.thickness / 2 + 0.06), 1.35, sl.meter.at.y + sl.meter.out.y * (sl.thickness / 2 + 0.06));
+      if (sl.meter.rot === 90) m.rotation.y = Math.PI / 2;
+      boundary.add(m);
+    }
+  }
+
   const box = new THREE.Box3();
   levels.forEach((g) => box.expandByObject(g));
   box.expandByObject(roof);
   box.expandByObject(site);
+  box.expandByObject(boundary);
 
-  return { levels, roof, roofFrame, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
+  return { levels, roof, roofFrame, boundary, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
 }
 
 function roofRibColor(model: BuildingProject, clay: boolean): string {

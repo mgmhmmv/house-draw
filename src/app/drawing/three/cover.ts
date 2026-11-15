@@ -30,7 +30,7 @@ export async function renderCover(model: BuildingProject): Promise<Blob | null> 
   scene.background = new THREE.Color('#F4F2EC');
   const parts = buildScene(model, false);
   parts.levels.forEach((g) => scene.add(g));
-  scene.add(parts.roof, parts.site);
+  scene.add(parts.roof, parts.boundary, parts.site);
 
   const box = parts.box;
   const center = box.getCenter(new THREE.Vector3());

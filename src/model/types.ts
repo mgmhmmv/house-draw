@@ -263,6 +263,10 @@ export interface Room {
   finish: FloorFinish;
   ceilingHeight: number; // meters
   color?: string;
+  /** Floor finish as specified, e.g. "600×600 light grey porcelain tiles". */
+  floorSpec?: string;
+  /** Floor colour for the model (tiles, screed). */
+  floorColor?: string;
 }
 
 export interface StructuralColumn {
@@ -584,6 +588,8 @@ export interface BuildingProject {
   solar?: SolarPVConfig;
   /** How water reaches the fittings: mains pressure, or a ground tank with a pressure pump (no overhead tanks). */
   waterSupply?: Partial<WaterSupplyConfig>;
+  /** The plot: its outline, boundary wall, gates and the meter on the wall. */
+  site?: Partial<SiteConfig>;
   design?: MaterialDesignConfig;
   hvac?: HVACConfig;
   /**
@@ -639,6 +645,61 @@ export const MALDIVES_HVAC_CONFIG: HVACConfig = {
   ceilingFansEnabled: true,
   freshAirERV: true,
 };
+
+/* ── Site: plot, boundary wall, gates ──────────────────────────────── */
+
+export type PlotSide = 'N' | 'S' | 'E' | 'W';
+export type GateKind = 'sliding' | 'swing_double' | 'timber' | 'pedestrian';
+
+export interface SiteGate {
+  id: string;
+  side: PlotSide;
+  /** Centre of the whole entrance, metres along the side from its west (N/S) or north (E/W) corner. */
+  at: number;
+  /** Vehicle (or main) gate clear width, m. */
+  width: number;
+  kind: GateKind;
+  /** A small roof over the entrance: two-slope (gable), flat, or none. */
+  canopy: 'gable' | 'flat' | 'none';
+  /** A pedestrian door beside the main gate (clear width, m); 0 for none. */
+  pedestrianWidth: number;
+}
+
+export interface SiteConfig {
+  /** Plot outline in plan metres (same axes as the building). */
+  plot: { x: number; y: number; w: number; d: number };
+  boundary: boolean;
+  boundaryHeight: number;
+  boundaryThickness: number;
+  gates: SiteGate[];
+  /** Utility electricity meter built into the boundary wall at a gate pier. */
+  meterAtGate: boolean;
+}
+
+/** The site with defaults; a project made before sites existed gets a plot round the building. */
+export function getSite(project: BuildingProject): SiteConfig {
+  const s = project.site ?? {};
+  let plot = s.plot;
+  if (!plot) {
+    const lvl = project.levels[0];
+    const xs = lvl?.walls.flatMap((w) => [w.start.x, w.end.x]) ?? [0];
+    const ys = lvl?.walls.flatMap((w) => [w.start.y, w.end.y]) ?? [0];
+    const bw = Math.max(...xs) - Math.min(...xs);
+    const bd = Math.max(...ys) - Math.min(...ys);
+    const w = Math.max(project.meta.plotWidth || 0, bw + 2);
+    const d = Math.max(project.meta.plotDepth || 0, bd + 4);
+    // Centred side to side, with more room at the front (south).
+    plot = { x: Math.min(...xs) - (w - bw) / 2, y: Math.min(...ys) - (d - bd) * 0.4, w, d };
+  }
+  return {
+    plot,
+    boundary: s.boundary ?? false,
+    boundaryHeight: s.boundaryHeight ?? 1.8,
+    boundaryThickness: s.boundaryThickness ?? 0.15,
+    gates: s.gates ?? [],
+    meterAtGate: s.meterAtGate ?? false,
+  };
+}
 
 /* ── Water supply ──────────────────────────────────────────────────── */
 
