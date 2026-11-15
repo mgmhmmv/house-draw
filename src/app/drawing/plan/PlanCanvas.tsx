@@ -1,0 +1,1140 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type RefObject } from 'react';
+import { Maximize2, Minus, Plus } from 'lucide-react';
+import type {
+  ActiveSheetId,
+  BuildingProject,
+  CADTool,
+  FloorLevel,
+  FurnitureItem,
+  MEPNode,
+  Point2D,
+  SelectableElementKind,
+  SketchStroke,
+} from '../../../model/types';
+import { uid } from '../../../engine/geometry';
+import { cx } from '../../ui';
+import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
+import { useViewport } from '../useViewport';
+import { buildPlanGeometry, dimensionChains, fmtMM, nearestWall, openingSymbol, roomTag, wallFrame, along, type Vec } from './kernel';
+
+type Mode = 'plan' | 'structure' | 'mep';
+type MepFilter = 'all' | 'electrical' | 'plumbing' | 'hvac';
+
+interface Props {
+  model: BuildingProject;
+  sheet: ActiveSheetId;
+  levelIndex: number;
+  tool: CADTool;
+  selectedId: string | null;
+  onSelect: (id: string | null, kind?: SelectableElementKind) => void;
+  onCommit: (next: BuildingProject) => void;
+  sketchStrokes: SketchStroke[];
+  onAddSketchStroke: (s: SketchStroke) => void;
+  traceImageUrl: string | null;
+  traceOpacity: number;
+  svgRef: RefObject<SVGSVGElement | null>;
+}
+
+const NS = 'non-scaling-stroke' as const;
+const pts = (a: Vec[]) => a.map((p) => `${p.x},${p.y}`).join(' ');
+const snap = (v: number, step = 0.05) => Math.round(v / step) * step;
+const snapPt = (p: Vec, step = 0.05): Vec => ({ x: snap(p.x, step), y: snap(p.y, step) });
+
+/* Drag state while a pointer is down. The model is edited as a draft and committed on release. */
+type Drag =
+  | { kind: 'pan'; x: number; y: number }
+  | { kind: 'move'; target: SelectableElementKind; id: string; start: Vec; base: BuildingProject; moved: boolean }
+  | { kind: 'room_rect'; start: Vec }
+  | { kind: 'sketch'; points: Vec[] };
+
+export function PlanCanvas(p: Props) {
+  const mode: Mode = p.sheet === 'S-101' ? 'structure' : p.sheet === 'M-101' ? 'mep' : 'plan';
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState<BuildingProject | null>(null);
+  const model = draft ?? p.model;
+  const level: FloorLevel = model.levels[p.levelIndex] ?? model.levels[0];
+  const below: FloorLevel | null = p.levelIndex > 0 ? model.levels[p.levelIndex - 1] : null;
+
+  const geo = useMemo(() => buildPlanGeometry(level), [level]);
+  const ghostGeo = useMemo(() => (below ? buildPlanGeometry(below) : null), [below]);
+  const tags = useMemo(() => level.rooms.map(roomTag), [level.rooms]);
+  const chains = useMemo(() => (mode === 'plan' ? dimensionChains(level, geo) : []), [mode, level, geo]);
+  const symbols = useMemo(
+    () => level.openings.flatMap((o) => (geo.frames.get(o.wallId) ? [openingSymbol(geo.frames.get(o.wallId)!, o)] : [])),
+    [level.openings, geo]
+  );
+
+  const fitBounds = useMemo(() => {
+    const b = geo.bounds;
+    const m = mode === 'plan' ? 2.6 : 1.8;
+    return { minX: b.minX - m, minY: b.minY - m, maxX: b.maxX + m, maxY: b.maxY + m };
+    // Fit to the first level's footprint so switching levels keeps the view still.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.levelIndex === 0 ? geo.bounds : null, mode]);
+  const vp = useViewport(surfaceRef, fitBounds);
+  const { k, tx, ty } = vp.view;
+
+  const [hover, setHover] = useState<Vec | null>(null);
+  const [wallStart, setWallStart] = useState<Vec | null>(null);
+  const [measure, setMeasure] = useState<{ a: Vec; b: Vec | null } | null>(null);
+  const [mepFilter, setMepFilter] = useState<MepFilter>('all');
+  const drag = useRef<Drag | null>(null);
+  const [, force] = useState(0);
+
+  useEffect(() => {
+    setWallStart(null);
+    setMeasure(null);
+  }, [p.tool, p.levelIndex]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setWallStart(null);
+        setMeasure(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /* ── Snapping ────────────────────────────────────────────────────── */
+
+  const snapTol = 12 / k;
+  const smartSnap = useCallback(
+    (raw: Vec, from?: Vec | null): Vec => {
+      // Endpoints first, then orthogonal lock from the previous point, then the 50 mm grid.
+      for (const w of level.walls) for (const e of [w.start, w.end]) if (Math.hypot(e.x - raw.x, e.y - raw.y) < snapTol) return { ...e };
+      let q = snapPt(raw);
+      if (from) {
+        const dx = Math.abs(q.x - from.x);
+        const dy = Math.abs(q.y - from.y);
+        if (dy < dx * 0.12) q = { x: q.x, y: from.y };
+        else if (dx < dy * 0.12) q = { x: from.x, y: q.y };
+      }
+      return q;
+    },
+    [level.walls, snapTol]
+  );
+
+  /* ── Editing helpers ─────────────────────────────────────────────── */
+
+  const edit = (fn: (lvl: FloorLevel, m: BuildingProject) => void) => {
+    const next = structuredClone(p.model);
+    fn(next.levels[p.levelIndex] ?? next.levels[0], next);
+    p.onCommit(next);
+  };
+  const wallHeight = level.floorToFloorHeight - level.slabThickness;
+
+  const addWall = (a: Vec, b: Vec) =>
+    edit((lvl) =>
+      lvl.walls.push({ id: uid('w'), start: a, end: b, thickness: 0.23, height: wallHeight, isExterior: true, isLoadBearing: true, material: 'cinder_block' })
+    );
+
+  const moveDraft = (d: Extract<Drag, { kind: 'move' }>, cur: Vec) => {
+    const dx = snap(cur.x - d.start.x);
+    const dy = snap(cur.y - d.start.y);
+    const next = structuredClone(d.base);
+    const lvl = next.levels[p.levelIndex] ?? next.levels[0];
+    const shift = (q: Point2D) => ({ x: q.x + dx, y: q.y + dy });
+    if (d.target === 'furniture') {
+      const f = lvl.furniture.find((x) => x.id === d.id);
+      if (f) f.position = shift(f.position);
+    } else if (d.target === 'column') {
+      const c = lvl.columns.find((x) => x.id === d.id);
+      if (c) c.position = shift(c.position);
+    } else if (d.target === 'mep_node') {
+      const n = lvl.mepNodes.find((x) => x.id === d.id);
+      if (n) n.position = shift(n.position);
+    } else if (d.target === 'wall') {
+      const w = lvl.walls.find((x) => x.id === d.id);
+      if (w) {
+        // Walls slide across their own axis only, and drag connected wall ends along.
+        const f = wallFrame(w);
+        const off = dx * f.n.x + dy * f.n.y;
+        const mv = { x: snap(f.n.x * off), y: snap(f.n.y * off) };
+        const s0 = { ...w.start };
+        const e0 = { ...w.end };
+        for (const o of lvl.walls) {
+          if (o.id === w.id) continue;
+          for (const end of ['start', 'end'] as const) {
+            const q = o[end];
+            if ((Math.abs(q.x - s0.x) < 0.02 && Math.abs(q.y - s0.y) < 0.02) || (Math.abs(q.x - e0.x) < 0.02 && Math.abs(q.y - e0.y) < 0.02))
+              o[end] = { x: q.x + mv.x, y: q.y + mv.y };
+          }
+        }
+        w.start = { x: s0.x + mv.x, y: s0.y + mv.y };
+        w.end = { x: e0.x + mv.x, y: e0.y + mv.y };
+      }
+    } else if (d.target === 'opening') {
+      const o = lvl.openings.find((x) => x.id === d.id);
+      const w = o && lvl.walls.find((x) => x.id === o.wallId);
+      if (o && w) {
+        const f = wallFrame(w);
+        const rel = { x: cur.x - w.start.x, y: cur.y - w.start.y };
+        const s = rel.x * f.dir.x + rel.y * f.dir.y;
+        const half = o.width / 2 / f.length;
+        o.offset = Math.min(1 - half, Math.max(half, snap(s, 0.05) / f.length));
+      }
+    }
+    return next;
+  };
+
+  /* ── Pointer handling ────────────────────────────────────────────── */
+
+  const onPointerDown = (e: RPointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return;
+    const raw = vp.toWorld(e.clientX, e.clientY);
+    const target = (e.target as Element).closest('[data-kind]') as SVGElement | null;
+    const hitKind = target?.dataset.kind as SelectableElementKind | undefined;
+    const hitId = target?.dataset.id;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+
+    switch (p.tool) {
+      case 'select': {
+        if (hitKind && hitId) {
+          p.onSelect(hitId, hitKind);
+          const movable = ['furniture', 'column', 'mep_node', 'wall', 'opening'].includes(hitKind);
+          drag.current = movable ? { kind: 'move', target: hitKind, id: hitId, start: raw, base: p.model, moved: false } : { kind: 'pan', x: e.clientX, y: e.clientY };
+        } else {
+          p.onSelect(null);
+          drag.current = { kind: 'pan', x: e.clientX, y: e.clientY };
+        }
+        return;
+      }
+      case 'wall': {
+        const q = smartSnap(raw, wallStart);
+        if (!wallStart) setWallStart(q);
+        else if (Math.hypot(q.x - wallStart.x, q.y - wallStart.y) > 0.2) {
+          addWall(wallStart, q);
+          setWallStart(q);
+        }
+        return;
+      }
+      case 'room_rect':
+        drag.current = { kind: 'room_rect', start: smartSnap(raw) };
+        return;
+      case 'door':
+      case 'window': {
+        const hit = nearestWall(level, raw, 0.8);
+        if (!hit) return;
+        const isDoor = p.tool === 'door';
+        const width = isDoor ? 0.9 : 1.5;
+        const f = wallFrame(hit.wall);
+        const half = width / 2 / f.length;
+        edit((lvl) =>
+          lvl.openings.push({
+            id: uid('op'),
+            wallId: hit.wall.id,
+            kind: isDoor ? 'door' : 'window',
+            style: isDoor ? 'single' : 'casement',
+            offset: Math.min(1 - half, Math.max(half, snap(hit.t * f.length) / f.length)),
+            width,
+            height: isDoor ? 2.15 : 1.35,
+            sillHeight: isDoor ? 0 : 0.9,
+            swingDirection: 1,
+            label: `${isDoor ? 'D' : 'W'}${lvl.openings.filter((o) => o.kind === (isDoor ? 'door' : 'window')).length + 1}`,
+          })
+        );
+        return;
+      }
+      case 'column': {
+        const q = smartSnap(raw);
+        edit((lvl) => lvl.columns.push({ id: uid('col'), position: q, width: 0.3, depth: 0.3, label: `C${lvl.columns.length + 1}`, footingSize: 1.2, rebarSpec: '4Ø16 + Ø8@150' }));
+        return;
+      }
+      case 'measure': {
+        const q = smartSnap(raw, measure?.b === null ? measure.a : null);
+        if (!measure || measure.b) setMeasure({ a: q, b: null });
+        else setMeasure({ a: measure.a, b: q });
+        return;
+      }
+      default:
+        if (p.tool.startsWith('sketch')) drag.current = { kind: 'sketch', points: [raw] };
+    }
+  };
+
+  const onPointerMove = (e: RPointerEvent<SVGSVGElement>) => {
+    const raw = vp.toWorld(e.clientX, e.clientY);
+    const d = drag.current;
+    if (d?.kind === 'pan') {
+      vp.panBy(e.clientX - d.x, e.clientY - d.y);
+      drag.current = { ...d, x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (d?.kind === 'move') {
+      if (!d.moved && Math.hypot(raw.x - d.start.x, raw.y - d.start.y) * k < 4) return;
+      d.moved = true;
+      setDraft(moveDraft(d, raw));
+      return;
+    }
+    if (d?.kind === 'sketch') {
+      const last = d.points[d.points.length - 1];
+      if (Math.hypot(raw.x - last.x, raw.y - last.y) * k > 3) {
+        d.points.push(raw);
+        force((n) => n + 1);
+      }
+      return;
+    }
+    setHover(p.tool === 'wall' ? smartSnap(raw, wallStart) : p.tool === 'measure' ? smartSnap(raw, measure && !measure.b ? measure.a : null) : p.tool === 'room_rect' || p.tool === 'column' ? smartSnap(raw) : raw);
+  };
+
+  const onPointerUp = (e: RPointerEvent<SVGSVGElement>) => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    const raw = vp.toWorld(e.clientX, e.clientY);
+    if (d.kind === 'move' && d.moved) {
+      p.onCommit(moveDraft(d, raw));
+      setDraft(null);
+    } else if (d.kind === 'room_rect') {
+      const b = smartSnap(raw);
+      const [x1, x2] = [Math.min(d.start.x, b.x), Math.max(d.start.x, b.x)];
+      const [y1, y2] = [Math.min(d.start.y, b.y), Math.max(d.start.y, b.y)];
+      if (x2 - x1 >= 0.8 && y2 - y1 >= 0.8) {
+        const c = [
+          { x: x1, y: y1 },
+          { x: x2, y: y1 },
+          { x: x2, y: y2 },
+          { x: x1, y: y2 },
+        ];
+        edit((lvl) => {
+          // Only add walls where none already run along that edge.
+          for (let i = 0; i < 4; i++) {
+            const a = c[i];
+            const bb = c[(i + 1) % 4];
+            const exists = lvl.walls.some((w) => {
+              const on = (q: Vec) => nearestWall({ ...lvl, walls: [w] }, q, 0.05);
+              return on(a) && on(bb) && on({ x: (a.x + bb.x) / 2, y: (a.y + bb.y) / 2 });
+            });
+            if (!exists)
+              lvl.walls.push({ id: uid('w'), start: a, end: bb, thickness: 0.15, height: wallHeight, isExterior: false, isLoadBearing: false, material: 'cinder_block' });
+          }
+          lvl.rooms.push({ id: uid('rm'), name: `Room ${lvl.rooms.length + 1}`, category: 'living', polygon: c, finish: 'porcelain', ceilingHeight: 3 });
+        });
+      }
+    } else if (d.kind === 'sketch' && d.points.length > 1) {
+      const kind = p.tool === 'sketch_door' ? 'door' : p.tool === 'sketch_window' ? 'window' : 'wall';
+      p.onAddSketchStroke({ id: uid('sk'), kind, points: d.points });
+    }
+    force((n) => n + 1);
+  };
+
+  const onDoubleClick = () => setWallStart(null);
+
+  /* ── Derived drawing bits ────────────────────────────────────────── */
+
+  const sel = p.selectedId;
+  const showText = (size: number) => size * k >= 7;
+  const roomDrag = drag.current?.kind === 'room_rect' ? drag.current : null;
+  const sketchDrag = drag.current?.kind === 'sketch' ? drag.current : null;
+  const openingPreview =
+    hover && (p.tool === 'door' || p.tool === 'window')
+      ? (() => {
+          const hit = nearestWall(level, hover, 0.8);
+          if (!hit) return null;
+          const f = wallFrame(hit.wall);
+          const width = p.tool === 'door' ? 0.9 : 1.5;
+          const half = width / 2 / f.length;
+          return openingSymbol(f, {
+            id: 'preview',
+            wallId: hit.wall.id,
+            kind: p.tool,
+            style: p.tool === 'door' ? 'single' : 'casement',
+            offset: Math.min(1 - half, Math.max(half, snap(hit.t * f.length) / f.length)),
+            width,
+            height: 2,
+            sillHeight: 0,
+            swingDirection: 1,
+          });
+        })()
+      : null;
+
+  const wallsFaded = mode === 'mep' ? 0.35 : 1;
+  const cursor = p.tool === 'select' ? (drag.current?.kind === 'pan' ? 'grabbing' : 'default') : 'crosshair';
+
+  return (
+    <div ref={surfaceRef} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
+      <svg
+        ref={p.svgRef as RefObject<SVGSVGElement>}
+        className="as-plan absolute inset-0 h-full w-full"
+        style={{ cursor, fontFamily: 'Inter, system-ui, sans-serif' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setHover(null)}
+        onDoubleClick={onDoubleClick}
+      >
+        <defs>
+          <pattern id="as-dots" width={k} height={k} patternUnits="userSpaceOnUse" patternTransform={`translate(${tx} ${ty})`}>
+            <circle cx={0.5} cy={0.5} r={0.7} fill={LINE} />
+          </pattern>
+          <pattern id="as-hatch" width={0.12} height={0.12} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={0.12} stroke={INK_3} strokeWidth={0.012} />
+          </pattern>
+        </defs>
+        {k >= 18 && <rect width="100%" height="100%" fill="url(#as-dots)" opacity={0.7} />}
+
+        <g transform={`translate(${tx} ${ty}) scale(${k})`}>
+          {p.traceImageUrl && (
+            <image
+              href={p.traceImageUrl}
+              x={geo.bounds.minX}
+              y={geo.bounds.minY}
+              width={Math.max(8, geo.bounds.maxX - geo.bounds.minX)}
+              height={Math.max(6, geo.bounds.maxY - geo.bounds.minY)}
+              preserveAspectRatio="xMidYMid meet"
+              opacity={p.traceOpacity}
+            />
+          )}
+
+          {/* Level below, as a faint reference */}
+          {ghostGeo && <path d={ghostGeo.pochePath} fill="none" stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="4 3" vectorEffect={NS} opacity={0.5} />}
+
+          {/* Rooms */}
+          <g opacity={wallsFaded}>
+            {level.rooms.map((r) => (
+              <polygon
+                key={r.id}
+                data-kind="room"
+                data-id={r.id}
+                points={pts(r.polygon)}
+                fill={mode === 'plan' ? ROOM_TINT[r.category] ?? '#F2F1ED' : '#F6F5F1'}
+                stroke="none"
+              />
+            ))}
+          </g>
+
+          {/* Structural grid */}
+          {mode === 'structure' && <Grid model={model} bounds={geo.bounds} k={k} />}
+
+          {/* Furniture & fixtures */}
+          {mode === 'plan' && (
+            <g stroke={INK_3} strokeWidth={WEIGHT.light} fill="none" vectorEffect={NS}>
+              {level.furniture.map((f) => (
+                <Furniture key={f.id} f={f} selected={sel === f.id} />
+              ))}
+            </g>
+          )}
+
+          {/* Stairs */}
+          <g opacity={wallsFaded}>
+            {level.stairs.map((s) => (
+              <Stair key={s.id} s={s} />
+            ))}
+          </g>
+
+          {/* Walls: one unioned poché */}
+          <g opacity={wallsFaded}>
+            {mode === 'structure' ? (
+              <path d={geo.pochePath} fill="#E4E1DA" stroke={INK_2} strokeWidth={WEIGHT.medium} vectorEffect={NS} fillRule="nonzero" />
+            ) : (
+              <path d={geo.pochePath} fill={INK} stroke={INK} strokeWidth={WEIGHT.cut} vectorEffect={NS} strokeLinejoin="miter" fillRule="nonzero" />
+            )}
+            {/* Invisible hit areas so each wall can still be picked */}
+            {[...geo.frames.values()].map((f) => {
+              const t = Math.max(f.wall.thickness / 2, 6 / k);
+              const q = [along(f, 0, -t), along(f, f.length, -t), along(f, f.length, t), along(f, 0, t)];
+              return <polygon key={f.wall.id} data-kind="wall" data-id={f.wall.id} points={pts(q)} fill="transparent" />;
+            })}
+          </g>
+
+          {/* Openings */}
+          <g opacity={wallsFaded}>
+            {symbols.map((s) => (
+              <g key={s.opening.id}>
+                <polygon data-kind="opening" data-id={s.opening.id} points={pts(s.hit)} fill="transparent" />
+                <g pointerEvents="none" vectorEffect={NS}>
+                  {s.lines.map(([a, b], i) => (
+                    <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={INK} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+                  ))}
+                  {s.leaves.map(([a, b], i) => (
+                    <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={INK} strokeWidth={WEIGHT.heavy} vectorEffect={NS} strokeLinecap="round" />
+                  ))}
+                  {s.arcs.map((d, i) => (
+                    <path key={i} d={d} fill="none" stroke={INK_2} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+                  ))}
+                </g>
+                {mode === 'plan' && s.opening.label && showText(TEXT.tag) && (
+                  <OpeningTag s={s} frame={geo.frames.get(s.opening.wallId)!} />
+                )}
+              </g>
+            ))}
+          </g>
+
+          {/* Columns */}
+          <g>
+            {level.columns.map((c) => (
+              <g key={c.id}>
+                {mode === 'structure' && (
+                  <rect
+                    x={c.position.x - c.footingSize / 2}
+                    y={c.position.y - c.footingSize / 2}
+                    width={c.footingSize}
+                    height={c.footingSize}
+                    fill="none"
+                    stroke={INK_3}
+                    strokeWidth={WEIGHT.hair}
+                    strokeDasharray="4 3"
+                    vectorEffect={NS}
+                  />
+                )}
+                <rect
+                  data-kind="column"
+                  data-id={c.id}
+                  x={c.position.x - c.width / 2}
+                  y={c.position.y - c.depth / 2}
+                  width={c.width}
+                  height={c.depth}
+                  fill={INK}
+                  stroke={INK}
+                  strokeWidth={WEIGHT.cut}
+                  vectorEffect={NS}
+                  opacity={mode === 'plan' ? 0.85 : 1}
+                />
+                {mode === 'structure' && showText(TEXT.tag) && (
+                  <text x={c.position.x + c.width / 2 + 0.12} y={c.position.y - c.depth / 2 - 0.08} fontSize={TEXT.tag} fill={INK_2} fontWeight={500}>
+                    {c.label}
+                  </text>
+                )}
+              </g>
+            ))}
+          </g>
+
+          {/* MEP */}
+          {mode === 'mep' && <Mep level={level} filter={mepFilter} selectedId={sel} k={k} />}
+
+          {/* Room tags: paper size when zoomed in, never smaller than readable on screen */}
+          {mode !== 'mep' &&
+            tags.map((t) => {
+              const scale = Math.min(1, Math.max(0.65, t.room_w / 2.6));
+              const nameSize = Math.max(TEXT.roomName * scale, 11 / k);
+              const areaSize = Math.max(TEXT.roomArea * scale, 9.5 / k);
+              const nameW = t.room.name.length * nameSize * 0.62;
+              if (nameW > t.room_w * 0.92) {
+                // Too small for a name: show the area only if that fits.
+                const areaW = 7 * areaSize * 0.55;
+                if (areaW > t.room_w) return null;
+                return (
+                  <text key={t.room.id} x={t.at.x} y={t.at.y + areaSize * 0.35} textAnchor="middle" fontSize={areaSize} fill={INK_3} pointerEvents="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {t.area.toFixed(1)} m²
+                  </text>
+                );
+              }
+              return (
+                <g key={t.room.id} pointerEvents="none" textAnchor="middle" stroke={ROOM_TINT[t.room.category] ?? PAPER} strokeWidth={3} strokeLinejoin="round" style={{ paintOrder: 'stroke' }}>
+                  <text x={t.at.x} y={t.at.y - nameSize * 0.1} fontSize={nameSize} fontWeight={600} fill={INK}>
+                    {t.room.name}
+                  </text>
+                  <text x={t.at.x} y={t.at.y + areaSize * 1.25} fontSize={areaSize} fill={INK_3} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {t.area.toFixed(1)} m²
+                  </text>
+                </g>
+              );
+            })}
+
+          {/* Dimensions */}
+          {chains.map((c) => (
+            <DimChainView key={c.side} c={c} k={k} />
+          ))}
+
+          {/* Section markers */}
+          {mode === 'plan' && model.sections.map((s) => <SectionMark key={s.id} s={s} k={k} />)}
+
+          {/* Selection */}
+          <Selection model={model} level={level} geoFrames={geo.frames} selectedId={sel} k={k} />
+
+          {/* Sketch strokes */}
+          <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+            {[...p.sketchStrokes, ...(sketchDrag ? [{ id: 'live', kind: 'wall' as const, points: sketchDrag.points }] : [])].map((s) => (
+              <polyline key={s.id} points={pts(s.points)} stroke={s.kind === 'door' ? MEP_COLOR.power : s.kind === 'window' ? MEP_COLOR.hvac : ACCENT} strokeWidth={2.2} vectorEffect={NS} opacity={0.85} />
+            ))}
+          </g>
+
+          {/* Tool previews */}
+          {p.tool === 'wall' && wallStart && hover && (
+            <g pointerEvents="none">
+              <line x1={wallStart.x} y1={wallStart.y} x2={hover.x} y2={hover.y} stroke={ACCENT} strokeWidth={0.23 * k} strokeOpacity={0.25} />
+              <line x1={wallStart.x} y1={wallStart.y} x2={hover.x} y2={hover.y} stroke={ACCENT} strokeWidth={1.5} vectorEffect={NS} />
+              <LengthLabel a={wallStart} b={hover} k={k} />
+            </g>
+          )}
+          {roomDrag && hover && (
+            <g pointerEvents="none">
+              <rect
+                x={Math.min(roomDrag.start.x, hover.x)}
+                y={Math.min(roomDrag.start.y, hover.y)}
+                width={Math.abs(hover.x - roomDrag.start.x)}
+                height={Math.abs(hover.y - roomDrag.start.y)}
+                fill="rgba(47,85,212,0.08)"
+                stroke={ACCENT}
+                strokeWidth={1.5}
+                vectorEffect={NS}
+              />
+              <LengthLabel a={roomDrag.start} b={{ x: hover.x, y: roomDrag.start.y }} k={k} />
+              <LengthLabel a={{ x: hover.x, y: roomDrag.start.y }} b={hover} k={k} />
+            </g>
+          )}
+          {openingPreview && (
+            <g pointerEvents="none" opacity={0.9}>
+              <polygon points={pts(openingPreview.hit)} fill="rgba(47,85,212,0.08)" />
+              {[...openingPreview.lines, ...openingPreview.leaves].map(([a, b], i) => (
+                <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={ACCENT} strokeWidth={1.2} vectorEffect={NS} />
+              ))}
+              {openingPreview.arcs.map((d, i) => (
+                <path key={i} d={d} fill="none" stroke={ACCENT} strokeWidth={0.8} vectorEffect={NS} />
+              ))}
+            </g>
+          )}
+          {p.tool === 'column' && hover && (
+            <rect x={hover.x - 0.15} y={hover.y - 0.15} width={0.3} height={0.3} fill={ACCENT} opacity={0.5} pointerEvents="none" />
+          )}
+          {measure && (measure.b || hover) && (
+            <g pointerEvents="none">
+              <line x1={measure.a.x} y1={measure.a.y} x2={(measure.b ?? hover)!.x} y2={(measure.b ?? hover)!.y} stroke={ACCENT} strokeWidth={1.5} strokeDasharray="5 3" vectorEffect={NS} />
+              <circle cx={measure.a.x} cy={measure.a.y} r={3 / k} fill={ACCENT} />
+              <circle cx={(measure.b ?? hover)!.x} cy={(measure.b ?? hover)!.y} r={3 / k} fill={ACCENT} />
+              <LengthLabel a={measure.a} b={(measure.b ?? hover)!} k={k} strong />
+            </g>
+          )}
+          {(p.tool === 'wall' || p.tool === 'measure' || p.tool === 'room_rect') && hover && (
+            <circle cx={hover.x} cy={hover.y} r={3.5 / k} fill="none" stroke={ACCENT} strokeWidth={1.5} vectorEffect={NS} pointerEvents="none" />
+          )}
+        </g>
+      </svg>
+
+      {/* Overlays */}
+      {mode === 'mep' && (
+        <div className="absolute left-3 top-3 flex gap-1 rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur">
+          {(['all', 'electrical', 'plumbing', 'hvac'] as MepFilter[]).map((f) => (
+            <button
+              key={f}
+              onClick={() => setMepFilter(f)}
+              className={cx('h-7 rounded-[8px] px-3 text-[13px] font-medium capitalize', mepFilter === f ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken')}
+            >
+              {f === 'hvac' ? 'HVAC' : f}
+            </button>
+          ))}
+        </div>
+      )}
+      <ToolHint tool={p.tool} wallStarted={!!wallStart} />
+      <div className="absolute bottom-[146px] right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
+        <ZoomBtn label="Zoom in" onClick={() => vp.zoomAt(1.25)}>
+          <Plus className="h-4 w-4" />
+        </ZoomBtn>
+        <ZoomBtn label="Zoom out" onClick={() => vp.zoomAt(0.8)}>
+          <Minus className="h-4 w-4" />
+        </ZoomBtn>
+        <ZoomBtn label="Fit drawing" onClick={vp.fit}>
+          <Maximize2 className="h-4 w-4" />
+        </ZoomBtn>
+      </div>
+      <ScaleAndNorth k={k} />
+    </div>
+  );
+}
+
+/* ── Pieces ────────────────────────────────────────────────────────── */
+
+function ZoomBtn({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button aria-label={label} title={label} onClick={onClick} className="flex h-9 w-9 items-center justify-center text-ink-2 hover:bg-sunken hover:text-ink">
+      {children}
+    </button>
+  );
+}
+
+const HINTS: Partial<Record<CADTool, [string, string]>> = {
+  wall: ['Click to start a wall', 'Click to place the next corner · double-click or Esc to finish'],
+  room_rect: ['Drag to draw a room', 'Drag to draw a room'],
+  door: ['Click a wall to place a door', ''],
+  window: ['Click a wall to place a window', ''],
+  column: ['Click to place a column', ''],
+  measure: ['Click two points to measure', ''],
+  sketch_wall: ['Sketch walls freehand, then Make walls', ''],
+};
+
+function ToolHint({ tool, wallStarted }: { tool: CADTool; wallStarted: boolean }) {
+  const h = HINTS[tool];
+  if (!h) return null;
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-3 hidden -translate-x-1/2 rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
+      {wallStarted && h[1] ? h[1] : h[0]}
+    </div>
+  );
+}
+
+function ScaleAndNorth({ k }: { k: number }) {
+  const steps = [0.5, 1, 2, 5, 10, 20, 50];
+  const L = steps.find((s) => s * k >= 70) ?? 50;
+  const px = L * k;
+  return (
+    <div className="pointer-events-none absolute bottom-[146px] left-3 flex items-end gap-4 lg:bottom-4">
+      <svg width={28} height={36} viewBox="0 0 28 36" aria-label="North">
+        <path d="M14 2 L22 26 L14 21 L6 26 Z" fill={INK} />
+        <text x={14} y={35} textAnchor="middle" fontSize={9} fontWeight={600} fill={INK_2}>
+          N
+        </text>
+      </svg>
+      <div>
+        <svg width={px + 2} height={8}>
+          <rect x={1} y={1} width={px / 2} height={5} fill={INK} />
+          <rect x={1 + px / 2} y={1} width={px / 2} height={5} fill="none" stroke={INK} strokeWidth={1} />
+        </svg>
+        <div className="mt-0.5 text-[10px] font-medium tabular-nums text-ink-2" style={{ width: px }}>
+          {L} m
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LengthLabel({ a, b, k, strong }: { a: Vec; b: Vec; k: number; strong?: boolean }) {
+  const d = Math.hypot(b.x - a.x, b.y - a.y);
+  if (d < 0.05) return null;
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  const s = 1 / k;
+  const label = `${d.toFixed(2)} m`;
+  const w = (label.length * 6.4 + 12) * s;
+  return (
+    <g transform={`translate(${mx} ${my - 14 * s})`}>
+      <rect x={-w / 2} y={-9 * s} width={w} height={18 * s} rx={9 * s} fill={strong ? ACCENT : INK} />
+      <text y={4 * s} textAnchor="middle" fontSize={11 * s} fontWeight={600} fill="#fff" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        {label}
+      </text>
+    </g>
+  );
+}
+
+function DimChainView({ c, k }: { c: ReturnType<typeof dimensionChains>[number]; k: number }) {
+  const horizontal = c.side === 'top' || c.side === 'bottom';
+  const P = (s: number, at: number): Vec => (horizontal ? { x: s, y: at } : { x: at, y: s });
+  const tick = 0.09;
+  const size = Math.max(TEXT.dim, 9.5 / k);
+  const textOff = c.side === 'top' || c.side === 'left' ? -size * 0.55 : size * 1.45;
+  const line = (a: Vec, b: Vec, key: string) => <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
+  const ticks = (at: number, prefix: string) =>
+    c.stops.map((s, i) => {
+      const q = P(s, at);
+      return <line key={`${prefix}${i}`} x1={q.x - tick} y1={q.y + tick} x2={q.x + tick} y2={q.y - tick} strokeWidth={WEIGHT.medium} />;
+    });
+  const label = (s0: number, s1: number, at: number, key: string) => {
+    const m = P((s0 + s1) / 2, at);
+    const len = s1 - s0;
+    if (len * k < fmtMM(len).length * size * 0.58 * k + 8) return null;
+    return horizontal ? (
+      <text key={key} x={m.x} y={m.y + textOff - (c.side === 'top' ? 0 : size * 0.6)} textAnchor="middle" fontSize={size} fill={INK_2} stroke="none">
+        {fmtMM(len)}
+      </text>
+    ) : (
+      <text
+        key={key}
+        x={m.x}
+        y={m.y}
+        transform={`rotate(-90 ${m.x} ${m.y}) translate(0 ${c.side === 'left' ? textOff : textOff - size * 0.6})`}
+        textAnchor="middle"
+        fontSize={size}
+        fill={INK_2}
+        stroke="none"
+      >
+        {fmtMM(len)}
+      </text>
+    );
+  };
+  const first = c.stops[0];
+  const last = c.stops[c.stops.length - 1];
+  return (
+    <g stroke={INK_2} strokeWidth={WEIGHT.hair} vectorEffect={NS} pointerEvents="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+      {c.stops.length > 2 && (
+        <>
+          {line(P(first, c.at), P(last, c.at), 'chain')}
+          {ticks(c.at, 'c')}
+          {c.stops.slice(1).map((s, i) => label(c.stops[i], s, c.at, `l${i}`))}
+        </>
+      )}
+      {line(P(first, c.overallAt), P(last, c.overallAt), 'overall')}
+      {[first, last].map((s, i) => {
+        const q = P(s, c.overallAt);
+        return <line key={`o${i}`} x1={q.x - tick} y1={q.y + tick} x2={q.x + tick} y2={q.y - tick} strokeWidth={WEIGHT.medium} />;
+      })}
+      {label(first, last, c.overallAt, 'ol')}
+    </g>
+  );
+}
+
+function Grid({ model, bounds, k }: { model: BuildingProject; bounds: { minX: number; minY: number; maxX: number; maxY: number }; k: number }) {
+  const ext = 1.6;
+  const r = 0.28;
+  const showText = TEXT.bubble * k >= 6;
+  return (
+    <g pointerEvents="none">
+      {model.grid.xAxes.map((a) => (
+        <g key={`x${a.label}`}>
+          <line x1={a.coord} y1={bounds.minY - ext} x2={a.coord} y2={bounds.maxY + ext} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="10 3 2 3" vectorEffect={NS} />
+          {[bounds.minY - ext - r, bounds.maxY + ext + r].map((y, i) => (
+            <g key={i}>
+              <circle cx={a.coord} cy={y} r={r} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+              {showText && (
+                <text x={a.coord} y={y + TEXT.bubble * 0.36} textAnchor="middle" fontSize={TEXT.bubble} fontWeight={600} fill={INK}>
+                  {a.label}
+                </text>
+              )}
+            </g>
+          ))}
+        </g>
+      ))}
+      {model.grid.yAxes.map((a) => (
+        <g key={`y${a.label}`}>
+          <line x1={bounds.minX - ext} y1={a.coord} x2={bounds.maxX + ext} y2={a.coord} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="10 3 2 3" vectorEffect={NS} />
+          {[bounds.minX - ext - r, bounds.maxX + ext + r].map((x, i) => (
+            <g key={i}>
+              <circle cx={x} cy={a.coord} r={r} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+              {showText && (
+                <text x={x} y={a.coord + TEXT.bubble * 0.36} textAnchor="middle" fontSize={TEXT.bubble} fontWeight={600} fill={INK}>
+                  {a.label}
+                </text>
+              )}
+            </g>
+          ))}
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function OpeningTag({ s, frame }: { s: ReturnType<typeof openingSymbol>; frame: ReturnType<typeof wallFrame> }) {
+  const o = s.opening;
+  const side = o.kind === 'door' ? -(o.swingDirection >= 0 ? 1 : -1) : 1;
+  const at = { x: s.center.x + frame.n.x * side * (frame.wall.thickness / 2 + 0.28), y: s.center.y + frame.n.y * side * (frame.wall.thickness / 2 + 0.28) };
+  const isDoor = o.kind === 'door';
+  return (
+    <g pointerEvents="none">
+      {isDoor ? (
+        <circle cx={at.x} cy={at.y} r={0.17} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.hair} vectorEffect={NS} />
+      ) : (
+        <rect x={at.x - 0.2} y={at.y - 0.13} width={0.4} height={0.26} rx={0.04} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.hair} vectorEffect={NS} />
+      )}
+      <text x={at.x} y={at.y + 0.055} textAnchor="middle" fontSize={0.14} fontWeight={600} fill={INK_2}>
+        {o.label}
+      </text>
+    </g>
+  );
+}
+
+function SectionMark({ s, k }: { s: BuildingProject['sections'][number]; k: number }) {
+  const dx = s.end.x - s.start.x;
+  const dy = s.end.y - s.start.y;
+  const L = Math.hypot(dx, dy) || 1;
+  const n = { x: -dy / L, y: dx / L };
+  const letter = s.label.split(/[-–]/)[0] || s.label;
+  const r = 0.3;
+  return (
+    <g pointerEvents="none">
+      <line x1={s.start.x} y1={s.start.y} x2={s.end.x} y2={s.end.y} stroke={INK_2} strokeWidth={WEIGHT.light} strokeDasharray="14 4 3 4" vectorEffect={NS} />
+      {[s.start, s.end].map((q, i) => (
+        <g key={i}>
+          <circle cx={q.x} cy={q.y} r={r} fill={INK} />
+          <path d={`M${q.x + n.x * r * 0.2} ${q.y + n.y * r * 0.2} L${q.x + n.x * r * 1.9} ${q.y + n.y * r * 1.9}`} stroke={INK} strokeWidth={WEIGHT.cut} vectorEffect={NS} />
+          {TEXT.bubble * k >= 6 && (
+            <text x={q.x} y={q.y + 0.09} textAnchor="middle" fontSize={0.24} fontWeight={700} fill="#fff">
+              {letter}
+            </text>
+          )}
+        </g>
+      ))}
+    </g>
+  );
+}
+
+function Stair({ s }: { s: FloorLevel['stairs'][number] }) {
+  const along = s.direction === 'N' || s.direction === 'S';
+  const w = along ? s.width : s.length;
+  const h = along ? s.length : s.width;
+  const n = Math.max(2, s.risers);
+  const lines: [number, number, number, number][] = [];
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    if (along) lines.push([s.origin.x, s.origin.y + h * t, s.origin.x + w, s.origin.y + h * t]);
+    else lines.push([s.origin.x + w * t, s.origin.y, s.origin.x + w * t, s.origin.y + h]);
+  }
+  const cx0 = s.origin.x + w / 2;
+  const cy0 = s.origin.y + h / 2;
+  const arrow =
+    s.direction === 'N'
+      ? `M${cx0} ${s.origin.y + h - 0.2} L${cx0} ${s.origin.y + 0.25}`
+      : s.direction === 'S'
+        ? `M${cx0} ${s.origin.y + 0.2} L${cx0} ${s.origin.y + h - 0.25}`
+        : s.direction === 'E'
+          ? `M${s.origin.x + 0.2} ${cy0} L${s.origin.x + w - 0.25} ${cy0}`
+          : `M${s.origin.x + w - 0.2} ${cy0} L${s.origin.x + 0.25} ${cy0}`;
+  return (
+    <g pointerEvents="none" stroke={INK_2} fill="none" vectorEffect={NS}>
+      <rect x={s.origin.x} y={s.origin.y} width={w} height={h} fill="#fff" strokeWidth={WEIGHT.medium} vectorEffect={NS} />
+      {lines.map(([a, b, c, d], i) => (
+        <line key={i} x1={a} y1={b} x2={c} y2={d} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+      ))}
+      <path d={arrow} strokeWidth={WEIGHT.medium} vectorEffect={NS} markerEnd="" />
+    </g>
+  );
+}
+
+function Furniture({ f, selected }: { f: FurnitureItem; selected: boolean }) {
+  const w = f.width;
+  const d = f.depth;
+  const x = -w / 2;
+  const y = -d / 2;
+  let body: React.ReactNode;
+  switch (f.type) {
+    case 'bed_double':
+    case 'bed_single':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} rx={0.05} />
+          {f.type === 'bed_double' ? (
+            <>
+              <rect x={x + 0.1} y={y + 0.08} width={w / 2 - 0.15} height={0.32} rx={0.06} />
+              <rect x={0.05} y={y + 0.08} width={w / 2 - 0.15} height={0.32} rx={0.06} />
+            </>
+          ) : (
+            <rect x={x + 0.1} y={y + 0.08} width={w - 0.2} height={0.32} rx={0.06} />
+          )}
+          <line x1={x} y1={y + d * 0.38} x2={x + w} y2={y + d * 0.38} />
+        </>
+      );
+      break;
+    case 'sofa':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} rx={0.08} />
+          <line x1={x + 0.15} y1={y + 0.2} x2={x + w - 0.15} y2={y + 0.2} />
+          <line x1={x + 0.15} y1={y + 0.2} x2={x + 0.15} y2={y + d} />
+          <line x1={x + w - 0.15} y1={y + 0.2} x2={x + w - 0.15} y2={y + d} />
+        </>
+      );
+      break;
+    case 'dining_table':
+      body = (
+        <>
+          <rect x={x + 0.25} y={y + 0.25} width={w - 0.5} height={d - 0.5} rx={0.04} />
+          {[0.3, 0.7].map((t) => (
+            <g key={t}>
+              <rect x={x + (w - 0.5) * t + 0.05} y={y} width={0.4} height={0.2} rx={0.04} />
+              <rect x={x + (w - 0.5) * t + 0.05} y={y + d - 0.2} width={0.4} height={0.2} rx={0.04} />
+            </g>
+          ))}
+        </>
+      );
+      break;
+    case 'wc':
+      body = (
+        <>
+          <rect x={x + w * 0.15} y={y} width={w * 0.7} height={d * 0.28} rx={0.03} />
+          <ellipse cx={0} cy={y + d * 0.62} rx={w * 0.32} ry={d * 0.34} />
+        </>
+      );
+      break;
+    case 'sink':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} rx={0.04} />
+          <ellipse cx={0} cy={0.02} rx={w * 0.32} ry={d * 0.3} />
+        </>
+      );
+      break;
+    case 'shower':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} />
+          <line x1={x} y1={y} x2={x + w} y2={y + d} />
+          <line x1={x + w} y1={y} x2={x} y2={y + d} />
+          <circle cx={0} cy={0} r={0.05} />
+        </>
+      );
+      break;
+    case 'car':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} rx={0.35} strokeDasharray="6 4" />
+        </>
+      );
+      break;
+    case 'kitchen_counter':
+      body = (
+        <>
+          <rect x={x} y={y} width={w} height={d} />
+          <rect x={-0.3} y={y + 0.08} width={0.45} height={d - 0.16} rx={0.04} />
+          {[0.25, 0.4].map((t) => (
+            <circle key={t} cx={x + w * (0.75 + (t - 0.25))} cy={0} r={0.09} />
+          ))}
+        </>
+      );
+      break;
+    default:
+      body = <rect x={x} y={y} width={w} height={d} rx={0.04} />;
+  }
+  return (
+    <g data-kind="furniture" data-id={f.id} transform={`translate(${f.position.x} ${f.position.y}) rotate(${f.rotation})`} stroke={selected ? ACCENT : undefined}>
+      <rect x={x} y={y} width={w} height={d} fill="transparent" stroke="none" />
+      <g vectorEffect={NS} style={{ vectorEffect: 'non-scaling-stroke' }}>
+        {body}
+      </g>
+    </g>
+  );
+}
+
+const MEP_GLYPH: Partial<Record<MEPNode['kind'], { letter: string; color: string; group: MepFilter }>> = {
+  mdb: { letter: 'DB', color: MEP_COLOR.power, group: 'electrical' },
+  sub_db: { letter: 'SDB', color: MEP_COLOR.power, group: 'electrical' },
+  utility_meter: { letter: 'M', color: MEP_COLOR.power, group: 'electrical' },
+  light_ceiling: { letter: '', color: MEP_COLOR.lighting, group: 'electrical' },
+  switch_1g: { letter: 'S', color: MEP_COLOR.lighting, group: 'electrical' },
+  outlet_duplex: { letter: '', color: MEP_COLOR.power, group: 'electrical' },
+  ac_split: { letter: 'AC', color: MEP_COLOR.hvac, group: 'hvac' },
+  ac_condenser: { letter: 'CU', color: MEP_COLOR.hvac, group: 'hvac' },
+  ceiling_fan: { letter: 'F', color: MEP_COLOR.hvac, group: 'hvac' },
+  water_main: { letter: 'WM', color: MEP_COLOR.plumbingCold, group: 'plumbing' },
+  water_heater: { letter: 'WH', color: MEP_COLOR.plumbingHot, group: 'plumbing' },
+  plumb_wc: { letter: 'WC', color: MEP_COLOR.drain, group: 'plumbing' },
+  plumb_basin: { letter: 'B', color: MEP_COLOR.plumbingCold, group: 'plumbing' },
+  plumb_sink: { letter: 'K', color: MEP_COLOR.plumbingCold, group: 'plumbing' },
+  plumb_shower: { letter: 'SH', color: MEP_COLOR.plumbingCold, group: 'plumbing' },
+  floor_trap: { letter: 'FT', color: MEP_COLOR.drain, group: 'plumbing' },
+  solar_pv: { letter: 'PV', color: MEP_COLOR.solar, group: 'electrical' },
+  solar_inv: { letter: 'INV', color: MEP_COLOR.solar, group: 'electrical' },
+  solar_bess: { letter: 'BAT', color: MEP_COLOR.solar, group: 'electrical' },
+};
+
+const CIRCUIT_COLOR: Record<string, { color: string; group: MepFilter; dash?: string }> = {
+  electrical_grid: { color: MEP_COLOR.power, group: 'electrical' },
+  electrical_submain: { color: MEP_COLOR.power, group: 'electrical' },
+  electrical_light: { color: MEP_COLOR.lighting, group: 'electrical', dash: '5 3' },
+  electrical_power: { color: MEP_COLOR.power, group: 'electrical' },
+  electrical_hvac: { color: MEP_COLOR.hvac, group: 'electrical', dash: '2 3' },
+  electrical_pv: { color: MEP_COLOR.solar, group: 'electrical' },
+  hvac_refrigerant: { color: MEP_COLOR.hvac, group: 'hvac' },
+  hvac_condensate: { color: MEP_COLOR.hvac, group: 'hvac', dash: '3 3' },
+  plumbing_cold: { color: MEP_COLOR.plumbingCold, group: 'plumbing' },
+  plumbing_hot: { color: MEP_COLOR.plumbingHot, group: 'plumbing' },
+  plumbing_drain: { color: MEP_COLOR.drain, group: 'plumbing', dash: '8 3' },
+};
+
+/**
+ * Drafting convention: wiring between devices is drawn as gentle arcs (it is concealed and
+ * routed on site), while pipework is drawn orthogonally along its real run.
+ */
+function circuitPath(system: string, p: Point2D[]): string {
+  let d = `M${p[0].x} ${p[0].y}`;
+  const piped = system.startsWith('plumbing') || system === 'hvac_refrigerant' || system === 'hvac_condensate';
+  for (let i = 1; i < p.length; i++) {
+    const a = p[i - 1];
+    const b = p[i];
+    if (piped) {
+      d += Math.abs(b.x - a.x) > 0.02 && Math.abs(b.y - a.y) > 0.02 ? `L${b.x} ${a.y}L${b.x} ${b.y}` : `L${b.x} ${b.y}`;
+    } else {
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      const bulge = Math.min(0.6, L * 0.18);
+      const nx = -(b.y - a.y) / (L || 1);
+      const ny = (b.x - a.x) / (L || 1);
+      d += `Q${mx + nx * bulge} ${my + ny * bulge} ${b.x} ${b.y}`;
+    }
+  }
+  return d;
+}
+
+function Mep({ level, filter, selectedId, k }: { level: FloorLevel; filter: MepFilter; selectedId: string | null; k: number }) {
+  const show = (g: MepFilter) => filter === 'all' || filter === g;
+  const r = Math.max(0.14, 9 / k);
+  return (
+    <g>
+      <g fill="none" strokeLinejoin="round" strokeLinecap="round" pointerEvents="none">
+        {level.mepCircuits.map((c) => {
+          const s = CIRCUIT_COLOR[c.system] ?? { color: INK_3, group: 'electrical' as MepFilter };
+          if (!show(s.group) || c.points.length < 2 || c.system === 'electrical_grid' || c.system === 'electrical_pv') return null;
+          return <path key={c.id} d={circuitPath(c.system, c.points)} stroke={s.color} strokeWidth={1.3} strokeDasharray={s.dash} vectorEffect={NS} opacity={0.85} />;
+        })}
+      </g>
+      {level.mepNodes.map((n) => {
+        const g = MEP_GLYPH[n.kind] ?? { letter: '•', color: INK_2, group: (n.system === 'plumbing' ? 'plumbing' : 'electrical') as MepFilter };
+        if (!show(g.group)) return null;
+        const sel = n.id === selectedId;
+        const isLight = n.kind === 'light_ceiling';
+        const isOutlet = n.kind === 'outlet_duplex';
+        return (
+          <g key={n.id} data-kind="mep_node" data-id={n.id} transform={`translate(${n.position.x} ${n.position.y})`}>
+            {isLight ? (
+              <g stroke={g.color} strokeWidth={1.2} vectorEffect={NS}>
+                <circle r={r * 0.9} fill="#fff" vectorEffect={NS} />
+                <line x1={-r * 0.64} y1={-r * 0.64} x2={r * 0.64} y2={r * 0.64} vectorEffect={NS} />
+                <line x1={r * 0.64} y1={-r * 0.64} x2={-r * 0.64} y2={r * 0.64} vectorEffect={NS} />
+              </g>
+            ) : isOutlet ? (
+              <g stroke={g.color} strokeWidth={1.2} vectorEffect={NS}>
+                <path d={`M${-r * 0.8} 0 A${r * 0.8} ${r * 0.8} 0 0 1 ${r * 0.8} 0 Z`} fill="#fff" vectorEffect={NS} />
+                <line x1={-r * 0.3} y1={-r * 0.3} x2={-r * 0.3} y2={-r * 0.05} vectorEffect={NS} />
+                <line x1={r * 0.3} y1={-r * 0.3} x2={r * 0.3} y2={-r * 0.05} vectorEffect={NS} />
+              </g>
+            ) : (
+              <>
+                <rect x={-r * 1.3} y={-r * 0.85} width={r * 2.6} height={r * 1.7} rx={r * 0.35} fill={g.color} />
+                <text y={r * 0.33} textAnchor="middle" fontSize={r * (g.letter.length > 2 ? 0.75 : 0.95)} fontWeight={700} fill="#fff">
+                  {g.letter}
+                </text>
+              </>
+            )}
+            {sel && <circle r={r * 1.8} fill="none" stroke={ACCENT} strokeWidth={2} vectorEffect={NS} />}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function Selection({
+  level,
+  geoFrames,
+  selectedId,
+  k,
+}: {
+  model: BuildingProject;
+  level: FloorLevel;
+  geoFrames: Map<string, ReturnType<typeof wallFrame>>;
+  selectedId: string | null;
+  k: number;
+}) {
+  if (!selectedId) return null;
+  const S = { fill: 'none', stroke: ACCENT, strokeWidth: 2, vectorEffect: NS, pointerEvents: 'none' as const };
+  const handle = (q: Vec, key: string) => <rect key={key} x={q.x - 4 / k} y={q.y - 4 / k} width={8 / k} height={8 / k} fill="#fff" stroke={ACCENT} strokeWidth={1.5} vectorEffect={NS} pointerEvents="none" />;
+
+  const wf = geoFrames.get(selectedId);
+  if (wf) {
+    const t = wf.wall.thickness / 2;
+    const q = [along(wf, -t, -t), along(wf, wf.length + t, -t), along(wf, wf.length + t, t), along(wf, -t, t)];
+    return (
+      <g>
+        <polygon points={pts(q)} {...S} />
+        {handle(wf.wall.start, 'a')}
+        {handle(wf.wall.end, 'b')}
+        <LengthLabel a={wf.wall.start} b={wf.wall.end} k={k} strong />
+      </g>
+    );
+  }
+  const room = level.rooms.find((r) => r.id === selectedId);
+  if (room) return <polygon points={pts(room.polygon)} {...S} fill="rgba(47,85,212,0.07)" />;
+  const op = level.openings.find((o) => o.id === selectedId);
+  if (op) {
+    const f = geoFrames.get(op.wallId);
+    if (f) return <polygon points={pts(openingSymbol(f, op).hit)} {...S} />;
+  }
+  const col = level.columns.find((c) => c.id === selectedId);
+  if (col) return <rect x={col.position.x - col.width / 2 - 0.06} y={col.position.y - col.depth / 2 - 0.06} width={col.width + 0.12} height={col.depth + 0.12} {...S} />;
+  const fur = level.furniture.find((f) => f.id === selectedId);
+  if (fur)
+    return (
+      <g transform={`translate(${fur.position.x} ${fur.position.y}) rotate(${fur.rotation})`}>
+        <rect x={-fur.width / 2 - 0.05} y={-fur.depth / 2 - 0.05} width={fur.width + 0.1} height={fur.depth + 0.1} rx={0.04} {...S} strokeDasharray="5 3" />
+      </g>
+    );
+  return null;
+}
