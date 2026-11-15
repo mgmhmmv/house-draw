@@ -21,6 +21,9 @@ import {
   type FloorLevel,
   type WallMaterial,
   type WindowFrameFinish,
+  getRoofStructure,
+  ROOF_STRUCTURE_META,
+  type RoofStructureSystem,
 } from '../../model/types';
 import { computeTotalFloorArea, polygonArea, uid, wallLength } from '../../engine/geometry';
 import { mepAsset } from '../drawing/assets/render';
@@ -494,6 +497,7 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete, on
 
 function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; edit: (fn: (m: BuildingProject) => void) => void; focusSolar: boolean }) {
   const design = getDesignConfig(model);
+  const roofStructure = getRoofStructure(model.roof);
   const hvac = getHVACConfig(model);
   const solar = getSolarConfig(model);
   const rooms = model.levels.flatMap((l) => l.rooms);
@@ -531,6 +535,24 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
         <Row label="Covering">
           <Choice value={model.roof.material} options={ROOF_MATERIAL_OPTIONS.map((o) => ({ value: o.id, label: o.label }))} onChange={(v) => edit((m) => (m.roof.material = v))} />
         </Row>
+        {model.roof.type !== 'flat' && (
+          <>
+            <Row label="Structure">
+              <Choice
+                value={roofStructure.system}
+                options={(Object.keys(ROOF_STRUCTURE_META) as RoofStructureSystem[]).map((k) => ({ value: k, label: ROOF_STRUCTURE_META[k].label }))}
+                onChange={(v) => edit((m) => (m.roof.structure = { system: v }))}
+              />
+            </Row>
+            <Row label={ROOF_STRUCTURE_META[roofStructure.system].kind === 'truss' ? 'Truss spacing' : 'Rafter spacing'}>
+              <Num value={roofStructure.spacing} unit="m" step={0.05} min={0.3} max={2.4} onChange={(v) => edit((m) => (m.roof.structure = { ...roofStructure, spacing: v }))} />
+            </Row>
+            <Row label="Purlin spacing">
+              <Num value={roofStructure.purlinSpacing} unit="m" step={0.05} min={0.2} max={2} onChange={(v) => edit((m) => (m.roof.structure = { ...roofStructure, purlinSpacing: v }))} />
+            </Row>
+            <p className="px-4 pb-3 text-2xs leading-relaxed text-ink-3">{ROOF_STRUCTURE_META[roofStructure.system].spec}.</p>
+          </>
+        )}
       </Section>
 
       <RainwaterSection model={model} edit={edit} />

@@ -10,6 +10,7 @@ import {
 } from '../model/types';
 import { levelBoundingBox, openingWorldCenter, polygonArea, polygonPerimeter, wallLength } from './geometry';
 import { computeHVACReport } from './mepEngine';
+import { framingQuantities, roofFraming } from '../app/drawing/model3d/framing';
 
 export interface BOQLineItem {
   code: string;
@@ -218,28 +219,38 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
     concrete_slab: 1.1,
   };
   const roofCladRate = Number((r.roofCladdingPerM2 * (roofMatMultipliers[project.roof.material] ?? 1.0)).toFixed(2));
-  add(
-    '03.01',
-    '03 Roofing',
-    project.roof.type === 'flat' ? 'RC Flat Roof Slab Insulation & Screed' : `Roof Timber/Steel Truss Framing (${project.roof.type.toUpperCase()} ${project.roof.pitchDeg}°)`,
-    'm²',
-    slopedRoofArea,
-    r.roofStructurePerM2
-  );
-  add('03.02', '03 Roofing', `Roof Cladding (${project.roof.material.replace(/_/g, ' ')}) & Waterproofing`, 'm²', slopedRoofArea, roofCladRate);
+  const framing = roofFraming(project);
+  if (!framing) {
+    add('03.01', '03 Roofing', 'RC Flat Roof Slab Insulation & Screed', 'm²', slopedRoofArea, r.roofStructurePerM2);
+  } else {
+    // Measured from the framing the drawings show: members, purlins, erection, fixings.
+    const fq = framingQuantities(framing);
+    const fm = framing.meta;
+    const timberRate = r.roofTimberPerM3 ?? 980;
+    const steelRate = r.roofSteelPerKg ?? 4.2;
+    const what = fm.kind === 'truss' ? `${fq.trusses} trusses` : `${fq.rafters} rafters, ridge${project.roof.type === 'hip' ? ', hips' : ''} & ceiling joists`;
+    if (fm.material === 'timber')
+      add('03.01', '03 Roofing', `Roof structure, ${fm.label.toLowerCase()}: ${what} at ${Math.round(framing.spacing * 1000)} c/c (${fm.chord.name}) + ${fm.plate.name}`, 'm³', fq.timberM3, timberRate);
+    else add('03.01', '03 Roofing', `Roof structure, ${fm.label.toLowerCase()}: ${what} at ${Math.round(framing.spacing * 1000)} c/c (${fm.chord.name}) + ${fm.plate.name}`, 'kg', fq.steelKg, steelRate);
+    const purlinRate = fm.material === 'timber' ? fm.purlin.w * fm.purlin.d * 1.1 * timberRate : (fm.purlin.kgPerM ?? 1) * 1.05 * steelRate;
+    add('03.02', '03 Roofing', `Purlins / battens: ${fm.purlin.name} at ${Math.round(framing.purlinSpacing * 1000)} c/c`, 'lm', fq.purlinLm, Number(purlinRate.toFixed(2)));
+    add('03.03', '03 Roofing', fm.kind === 'truss' ? 'Truss fabrication, hoisting, bracing & erection' : 'Rafter cutting, fixing & roof bracing', 'nr', fm.kind === 'truss' ? fq.trusses : fq.rafters, r.roofErectPerNr ?? (fm.kind === 'truss' ? 45 : 14));
+    add('03.04', '03 Roofing', fm.material === 'timber' ? 'Hurricane straps, truss clips & galvanised fixings' : 'Cyclone brackets, tek screws & hold-down bolts', 'nr', fq.connectors, r.roofConnectorPerNr ?? 6.5);
+  }
+  add('03.05', '03 Roofing', `Roof Cladding (${project.roof.material.replace(/_/g, ' ')}) & Waterproofing`, 'm²', slopedRoofArea, roofCladRate);
   const drainage = getRoofDrainageConfig(project.roof);
   if (drainage.gutterEnabled) {
     const gutterMeta = GUTTER_PROFILE_META[drainage.gutterProfile];
     const collectMeta = WATER_COLLECTION_META[drainage.waterCollectionMode];
     const rwpLen = drainage.downpipeCount * Math.max(3.2, project.levels.length * 3.1);
-    add('03.03', '03 Roofing', `${gutterMeta.label} + Brackets & ${drainage.downpipeCount}× Ø100 RWP Downpipes`, 'lm', gutterLen + rwpLen, gutterMeta.ratePerM);
+    add('03.06', '03 Roofing', `${gutterMeta.label} + Brackets & ${drainage.downpipeCount}× Ø100 RWP Downpipes`, 'lm', gutterLen + rwpLen, gutterMeta.ratePerM);
     const tankPremium =
       drainage.waterCollectionMode === 'harvesting_tank' || drainage.waterCollectionMode === 'underground_cistern'
         ? Math.round(drainage.harvestingTankLiters * 0.22)
         : 0;
     const diverterCost = drainage.firstFlushDiverter ? 185 : 0;
     add(
-      '03.04',
+      '03.07',
       '03 Roofing',
       `${collectMeta.label}${drainage.waterCollectionMode === 'harvesting_tank' || drainage.waterCollectionMode === 'underground_cistern' ? ` (${drainage.harvestingTankLiters.toLocaleString()}L)` : ''}${drainage.firstFlushDiverter ? ' + First-Flush Diverter' : ''}`,
       'sys',

@@ -407,6 +407,109 @@ export interface RoofConfig {
   waterCollectionMode?: WaterCollectionMode;
   harvestingTankLiters?: number;
   firstFlushDiverter?: boolean;
+  /** What carries the covering: trusses or rafters, timber or steel, with their spacings. */
+  structure?: Partial<RoofStructureConfig>;
+}
+
+/* ── Roof structure ────────────────────────────────────────────────── */
+
+export type RoofStructureSystem = 'timber_truss' | 'steel_truss' | 'timber_rafter' | 'steel_rafter';
+
+export interface RoofStructureConfig {
+  system: RoofStructureSystem;
+  /** Trusses or rafters, centre to centre (m). */
+  spacing: number;
+  /** Purlins or battens across them, centre to centre along the slope (m). */
+  purlinSpacing: number;
+}
+
+/** A framing member's section: width × depth (m), and weight per metre for steel. */
+export interface MemberSection {
+  name: string;
+  w: number;
+  d: number;
+  kgPerM?: number;
+}
+
+export interface RoofStructureMeta {
+  label: string;
+  material: 'timber' | 'steel';
+  kind: 'truss' | 'rafter';
+  spacing: number;
+  purlinSpacing: number;
+  chord: MemberSection;
+  web: MemberSection;
+  purlin: MemberSection;
+  plate: MemberSection;
+  ridge: MemberSection;
+  joist: MemberSection;
+  /** One line for drawings and the BOQ. */
+  spec: string;
+}
+
+export const ROOF_STRUCTURE_META: Record<RoofStructureSystem, RoofStructureMeta> = {
+  timber_truss: {
+    label: 'Timber trusses',
+    material: 'timber',
+    kind: 'truss',
+    spacing: 0.9,
+    purlinSpacing: 0.9,
+    chord: { name: '38×114 treated pine', w: 0.038, d: 0.114 },
+    web: { name: '38×89 treated pine', w: 0.038, d: 0.089 },
+    purlin: { name: '50×75 treated timber purlin', w: 0.05, d: 0.075 },
+    plate: { name: '100×75 treated wall plate', w: 0.1, d: 0.075 },
+    ridge: { name: '38×114 treated pine', w: 0.038, d: 0.114 },
+    joist: { name: '38×114 bottom chord', w: 0.038, d: 0.114 },
+    spec: 'Prefabricated treated timber trusses, nail-plated, on 100×75 wall plate with hurricane straps',
+  },
+  steel_truss: {
+    label: 'Light-gauge steel trusses',
+    material: 'steel',
+    kind: 'truss',
+    spacing: 1.2,
+    purlinSpacing: 0.9,
+    chord: { name: 'C89 LGS, 0.95 mm', w: 0.041, d: 0.089, kgPerM: 1.25 },
+    web: { name: 'C89 LGS, 0.75 mm', w: 0.041, d: 0.089, kgPerM: 1.0 },
+    purlin: { name: 'Top-hat batten 40 mm, 0.75 mm', w: 0.06, d: 0.04, kgPerM: 0.6 },
+    plate: { name: 'C89 LGS track', w: 0.089, d: 0.041, kgPerM: 1.1 },
+    ridge: { name: 'C89 LGS', w: 0.041, d: 0.089, kgPerM: 1.25 },
+    joist: { name: 'C89 bottom chord', w: 0.041, d: 0.089, kgPerM: 1.25 },
+    spec: 'Galvanised light-gauge steel (G550 AZ150) trusses, screw-fixed, on track plate with cyclone brackets',
+  },
+  timber_rafter: {
+    label: 'Timber rafters & purlins',
+    material: 'timber',
+    kind: 'rafter',
+    spacing: 0.6,
+    purlinSpacing: 0.9,
+    chord: { name: '50×150 treated rafter', w: 0.05, d: 0.15 },
+    web: { name: '50×100 collar tie', w: 0.05, d: 0.1 },
+    purlin: { name: '50×75 treated purlin', w: 0.05, d: 0.075 },
+    plate: { name: '100×75 treated wall plate', w: 0.1, d: 0.075 },
+    ridge: { name: '32×200 ridge board', w: 0.032, d: 0.2 },
+    joist: { name: '50×100 ceiling joist', w: 0.05, d: 0.1 },
+    spec: 'Cut timber roof: treated rafters birdsmouthed on wall plate, ridge board, ceiling joists, purlins',
+  },
+  steel_rafter: {
+    label: 'Steel rafters & Z-purlins',
+    material: 'steel',
+    kind: 'rafter',
+    spacing: 1.5,
+    purlinSpacing: 1.0,
+    chord: { name: 'C150 rafter, 2.0 mm', w: 0.065, d: 0.15, kgPerM: 4.5 },
+    web: { name: 'C100 tie, 1.5 mm', w: 0.05, d: 0.1, kgPerM: 2.4 },
+    purlin: { name: 'Z100 purlin, 1.5 mm', w: 0.05, d: 0.1, kgPerM: 2.5 },
+    plate: { name: '75×75×6 angle plate', w: 0.075, d: 0.075, kgPerM: 6.8 },
+    ridge: { name: 'C150 ridge, 2.0 mm', w: 0.065, d: 0.15, kgPerM: 4.5 },
+    joist: { name: 'C90 ceiling batten', w: 0.04, d: 0.09, kgPerM: 1.0 },
+    spec: 'Galvanised cold-formed steel rafters and Z-purlins, bolted to cast-in plates, primed and painted',
+  },
+};
+
+export function getRoofStructure(roof: RoofConfig): RoofStructureConfig {
+  const system = roof.structure?.system ?? 'steel_truss';
+  const meta = ROOF_STRUCTURE_META[system];
+  return { system, spacing: roof.structure?.spacing ?? meta.spacing, purlinSpacing: roof.structure?.purlinSpacing ?? meta.purlinSpacing };
 }
 
 export function getRoofDrainageConfig(roof: RoofConfig): RoofDrainageConfig {
@@ -458,6 +561,11 @@ export interface BOQRateConfig {
   tileFloorPerM2: number;
   hardwoodFloorPerM2: number;
   roofStructurePerM2: number;
+  /** Roof framing (measured): treated timber supplied and fixed (per m³), cold-formed steel (per kg), erection per truss/rafter, each connector. */
+  roofTimberPerM3?: number;
+  roofSteelPerKg?: number;
+  roofErectPerNr?: number;
+  roofConnectorPerNr?: number;
   roofCladdingPerM2: number;
   doorUnit: number;
   windowPerM2: number;

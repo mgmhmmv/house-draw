@@ -7,6 +7,7 @@
 import { useMemo } from 'react';
 import type { BuildingProject, FloorLevel } from '../../../model/types';
 import { buildFrame } from '../model3d/faces';
+import { roofFraming } from '../model3d/framing';
 import { buildPlanGeometry, fmtMM } from './kernel';
 import { INK, INK_2, INK_3, MEP_COLOR, WEIGHT } from '../style';
 
@@ -19,6 +20,7 @@ const lvl = (z: number) => `${z > 0.0005 ? '+' : z < -0.0005 ? '' : '±'}${z.toF
 
 export function RoofPlan({ model, k }: { model: BuildingProject; k: number }) {
   const frame = useMemo(() => buildFrame(model), [model]);
+  const framing = useMemo(() => roofFraming(model), [model]);
   const top = model.levels[model.levels.length - 1];
   const walls = useMemo(() => buildPlanGeometry(top, top.walls.filter((w) => w.isExterior)), [top]);
   const fs = (size: number, px: number) => Math.max(size, px / k);
@@ -70,6 +72,33 @@ export function RoofPlan({ model, k }: { model: BuildingProject; k: number }) {
       {frame.ridgeEdges.map(([a, c], i) => (
         <line key={i} x1={a.x} y1={a.y} x2={c.x} y2={c.y} stroke={INK} strokeWidth={WEIGHT.cut} vectorEffect={NS} />
       ))}
+
+      {/* Roof structure under the covering, dashed: trusses with their marks, or rafters */}
+      {framing && (
+        <g pointerEvents="none">
+          {framing.meta.kind === 'truss'
+            ? framing.marks.map((m, i) => (
+                <g key={i}>
+                  <line x1={m.a.x} y1={m.a.y} x2={m.b.x} y2={m.b.y} stroke={INK_2} strokeWidth={WEIGHT.hair} strokeDasharray="6 2 1 2" vectorEffect={NS} />
+                  {(i === 0 || i === framing.marks.length - 1 || i % 2 === 0) && (
+                    <text
+                      x={m.a.x + (m.a.x === m.b.x ? 0 : -0.35)}
+                      y={m.a.y + (m.a.y === m.b.y ? 0 : -0.35)}
+                      fontSize={tSmall * 0.9}
+                      fill={INK_2}
+                      fontWeight={600}
+                      textAnchor="middle"
+                    >
+                      {m.tag}
+                    </text>
+                  )}
+                </g>
+              ))
+            : framing.members
+                .filter((m) => m.kind === 'rafter')
+                .map((m, i) => <line key={i} x1={m.a.x} y1={m.a.y} x2={m.b.x} y2={m.b.y} stroke={INK_2} strokeWidth={WEIGHT.hair} strokeDasharray="6 2 1 2" vectorEffect={NS} />)}
+        </g>
+      )}
 
       {/* Solar panels */}
       {solar.map((f, i) => (
@@ -150,6 +179,14 @@ export function RoofPlan({ model, k }: { model: BuildingProject; k: number }) {
         <text x={b.minX} y={dimY + 0.9 + tNote * 1.5}>{`OVERHANG ${fmtMM(model.roof.overhang)} BEYOND WALLS · EXTERNAL WALLS BELOW SHOWN DASHED`}</text>
         {frame.notes.gutter && <text x={b.minX} y={dimY + 0.9 + tNote * 3}>{frame.notes.gutter.toUpperCase()}</text>}
         {frame.notes.solar && <text x={b.minX} y={dimY + 0.9 + tNote * (frame.notes.gutter ? 4.5 : 3)}>{frame.notes.solar.toUpperCase()}</text>}
+        {framing && (
+          <text x={b.minX} y={dimY + 0.9 + tNote * (1.5 + (frame.notes.gutter ? 1.5 : 0) + (frame.notes.solar ? 1.5 : 0) + 1.5)}>
+            {(framing.meta.kind === 'truss'
+              ? `${framing.meta.label}: T1–T${framing.trussCount} at ${Math.round(framing.spacing * 1000)} c/c, ${framing.meta.chord.name}; ${framing.meta.purlin.name} at ${Math.round(framing.purlinSpacing * 1000)} c/c`
+              : `${framing.meta.label}: ${framing.meta.chord.name} at ${Math.round(framing.spacing * 1000)} c/c; ${framing.meta.purlin.name} at ${Math.round(framing.purlinSpacing * 1000)} c/c`
+            ).toUpperCase()}
+          </text>
+        )}
       </g>
     </g>
   );
@@ -158,7 +195,7 @@ export function RoofPlan({ model, k }: { model: BuildingProject; k: number }) {
 /** Extents a roof plan draws (for fitting it on paper). */
 export function roofPlanBounds(model: BuildingProject) {
   const b = buildFrame(model).bounds;
-  return { minX: b.minX - 0.8, minY: b.minY - 0.8, maxX: b.maxX + 2.2, maxY: b.maxY + 2.8 };
+  return { minX: b.minX - 0.8, minY: b.minY - 1.2, maxX: b.maxX + 2.2, maxY: b.maxY + 3.6 };
 }
 
 function Dim({ a, b, size, vertical }: { a: P; b: P; size: number; vertical?: boolean }) {

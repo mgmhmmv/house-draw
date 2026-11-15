@@ -12,7 +12,7 @@ import { WalkController, type Move } from './walk';
 import { buildServices, type ServiceSystem } from './services';
 
 type Style = 'rendered' | 'clay' | 'xray';
-type Cut = 'all' | number; // show everything, or levels up to N with the roof off
+type Cut = 'all' | 'frame' | number; // everything; the roof structure with the covering off; or levels up to N with the roof off
 type Preset = 'iso' | 'front' | 'side' | 'top';
 
 const PAPER = new THREE.Color('#F6F5F2');
@@ -204,7 +204,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     disposeParts(c);
     c.parts = parts;
     parts.levels.forEach((g) => c.scene.add(g));
-    c.scene.add(parts.roof, parts.site);
+    c.scene.add(parts.roof, parts.roofFrame, parts.site);
     if (!c.fitted) {
       applyPreset(c, 'iso');
       c.fitted = true;
@@ -329,7 +329,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     const w = walkRef.current;
     if (!c || !w) return;
     if (walking) {
-      const li = cut === 'all' ? 0 : Math.min(cut, model.levels.length - 1);
+      const li = typeof cut === 'number' ? Math.min(cut, model.levels.length - 1) : 0;
       c.controls.enabled = false;
       w.start(model.levels[li]);
       if (fillRef.current) fillRef.current.intensity = 0.9;
@@ -363,7 +363,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     if (!svc) return;
     for (const o of svc.group.children) {
       const { system, level } = o.userData as { system: ServiceSystem; level: number };
-      o.visible = (services === 'all' || services === system) && (cut === 'all' || level <= cut);
+      o.visible = (services === 'all' || services === system) && (typeof cut !== 'number' || level <= cut);
     }
   }, [svc, services, cut]);
   useEffect(() => {
@@ -384,8 +384,10 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
   useEffect(() => {
     const c = ctx.current;
     if (!c?.parts) return;
-    c.parts.levels.forEach((g, i) => (g.visible = cut === 'all' || i <= cut));
+    c.parts.levels.forEach((g, i) => (g.visible = typeof cut !== 'number' || i <= cut));
     c.parts.roof.visible = cut === 'all';
+    // The structure stays under the covering; "Roof frame" lifts the covering off to show it.
+    c.parts.roofFrame.visible = typeof cut !== 'number';
   }, [cut, parts]);
 
   // Sun: sweep east to west through the day; shadow camera hugs the building.
@@ -443,8 +445,8 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
         />
         <Chips
           value={String(cut)}
-          onChange={(v) => setCut(v === 'all' ? 'all' : Number(v))}
-          options={[{ id: 'all', label: 'Whole building' }, ...levelNames.map((n, i) => ({ id: String(i), label: n }))]}
+          onChange={(v) => setCut(v === 'all' || v === 'frame' ? v : Number(v))}
+          options={[{ id: 'all', label: 'Whole building' }, ...(model.roof.type !== 'flat' ? [{ id: 'frame', label: 'Roof frame' }] : []), ...levelNames.map((n, i) => ({ id: String(i), label: n }))]}
         />
       </div>
 
@@ -604,7 +606,7 @@ const fmtHour = (h: number) => `${Math.floor(h)}:${String(Math.round((h % 1) * 6
 function disposeParts(c: { scene: THREE.Scene; parts: SceneParts | null }) {
   const p = c.parts;
   if (!p) return;
-  for (const g of [...p.levels, p.roof, p.site]) {
+  for (const g of [...p.levels, p.roof, p.roofFrame, p.site]) {
     c.scene.remove(g);
     g.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();

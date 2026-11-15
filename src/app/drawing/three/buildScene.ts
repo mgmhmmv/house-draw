@@ -11,6 +11,7 @@ import { ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
 import { AssetMaterials } from '../assets/kit';
 import { furnitureObject, mepObject } from '../assets/render';
+import { roofFraming } from '../model3d/framing';
 
 const T = (p: V3) => new THREE.Vector3(p.x, p.z, p.y);
 
@@ -18,6 +19,8 @@ export interface SceneParts {
   /** One group per level (walls, openings, floors, furniture), plus the roof and site items. */
   levels: THREE.Group[];
   roof: THREE.Group;
+  /** The roof structure under the covering: plates, trusses or rafters, purlins. */
+  roofFrame: THREE.Group;
   /** Downpipes, rainwater tank: always shown. */
   site: THREE.Group;
   roofTopZ: number;
@@ -219,6 +222,28 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     roof.add(m);
   }
 
+  // Roof structure: every member as a solid piece of its real section.
+  const roofFrame = new THREE.Group();
+  roofFrame.userData.kind = 'roof_frame';
+  const fr = roofFraming(model);
+  if (fr) {
+    const geos: THREE.BufferGeometry[] = [];
+    for (const m of fr.members) {
+      const a = T(m.a);
+      const b = T(m.b);
+      if (a.distanceToSquared(b) < 1e-6) continue;
+      geos.push(barBetween(a, b, new THREE.Vector3(m.up.x, m.up.z, m.up.y), m.sec.w, m.sec.d, 0));
+    }
+    if (geos.length) {
+      const steel = fr.meta.material === 'steel';
+      const mat = metalMat(clay ? '#E4E0D8' : steel ? '#B9BFC6' : '#B98A55', steel ? 0.45 : 0.85, steel ? 0.55 : 0);
+      const mesh = new THREE.Mesh(mergeGeos(geos), mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      roofFrame.add(mesh);
+    }
+  }
+
   // Rainwater goods: gutters with the roof, downpipes and collection on the site.
   const site = new THREE.Group();
   const d = frame.drainage;
@@ -313,7 +338,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   box.expandByObject(roof);
   box.expandByObject(site);
 
-  return { levels, roof, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
+  return { levels, roof, roofFrame, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
 }
 
 function roofRibColor(model: BuildingProject, clay: boolean): string {

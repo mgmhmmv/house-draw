@@ -10,7 +10,7 @@ import { nextPaint, setPrintMode } from '../drawing/printMode';
 import { composeSheet, type LegendEntry, type SheetContent, type SheetInfo, type Stage } from '../../export/sheet';
 import { MEP_COLOR } from '../drawing/style';
 import { sewerLayout } from '../drawing/plan/sheetPlans';
-import { getSolarConfig, getRoofDrainageConfig } from '../../model/types';
+import { getSolarConfig, getRoofDrainageConfig, getRoofStructure, ROOF_STRUCTURE_META } from '../../model/types';
 
 const SHEET_META: Record<string, { title: string; discipline: string; north: boolean }> = {
   'A-101': { title: 'Floor plan', discipline: 'Architectural', north: true },
@@ -87,6 +87,7 @@ export function legendFor(sheetId: string, model: BuildingProject, levelIndex = 
     case 'R-101': {
       const out: LegendEntry[] = [
         { sym: 'ridge', label: 'Ridge and hip lines (capped)' },
+        { sym: 'line', color: '#4A4F57', weight: 0.2, dash: '1.6 0.5 0.3 0.5', label: `${ROOF_STRUCTURE_META[getRoofStructure(model.roof).system].kind === 'truss' ? 'Truss below covering, with its mark (T1…)' : 'Rafter below covering'}` },
         { sym: 'arrow', tag: `${model.roof.pitchDeg}°`, label: 'Roof falls in the direction of the arrow, at the pitch shown' },
         { sym: 'dashed', color: '#8A857D', label: 'External walls below the roof, dashed' },
         { sym: 'datum', tag: 'RIDGE', label: 'Levels in metres above natural ground' },

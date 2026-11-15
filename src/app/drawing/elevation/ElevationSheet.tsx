@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import { Maximize2, Minus, Plus } from 'lucide-react';
-import type { BuildingProject } from '../../../model/types';
+import { getRoofStructure, ROOF_STRUCTURE_META, type BuildingProject } from '../../../model/types';
 import { cx } from '../../ui';
 import { useMediaQuery } from '../../lib/hooks';
 import { INK, INK_2, INK_3, PAPER, WEIGHT } from '../style';
@@ -137,8 +137,9 @@ export function ElevationSheet({ model, mode, svgRef, paperInfo }: Props) {
     } else {
       // The 3D model beyond each cut, plus what the cut needs (walls for footings, roof for trusses).
       const parts = buildScene(model, false);
-      // The roof is shown by its cut band and the trusses; its far slopes would only hide them.
-      const roots: THREE.Object3D[] = [...parts.levels, parts.site];
+      // The roof is shown by its cut band and its real structure (trusses or rafters, purlins);
+      // its far slopes would only hide them.
+      const roots: THREE.Object3D[] = [...parts.levels, parts.roofFrame, parts.site];
       for (const s of sections) {
         if (choice !== 'all' && choice !== s.id) continue;
         const { view, drawing } = sectionDrawing(model, frame, s);
@@ -766,40 +767,19 @@ function SectionDetails({ p, info, textSize, notes: showNotes }: { p: Placed; in
     const chord = (u: number) => roofAt(u) - 0.2;
     const peak = Math.max(...[wl, (wl + wr) / 2, wr].map(chord));
     if (peak - plate > 0.4) {
-      const n = Math.max(2, Math.round((wr - wl) / 1.25));
-      const xs = Array.from({ length: n + 1 }, (_, i) => wl + ((wr - wl) * i) / n);
-      const tops = xs.map((x) => Math.max(plate, chord(x)));
       const mid = (wl + wr) / 2;
-      const webs: string[] = [];
-      xs.forEach((x, i) => {
-        if (i > 0 && i < n && tops[i] - plate > 0.05) webs.push(`M${x} ${y(plate)}L${x} ${y(tops[i])}`);
-        if (i < n) {
-          const x2 = xs[i + 1];
-          // Diagonals lean towards the ridge (Howe-type panels).
-          if (x2 <= mid + 1e-6) webs.push(`M${x} ${y(plate)}L${x2} ${y(tops[i + 1])}`);
-          else webs.push(`M${x} ${y(tops[i])}L${x2} ${y(plate)}`);
-        }
-      });
-      const topChord = xs.map((x, i) => `${i ? 'L' : 'M'}${x} ${y(tops[i])}`).join('');
-      out.push(
-        <g key="truss" fill="none" strokeLinejoin="round">
-          <path d={webs.join('')} stroke={INK_2} strokeWidth={0.55} />
-          <path d={topChord} stroke={INK_2} strokeWidth={0.9} />
-          <line x1={wl} y1={y(plate)} x2={wr} y2={y(plate)} stroke={INK_2} strokeWidth={0.9} />
-          {/* Ceiling board under the joists */}
-          <line x1={wl} y1={y(plate - 0.06)} x2={wr} y2={y(plate - 0.06)} stroke={INK} strokeWidth={1.1} />
-          {Array.from({ length: Math.floor((wr - wl) / 0.6) }, (_, i) => (
-            <rect key={i} x={wl + 0.3 + i * 0.6 - 0.025} y={y(plate - 0.01)} width={0.05} height={0.05} fill={INK_2} />
-          ))}
-        </g>
-      );
+      const st = ROOF_STRUCTURE_META[getRoofStructure(info.model.roof).system];
+      const cfg = getRoofStructure(info.model.roof);
+      const ceil = plate + st.plate.d - 0.02;
+      // The structure itself comes from the 3D model behind the cut; the ceiling is drawn here.
+      out.push(<line key="ceil" x1={wl} y1={y(ceil)} x2={wr} y2={y(ceil)} stroke={INK} strokeWidth={1.1} />);
       // Roof and ceiling notes with leaders, above the drawing.
       const ridge = Math.max(...line.flatMap((s) => [s.a.z, s.b.z]));
       const notes = [
         { t: info.notes.roof ?? 'Roof covering to specification', at: { u: wl + (mid - wl) * 0.35, z: roofAt(wl + (mid - wl) * 0.35) }, side: -1, row: 1 },
-        { t: '50 × 50 mm treated softwood ceiling joists', at: { u: wl + (mid - wl) * 0.6, z: plate }, side: -1, row: 0 },
-        { t: 'Prefabricated steel trusses (to structural details)', at: { u: mid + (wr - mid) * 0.45, z: (plate + chord(mid + (wr - mid) * 0.45)) / 2 }, side: 1, row: 1 },
-        { t: 'Gypsum ceiling board fixed to joists with screws', at: { u: mid + (wr - mid) * 0.7, z: plate - 0.06 }, side: 1, row: 0 },
+        { t: `${st.purlin.name} purlins at ${Math.round(cfg.purlinSpacing * 1000)} c/c`, at: { u: wl + (mid - wl) * 0.62, z: roofAt(wl + (mid - wl) * 0.62) - 0.08 }, side: -1, row: 0 },
+        { t: `${st.label}: ${st.chord.name} at ${Math.round(cfg.spacing * 1000)} c/c`, at: { u: mid + (wr - mid) * 0.45, z: (plate + chord(mid + (wr - mid) * 0.45)) / 2 }, side: 1, row: 1 },
+        { t: `Gypsum ceiling board on ${st.kind === 'truss' ? 'battens under bottom chords' : `${st.joist.name}s`}; ${st.plate.name} on walls`, at: { u: mid + (wr - mid) * 0.7, z: ceil }, side: 1, row: 0 },
       ];
       for (const [i, nt] of (showNotes ? notes : []).entries()) {
         const ly = y(ridge + 0.75 + nt.row * textSize * 1.9);

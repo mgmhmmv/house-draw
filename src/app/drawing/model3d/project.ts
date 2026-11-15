@@ -410,10 +410,46 @@ export function sectionDrawing(model: BuildingProject, frame: BuildingFrame, s: 
 
 /** Two default sections through the middle when the project has none drawn. */
 export function defaultSections(model: BuildingProject): SectionLine[] {
-  if (model.sections.length) return model.sections;
   const b = levelBounds(model.levels[0]);
   const cx = (b.minX + b.maxX) / 2;
   const cy = (b.minY + b.maxY) / 2;
+  if (model.sections.length) {
+    // Always show the roof structure in profile: if no section cuts across the trusses or
+    // rafters (perpendicular to the ridge), add one through the middle.
+    if (model.roof.type === 'flat') return model.sections;
+    const top = levelBounds(model.levels[model.levels.length - 1]);
+    const ridgeAlongX = top.maxX - top.minX >= top.maxY - top.minY;
+    const across = model.sections.some((s) => {
+      const dx = Math.abs(s.end.x - s.start.x);
+      const dy = Math.abs(s.end.y - s.start.y);
+      return ridgeAlongX ? dy > dx * 2 : dx > dy * 2;
+    });
+    if (across) return model.sections;
+    const used = new Set(model.sections.map((s) => s.label[0]));
+    const letter = 'ABCDEFGHJKLMNPQRSTUVWXYZ'.split('').find((l) => !used.has(l)) ?? 'R';
+    // Through the middle, clear of any wall running along the cut (it would read as one
+    // solid block), so the next truss shows whole behind it.
+    const walls = model.levels.flatMap((l) => l.walls);
+    const blocked = (c: number) =>
+      walls.some((w) => {
+        const along = ridgeAlongX ? Math.abs(w.end.x - w.start.x) < 0.05 : Math.abs(w.end.y - w.start.y) < 0.05;
+        const at = ridgeAlongX ? w.start.x : w.start.y;
+        return along && Math.abs(at - c) < w.thickness / 2 + 0.25;
+      });
+    const mid = ridgeAlongX ? cx : cy;
+    let c = mid + 0.3;
+    for (let k = 0; k < 40; k++) {
+      const t = mid + 0.3 + (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 0.35;
+      if (!blocked(t)) {
+        c = t;
+        break;
+      }
+    }
+    const extra: SectionLine = ridgeAlongX
+      ? { id: 'auto-roof', label: `${letter}-${letter}`, start: { x: c, y: b.maxY + 1 }, end: { x: c, y: b.minY - 1 } }
+      : { id: 'auto-roof', label: `${letter}-${letter}`, start: { x: b.minX - 1, y: c }, end: { x: b.maxX + 1, y: c } };
+    return [...model.sections, extra];
+  }
   return [
     { id: 'auto-a', label: 'A-A', start: { x: b.minX - 1, y: cy }, end: { x: b.maxX + 1, y: cy } },
     { id: 'auto-b', label: 'B-B', start: { x: cx, y: b.maxY + 1 }, end: { x: cx, y: b.minY - 1 } },
