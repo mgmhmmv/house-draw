@@ -1,7 +1,7 @@
 import type { RefObject } from 'react';
 import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, SketchStroke } from '../../model/types';
 import { PlanCanvas } from '../drawing/plan/PlanCanvas';
-import { Viewport3D } from '../../components/Viewport3D';
+import { ModelView } from '../drawing/three/ModelView';
 import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
 import { SchematicsView } from '../../components/SchematicsView';
 import { BOQView } from '../../components/BOQView';
@@ -30,7 +30,7 @@ export function SheetView(p: Props) {
   let view: React.ReactNode;
   switch (p.sheet) {
     case '3D-VIEW':
-      view = <Viewport3D project={p.model} onUpdateProject={p.onCommit} isLight />;
+      view = <ModelView model={p.model} />;
       break;
     case 'A-201':
     case 'A-301':
