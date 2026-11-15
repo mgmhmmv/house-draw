@@ -12,18 +12,22 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  // "remote": true — `wrangler dev` uses the cloud D1 and R2 too, so localhost sees the same
+  // projects as draw.picadgroup.com. Careful: local edits change live data.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "archstudio",
       "database_id": "0e29c08e-27e8-45ec-aa9a-36bd79549ee7",
-      "migrations_dir": "migrations"
+      "migrations_dir": "migrations",
+      "remote": true
     }
   ],
   "r2_buckets": [
     {
       "binding": "FILES",
-      "bucket_name": "archstudio-files"
+      "bucket_name": "archstudio-files",
+      "remote": true
     }
   ],
   "routes": [{ "pattern": "draw.picadgroup.com", "custom_domain": true }],
