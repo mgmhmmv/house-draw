@@ -89,6 +89,82 @@ let structuredApi = false;
 const SELECT =
   'h-11 w-full rounded-ctl border border-line bg-surface px-3 text-[15px] text-ink focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15 disabled:opacity-50 sm:text-sm';
 
+/** House and road, island and atoll of a client, from structured fields or the older flat address. */
+export function clientAddress(client: IsleCustomer | null) {
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  let atoll = str(client?.atoll);
+  let island = str(client?.island);
+  let street = str(client?.street);
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z]/g, '');
+  const parts = (str(client?.billing_address) || client?.address || '').split(',').map((p) => p.trim());
+  // Flat-only records ("G. Hazel House, Rah Dhebai Magu, Male', Maldives"): find the atoll and
+  // island among the parts, preferring an island in an atoll that is also named.
+  if (!atoll) atoll = ATOLL_NAMES.find((a) => parts.some((p) => norm(p) === norm(a))) ?? '';
+  if (!island) {
+    for (const p of [...parts].reverse()) {
+      const n = norm(p);
+      if (!n) continue;
+      const atolls = atoll ? [atoll, ...ATOLL_NAMES.filter((a) => a !== atoll)] : ATOLL_NAMES;
+      const hit = atolls.map((a) => [a, getAllIslandsByAtoll(a).find((i) => norm(i) === n)] as const).find(([, i]) => i);
+      if (hit) {
+        atoll ||= hit[0];
+        island = hit[1]!;
+        break;
+      }
+    }
+  }
+  if (!street) {
+    // Keep what comes before the island or atoll (spelling and apostrophes ignored).
+    const stops = new Set([norm(island), norm(atoll), 'maldives', 'mv'].filter(Boolean));
+    const cut = parts.findIndex((p) => stops.has(norm(p)));
+    street = (cut >= 0 ? parts.slice(0, cut) : parts).filter(Boolean).join(', ');
+  }
+  return { street, atoll, island };
+}
+
+/**
+ * The address part of a customer write. Newer IslePOS APIs take street / island / atoll (and refuse
+ * a flat address alongside them); older ones only take "street, island, atoll". The record tells us
+ * which: newer APIs return a `street` field.
+ */
+export function addressBody(client: IsleCustomer | null, a: { street?: string; island?: string; atoll?: string }): Record<string, string> {
+  const t = (v?: string) => (v ?? '').trim();
+  if (client ? 'street' in client : structuredApi) return { street: t(a.street), island: t(a.island), atoll: t(a.atoll) };
+  return { address: [t(a.street), t(a.island), t(a.atoll)].filter(Boolean).join(', ') };
+}
+
+/** Atoll and island dropdowns, matching IslePOS. */
+export function AtollIslandSelects({ atoll, island, onChange }: { atoll: string; island: string; onChange: (v: { atoll: string; island: string }) => void }) {
+  const islands = atoll ? getAllIslandsByAtoll(atoll) : [];
+  return (
+    <>
+      <select
+        aria-label="Atoll"
+        value={atoll}
+        onChange={(e) => onChange({ atoll: e.target.value, island: getAllIslandsByAtoll(e.target.value).includes(island) ? island : '' })}
+        className={SELECT}
+      >
+        <option value="">Choose atoll</option>
+        {atoll && !ATOLL_NAMES.includes(atoll) && <option value={atoll}>{atoll}</option>}
+        {ATOLL_NAMES.map((a) => (
+          <option key={a} value={a}>
+            {a}
+          </option>
+        ))}
+      </select>
+      <select aria-label="Island" value={island} onChange={(e) => onChange({ atoll, island: e.target.value })} disabled={!atoll} className={SELECT}>
+        <option value="">{atoll ? 'Choose island' : 'Choose an atoll first'}</option>
+        {island && !islands.includes(island) && <option value={island}>{island}</option>}
+        {islands.map((i) => (
+          <option key={i} value={i}>
+            {i}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+}
+
 /** Fields IslePOS already shows elsewhere, or that are internal. */
 const HIDDEN = new Set(['id', 'name', 'mobile', 'email', 'address', 'street', 'island', 'atoll', 'billing_address', 'tin', 'notes', 'existing', 'created_at', 'updated_at']);
 /** Address with island and atoll, the way Maldivian addresses are read. */
@@ -248,7 +324,7 @@ export function ClientsPage() {
 }
 
 /** Create or edit a client. Every field maps to the IslePOS customer record. */
-export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleCustomer | null; open: boolean; onClose: () => void; onSaved: (c: IsleCustomer) => void }) {
+export function ClientDialog({ client, open, onClose, onSaved, initialName = '' }: { client: IsleCustomer | null; open: boolean; onClose: () => void; onSaved: (c: IsleCustomer) => void; initialName?: string }) {
   const [form, setForm] = useState({ name: '', mobile: '', email: '', street: '', atoll: '', island: '', tin: '', notes: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -256,22 +332,9 @@ export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleC
   useEffect(() => {
     if (!open) return;
     setError('');
-    const str = (v: unknown) => (typeof v === 'string' ? v : '');
-    const atoll = str(client?.atoll);
-    const island = str(client?.island);
-    // House and road: the structured street if IslePOS sends it, else the flat address minus island/atoll.
-    let street = str(client?.street);
-    if (!street) {
-      // Older records only have the flat "house, road, island, atoll[, country]": keep what comes
-      // before the island or atoll (spelling and apostrophes ignored).
-      const norm = (v: string) => v.toLowerCase().replace(/[^a-z]/g, '');
-      const stops = new Set([norm(island), norm(atoll), 'maldives', 'mv'].filter(Boolean));
-      const parts = (str(client?.billing_address) || client?.address || '').split(',').map((p) => p.trim());
-      const cut = parts.findIndex((p) => stops.has(norm(p)));
-      street = (cut >= 0 ? parts.slice(0, cut) : parts).filter(Boolean).join(', ');
-    }
-    setForm({ name: client?.name ?? '', mobile: client?.mobile ?? '', email: client?.email ?? '', street, atoll, island, tin: client?.tin ?? '', notes: client?.notes ?? '' });
-  }, [open, client]);
+    const { street, atoll, island } = clientAddress(client);
+    setForm({ name: client?.name ?? initialName, mobile: client?.mobile ?? '', email: client?.email ?? '', street, atoll, island, tin: client?.tin ?? '', notes: client?.notes ?? '' });
+  }, [open, client, initialName]);
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const islands = form.atoll ? getAllIslandsByAtoll(form.atoll) : [];
@@ -285,9 +348,8 @@ export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleC
       // Newer IslePOS APIs take street / island / atoll (and refuse a flat address alongside them);
       // older ones only take the flat "street, island, atoll". The record tells us which: newer
       // APIs return a `street` field.
-      const structured = client ? 'street' in client : structuredApi;
-      if (!structured) {
-        body.address = [body.street, body.island, body.atoll].filter(Boolean).join(', ');
+      if (!(client ? 'street' in client : structuredApi)) {
+        Object.assign(body, addressBody(client, body));
         delete body.street;
         delete body.island;
         delete body.atoll;

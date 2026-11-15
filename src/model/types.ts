@@ -409,6 +409,8 @@ export interface ProjectMeta {
   title: string;
   projectCode: string;
   client: string;
+  /** Client's contact number, from IslePOS or entered with the project. */
+  clientPhone?: string;
   architect: string;
   location: string;
   revision: string;
