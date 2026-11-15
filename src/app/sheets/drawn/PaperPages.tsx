@@ -30,7 +30,7 @@ export function PaperPages({ pages, info }: { pages: DrawnPage[]; info: SheetInf
     [pages, info]
   );
   const bounds = { minX: 0, minY: 0, maxX: SHEET.w, maxY: pages.length * (SHEET.h + GAP) - GAP };
-  const vp = useViewport(ref, bounds, 24, { kMin: 0.25, kMax: 80 });
+  const vp = useViewport(ref, bounds, 24, { kMin: 0.25, kMax: 80, oneFingerPan: true });
   const { k, tx, ty } = vp.view;
   return (
     <div ref={ref} className="relative h-full w-full select-none overflow-hidden" style={{ touchAction: 'none' }}>
@@ -61,7 +61,7 @@ export function PaperPages({ pages, info }: { pages: DrawnPage[]; info: SheetInf
           ))}
         </g>
       </svg>
-      <div className="absolute bottom-[84px] right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
+      <div className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
         {[
           { label: 'Zoom in', icon: <Plus className="h-4 w-4" />, on: () => vp.zoomAt(1.25) },
           { label: 'Zoom out', icon: <Minus className="h-4 w-4" />, on: () => vp.zoomAt(0.8) },

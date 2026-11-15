@@ -297,7 +297,25 @@ function Surface({
     return { scale, m: 1000 / scale, pages };
   }, [paper, placed]);
   const sheetBounds = { minX: 0, minY: 0, maxX: SHEET.w, maxY: Math.max(1, placed.length) * (SHEET.h + PAGE_GAP) - PAGE_GAP };
-  const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48, paper ? { kMin: 0.25, kMax: 80 } : {});
+  const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48, paper ? { kMin: 0.25, kMax: 80, oneFingerPan: true } : { oneFingerPan: true });
+  // On paper the sheets do not depend on the zoom: build them once, so pan and pinch only move
+  // a transform instead of re-rendering thousands of paths every frame.
+  const paperPages = useMemo(
+    () =>
+      layout?.pages.map((pg) => (
+        <g key={pg.p.key} transform={`translate(0 ${pg.top})`}>
+          <rect x={2} y={3} width={SHEET.w} height={SHEET.h} fill="rgba(0,0,0,0.08)" className="as-scale" />
+          {/* One printed sheet: title block and the drawing at true scale. */}
+          <g data-paper-page="">
+            <g className="as-scale" fontFamily="Inter, Helvetica, Arial, sans-serif" dangerouslySetInnerHTML={{ __html: pg.frame }} />
+            <g className="as-w" transform={`translate(${pg.x0} ${pg.y0}) scale(${layout.m})`}>
+              <DrawingView p={pg.p} k={1e6} fs={(paperSize) => paperSize} info={frameInfo} />
+            </g>
+          </g>
+        </g>
+      )) ?? null,
+    [layout, frameInfo]
+  );
   const { k, tx, ty } = vp.view;
 
   return (
@@ -338,18 +356,7 @@ function Surface({
         </defs>
         {layout ? (
           <g transform={`translate(${tx} ${ty}) scale(${k})`}>
-            {layout.pages.map((pg) => (
-              <g key={pg.p.key} transform={`translate(0 ${pg.top})`}>
-                <rect x={2} y={3} width={SHEET.w} height={SHEET.h} fill="rgba(0,0,0,0.08)" className="as-scale" />
-                {/* One printed sheet: title block and the drawing at true scale. */}
-                <g data-paper-page="">
-                  <g className="as-scale" fontFamily="Inter, Helvetica, Arial, sans-serif" dangerouslySetInnerHTML={{ __html: pg.frame }} />
-                  <g className="as-w" transform={`translate(${pg.x0} ${pg.y0}) scale(${layout.m})`}>
-                    <DrawingView p={pg.p} k={1e6} fs={fs} info={frameInfo} />
-                  </g>
-                </g>
-              </g>
-            ))}
+            {paperPages}
           </g>
         ) : (
           <g transform={`translate(${tx} ${ty}) scale(${k})`}>
@@ -387,7 +394,7 @@ function Surface({
           ))}
         </div>
       )}
-      <div className="absolute bottom-[84px] right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
+      <div className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
         {[
           { label: 'Zoom in', icon: <Plus className="h-4 w-4" />, on: () => vp.zoomAt(1.25) },
           { label: 'Zoom out', icon: <Minus className="h-4 w-4" />, on: () => vp.zoomAt(0.8) },

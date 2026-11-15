@@ -28,12 +28,35 @@ const K_MAX = 600;
  * `limits`: zoom range in screen px per world unit. The defaults suit metres; a sheet of paper
  * in millimetres needs a much smaller minimum.
  */
-export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bounds | null, padding = 72, limits: { kMin?: number; kMax?: number } = {}) {
+export function useViewport(
+  ref: RefObject<HTMLElement | null>,
+  fitBounds: Bounds | null,
+  padding = 72,
+  limits: { kMin?: number; kMax?: number; /** One finger pans (drawings you only look at). */ oneFingerPan?: boolean } = {}
+) {
+  const oneFingerPan = !!limits.oneFingerPan;
   const kMinL = limits.kMin ?? K_MIN;
   const kMaxL = limits.kMax ?? K_MAX;
   const [view, setView] = useState<View>({ k: 40, tx: 0, ty: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
+  // Gestures update at most once a frame: touch and trackpads fire far faster than a large
+  // drawing can re-render, which made pinch-zoom stutter and lock up on phones.
+  const pending = useRef<View | null>(null);
+  const frame = useRef(0);
+  const cur = () => pending.current ?? viewRef.current;
+  const commit = useCallback((next: View) => {
+    pending.current = next;
+    if (!frame.current)
+      frame.current = requestAnimationFrame(() => {
+        frame.current = 0;
+        const v = pending.current;
+        pending.current = null;
+        if (v) setView(v);
+      });
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  const touchCount = useRef(0);
   const fitted = useRef(false);
   const spaceDown = useRef(false);
 
@@ -93,16 +116,23 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
       fitted.current = true;
       const isPinch = e.ctrlKey;
       const isMouseWheel = !isPinch && e.deltaMode === 1;
+      const v = cur();
       if (isPinch || isMouseWheel || (!e.deltaX && Math.abs(e.deltaY) >= 50 && Number.isInteger(e.deltaY))) {
-        zoomAt(Math.exp(-e.deltaY * (isPinch ? 0.01 : 0.0025)), e.clientX, e.clientY);
+        const r = el.getBoundingClientRect();
+        const k = Math.min(kMaxL, Math.max(kMinL, v.k * Math.exp(-e.deltaY * (isPinch ? 0.01 : 0.0025))));
+        const f = k / v.k;
+        const px = e.clientX - r.left;
+        const py = e.clientY - r.top;
+        commit({ k, tx: px - (px - v.tx) * f, ty: py - (py - v.ty) * f });
       } else {
-        setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
+        commit({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY });
       }
     };
 
     // Touch: two-finger pan + pinch.
     const touches = new Map<number, { x: number; y: number }>();
     let last: { cx: number; cy: number; d: number } | null = null;
+    let one: { x: number; y: number } | null = null;
     const gesture = () => {
       const pts = [...touches.values()];
       const cx = (pts[0].x + pts[1].x) / 2;
@@ -112,28 +142,40 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== 'touch') return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (touches.size === 2) last = gesture();
+      touchCount.current = touches.size;
+      if (touches.size === 2) {
+        last = gesture();
+        one = null;
+      } else if (touches.size === 1 && oneFingerPan) one = { x: e.clientX, y: e.clientY };
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!touches.has(e.pointerId)) return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size === 2 && last) {
         const g = gesture();
+        if (last.d < 1 || g.d < 1) return;
         fitted.current = true;
-        setView((v) => {
-          const r = el.getBoundingClientRect();
-          const k = Math.min(kMaxL, Math.max(kMinL, v.k * (g.d / last!.d)));
-          const f = k / v.k;
-          const px = g.cx - r.left;
-          const py = g.cy - r.top;
-          return { k, tx: px - (last!.cx - r.left - v.tx) * f, ty: py - (last!.cy - r.top - v.ty) * f };
-        });
+        const v = cur();
+        const r = el.getBoundingClientRect();
+        const k = Math.min(kMaxL, Math.max(kMinL, v.k * (g.d / last.d)));
+        const f = k / v.k;
+        const px = g.cx - r.left;
+        const py = g.cy - r.top;
+        commit({ k, tx: px - (last.cx - r.left - v.tx) * f, ty: py - (last.cy - r.top - v.ty) * f });
         last = g;
+      } else if (touches.size === 1 && one) {
+        fitted.current = true;
+        const v = cur();
+        commit({ ...v, tx: v.tx + e.clientX - one.x, ty: v.ty + e.clientY - one.y });
+        one = { x: e.clientX, y: e.clientY };
       }
     };
     const onPointerUp = (e: PointerEvent) => {
       touches.delete(e.pointerId);
+      touchCount.current = touches.size;
       if (touches.size < 2) last = null;
+      // Lifting one finger of a pinch must not turn into a jump-pan with the other.
+      one = null;
     };
 
     // Middle-button or space-drag pan.
@@ -152,7 +194,8 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
       const dy = e.clientY - drag.y;
       drag = { x: e.clientX, y: e.clientY };
       fitted.current = true;
-      setView((v) => ({ ...v, tx: v.tx + dx, ty: v.ty + dy }));
+      const v = cur();
+      commit({ ...v, tx: v.tx + dx, ty: v.ty + dy });
     };
     const onUp = () => (drag = null);
     const onKey = (e: KeyboardEvent) => {
@@ -185,13 +228,18 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onKey);
     };
-  }, [ref, zoomAt]);
+  }, [ref, zoomAt, commit, kMinL, kMaxL, oneFingerPan]);
 
   /** Pan by screen pixels (used by one-finger / select-tool drag on empty paper). */
   const panBy = useCallback((dx: number, dy: number) => {
     fitted.current = true;
-    setView((v) => ({ ...v, tx: v.tx + dx, ty: v.ty + dy }));
-  }, []);
+    const v = cur();
+    commit({ ...v, tx: v.tx + dx, ty: v.ty + dy });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commit]);
 
-  return { view, toWorld, zoomAt, fit, panBy };
+  /** Fingers currently on the surface (a tool should ignore its one-finger drag during a pinch). */
+  const touches = useCallback(() => touchCount.current, []);
+
+  return { view, toWorld, zoomAt, fit, panBy, touches };
 }

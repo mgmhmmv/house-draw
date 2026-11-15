@@ -488,7 +488,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
         title="North · click to face north"
         aria-label="Compass. Click to face north."
         className={cx(
-          'absolute bottom-[84px] flex h-14 w-14 items-center justify-center rounded-full border border-line bg-surface/95 shadow-float backdrop-blur transition-[left] hover:border-line-strong lg:bottom-4',
+          'absolute bottom-[60px] flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface/95 shadow-float backdrop-blur transition-[left] hover:border-line-strong lg:bottom-4 lg:h-14 lg:w-14',
           walking ? 'left-[188px]' : 'left-3'
         )}
       >
@@ -505,7 +505,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
         </div>
       </button>
 
-      <div className="absolute bottom-[84px] right-3 flex flex-col items-end gap-2 lg:bottom-4">
+      <div className="absolute bottom-3 left-3 right-3 flex flex-col items-end gap-2 lg:bottom-4 lg:left-auto">
         {showCut && (
           <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
             <span className="w-16 text-[13px] font-medium tabular-nums">{cutZ === null ? 'No cut' : `${cutZ.toFixed(1)} m`}</span>
@@ -535,7 +535,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
             <X className="h-4 w-4" /> Leave walk
           </button>
         ) : (
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full items-center gap-2">
         {select?.active && select.selected && (
           <button
             onClick={select.onAsk}
@@ -545,7 +545,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
             <MessageSquarePlus className="h-4 w-4" /> Ask AI about this
           </button>
         )}
-        <div className="flex overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur">
+        <div className="flex min-w-0 max-w-full overflow-x-auto rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur no-scrollbar [&>button]:shrink-0">
           {select && (
             <button
               onClick={() => select.onActive(!select.active)}
@@ -664,7 +664,7 @@ function WalkPad({ onPress }: { onPress: (m: Move, down: boolean) => void }) {
     </button>
   );
   return (
-    <div className="absolute bottom-[84px] left-4 h-[156px] w-[156px] select-none lg:bottom-6" style={{ touchAction: 'none' }}>
+    <div className="absolute bottom-16 left-4 h-[156px] w-[156px] select-none lg:bottom-6" style={{ touchAction: 'none' }}>
       {btn('forward', <ChevronUp className="h-5 w-5" />, 'left-[54px] top-0')}
       {btn('left', <ChevronLeft className="h-5 w-5" />, 'left-0 top-[54px]')}
       {btn('right', <ChevronRight className="h-5 w-5" />, 'left-[108px] top-[54px]')}
@@ -710,7 +710,7 @@ function WalkActions({
   }, [surface, q, open]);
   const label = hit.pick ? KIND_LABEL[hit.pick.kind] ?? SURFACE_LABEL[hit.surface] : hit.surface === 'floor' && hit.levelIndex === 0 ? 'Ground' : SURFACE_LABEL[hit.surface];
   return (
-    <div className="absolute bottom-[84px] left-1/2 z-20 w-[min(420px,calc(100%-24px))] -translate-x-1/2 lg:bottom-16">
+    <div className="absolute bottom-16 left-1/2 z-20 w-[min(420px,calc(100%-24px))] -translate-x-1/2 lg:bottom-16">
       {open && surface && (
         <div className="mb-2 overflow-hidden rounded-[14px] border border-line bg-surface shadow-float animate-fade-up">
           <div className="relative border-b border-line p-2">

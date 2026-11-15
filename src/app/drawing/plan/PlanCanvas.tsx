@@ -145,7 +145,7 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
     const frame = composeSheet(null, paper, { scale: pl.scale, key: pl.key }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
     return { m, x0, y0, frame };
   }, [paper, fitBounds]);
-  const vp = useViewport(surfaceRef, layout ? SHEET_BOUNDS : fitBounds, layout ? 24 : 72, layout ? { kMin: 0.25, kMax: 80 } : {});
+  const vp = useViewport(surfaceRef, layout ? SHEET_BOUNDS : fitBounds, layout ? 24 : 72, layout ? { kMin: 0.25, kMax: 80, oneFingerPan: true } : { oneFingerPan: readOnly });
   const { tx, ty } = vp.view;
   // Screen pixels per metre of the plan (on paper, through the sheet's scale).
   const k = layout ? vp.view.k * layout.m : vp.view.k;
@@ -158,6 +158,13 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
   const [measure, setMeasure] = useState<{ a: Vec; b: Vec | null } | null>(null);
   const [mepFilter, setMepFilter] = useState<MepFilter>('all');
   const drag = useRef<Drag | null>(null);
+  // Touch: an item moves only after a press-and-hold, so panning or pinching over a wall can
+  // never drag it by accident.
+  const hold = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const cancelHold = () => {
+    if (hold.current) clearTimeout(hold.current.timer);
+    hold.current = null;
+  };
   const [, force] = useState(0);
 
   useEffect(() => {
@@ -338,7 +345,8 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
   const onPointerDown = (e: RPointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     if (readOnly) {
-      // Drawings only: a drag moves the sheet.
+      // Drawings only: a drag moves the sheet (touch panning is the viewport's own).
+      if (e.pointerType === 'touch') return;
       drag.current = { kind: 'pan', x: e.clientX, y: e.clientY };
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
       return;
@@ -371,7 +379,24 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
         if (hitKind && hitId) {
           p.onSelect(hitId, hitKind);
           const movable = ['furniture', 'column', 'mep_node', 'wall', 'opening'].includes(hitKind);
-          drag.current = movable ? { kind: 'move', target: hitKind, id: hitId, start: raw, base: p.model, moved: false } : { kind: 'pan', x: e.clientX, y: e.clientY };
+          if (movable && e.pointerType === 'touch') {
+            drag.current = { kind: 'pan', x: e.clientX, y: e.clientY };
+            cancelHold();
+            const base = p.model;
+            const target = hitKind;
+            const id = hitId;
+            hold.current = {
+              x: e.clientX,
+              y: e.clientY,
+              timer: window.setTimeout(() => {
+                hold.current = null;
+                if (drag.current?.kind !== 'pan' || vp.touches() !== 1) return;
+                drag.current = { kind: 'move', target, id, start: raw, base, moved: false };
+                navigator.vibrate?.(12);
+                force((n) => n + 1);
+              }, 420),
+            };
+          } else drag.current = movable ? { kind: 'move', target: hitKind, id: hitId, start: raw, base: p.model, moved: false } : { kind: 'pan', x: e.clientX, y: e.clientY };
         } else {
           p.onSelect(null);
           drag.current = { kind: 'pan', x: e.clientX, y: e.clientY };
@@ -433,7 +458,19 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
   const onPointerMove = (e: RPointerEvent<SVGSVGElement>) => {
     const raw = vp.toWorld(e.clientX, e.clientY);
     const d = drag.current;
+    if (hold.current && Math.hypot(e.clientX - hold.current.x, e.clientY - hold.current.y) > 6) cancelHold();
+    // A second finger turns any move or turn into a pinch: drop the edit, nothing changes.
+    if ((d?.kind === 'move' || d?.kind === 'rotate') && vp.touches() > 1) {
+      drag.current = null;
+      setDraft(null);
+      return;
+    }
     if (d?.kind === 'pan') {
+      // Two fingers down is a pinch: the viewport zooms, so this pan must not fight it.
+      if (vp.touches() > 1) {
+        drag.current = { ...d, x: e.clientX, y: e.clientY };
+        return;
+      }
       vp.panBy(e.clientX - d.x, e.clientY - d.y);
       drag.current = { ...d, x: e.clientX, y: e.clientY };
       return;
@@ -473,6 +510,7 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
   };
 
   const onPointerUp = (e: RPointerEvent<SVGSVGElement>) => {
+    cancelHold();
     const d = drag.current;
     drag.current = null;
     if (!d) return;

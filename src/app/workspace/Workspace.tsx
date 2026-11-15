@@ -1118,28 +1118,79 @@ function BottomTab({ icon, label, onClick, dot }: { icon: ReactNode; label: stri
   );
 }
 
+/**
+ * A drawer from the bottom of the screen. Drag its handle (or title bar): up to open it to full
+ * height, down to half, or down past a third to close; a quick flick does the same. Its content
+ * scrolls vertically only and never drags the page behind it.
+ */
 function BottomSheet({ open, onClose, title, children, tall }: { open: boolean; onClose: () => void; title: string; children: ReactNode; tall?: boolean }) {
+  const [snap, setSnap] = useState<'half' | 'full'>(tall ? 'full' : 'half');
+  const [live, setLive] = useState<number | null>(null);
+  const start = useRef<{ y: number; h: number; t: number } | null>(null);
+  useEffect(() => {
+    if (open) setSnap(tall ? 'full' : 'half');
+  }, [open, tall]);
+  const vh = () => window.innerHeight;
+  const snapH = (snap === 'full' ? 0.92 : 0.62) * (typeof window === 'undefined' ? 800 : vh());
+  const height = live ?? snapH;
+
+  const onDown = (e: React.PointerEvent) => {
+    if ((e.target as Element).closest('button')) return;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    start.current = { y: e.clientY, h: height, t: performance.now() };
+    setLive(height);
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const st = start.current;
+    if (!st) return;
+    setLive(Math.min(vh() * 0.95, Math.max(0, st.h - (e.clientY - st.y))));
+  };
+  const onUp = (e: React.PointerEvent) => {
+    const st = start.current;
+    start.current = null;
+    if (!st) return;
+    const h = Math.min(vh() * 0.95, Math.max(0, st.h - (e.clientY - st.y)));
+    const v = (st.y - e.clientY) / Math.max(1, performance.now() - st.t); // px/ms, up is +
+    setLive(null);
+    if (Math.abs(e.clientY - st.y) < 4) return; // a tap on the handle
+    if (h < vh() * 0.32 || v < -0.7) onClose();
+    else setSnap(v > 0.5 || h > vh() * 0.77 ? 'full' : 'half');
+  };
+
   // Kept mounted when closed so the assistant keeps its draft and scroll.
   return (
     <div className={cx('fixed inset-0 z-40', open ? '' : 'pointer-events-none invisible')} aria-hidden={!open}>
-      <div className={cx('absolute inset-0 bg-black/25 transition-opacity', open ? 'opacity-100' : 'opacity-0')} onClick={onClose} />
+      <div className={cx('absolute inset-0 bg-black/25 transition-opacity', open ? 'opacity-100' : 'opacity-0')} style={{ touchAction: 'none' }} onClick={onClose} />
       <div
         role="dialog"
         aria-label={title}
         className={cx(
-          'absolute inset-x-0 bottom-0 flex flex-col rounded-t-sheet bg-surface shadow-float transition-transform duration-300 ease-out',
-          tall ? 'h-[88dvh]' : 'max-h-[80dvh]',
+          'absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-sheet bg-surface shadow-float',
+          live === null && 'transition-[transform,height] duration-300 ease-out',
           open ? 'translate-y-0' : 'translate-y-full'
         )}
+        style={{ height, overscrollBehavior: 'contain' }}
       >
-        <div className="flex shrink-0 items-center justify-between px-5 pb-2 pt-3">
-          <span className="absolute left-1/2 top-2 h-1 w-10 -translate-x-1/2 rounded-full bg-line-strong" />
-          <h2 className="pt-3 text-[15px] font-semibold">{title}</h2>
+        <div
+          className="relative flex shrink-0 cursor-grab items-center justify-between px-5 pb-2 pt-3 active:cursor-grabbing"
+          style={{ touchAction: 'none' }}
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerCancel={onUp}
+        >
+          <span className="absolute left-1/2 top-2 h-1.5 w-12 -translate-x-1/2 rounded-full bg-line-strong" aria-hidden />
+          <h2 className="select-none pt-3 text-[15px] font-semibold">{title}</h2>
           <IconButton label="Close" size="sm" onClick={onClose} className="mt-2">
             <X className="h-4 w-4" />
           </IconButton>
         </div>
-        <div className={cx('min-h-0 flex-1 pb-safe', tall ? 'flex flex-col' : 'overflow-y-auto')}>{children}</div>
+        <div
+          className={cx('min-h-0 flex-1 overflow-x-hidden pb-safe', tall ? 'flex flex-col' : 'overflow-y-auto')}
+          style={{ overscrollBehavior: 'contain', touchAction: 'pan-y' }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );
