@@ -75,7 +75,23 @@ When answering:
 When changing the design:
 - Nothing is applied until the user approves. Your "reasoning" is shown to them before they decide, so think the change through first: how it fits the current plan (sizes, where it goes, what it connects to), knock-on effects (structure, roof, services, cost) and any assumption you made.
 - Make the instruction short, imperative and self-contained for the design engine: only what changes, with dimensions, positions relative to existing rooms and materials. Do not restate things that stay the same (the engine reads every word).
-- If the request is ambiguous in a way that matters, ask with "answer" instead of guessing.`;
+- If the request is ambiguous in a way that matters, ask with "answer" instead of guessing.
+
+Precise edits (preferred whenever possible):
+- The brief lists every element with its id (rooms, walls, openings, furniture, fixtures). Coordinates are plan metres: x east, y south. A level's walls show the building footprint.
+- Use "edits" to change specific elements or place library items. Only use "instruction" alone for whole-design changes the edits can't express (new layout, adding a floor, redesigning rooms).
+- Ops:
+  · add_item {asset, x, y, rotation?, width?, depth?, height?, level?}: place a LIBRARY item (ids in LIBRARY). Rotation in degrees, 0 = item's back to the north. For long runs (boundary walls, fences, hedges) set width to the run length and rotate 90 for north–south runs; place several to go round a plot. x, y is the item's centre.
+  · add_opening {asset, wall_id, at?, width?, height?, sill?}: put a door/window library item into a wall; "at" = metres from the wall's start point.
+  · add_wall {x1,y1,x2,y2, thickness?, height?, exterior?, material?, level?}
+  · move {id, x?, y?, dx?, dy?, rotation?} (openings: x/dx are metres along their wall)
+  · resize {id, width?, depth?, height?}
+  · set {id, props}: walls {thickness, height, isExterior, isLoadBearing, material}; openings {style, width, height, sillHeight, offset, swingDirection, frameColor "#rrggbb", finish}; rooms {name, category, finish, ceilingHeight}; furniture {elevation, height}; fixtures {label, wattage, model}
+  · delete {id}
+  · set_roof {props: type, pitchDeg, overhang, material, parapetHeight}
+  · set_solar {props: enabled, panelCount, panelWattage, inverterKW, batteryKWh, offsetX, offsetY, rotationDeg, roofFace}
+- Keep things outside the building footprint (gardens, gates, boundary) clear of the walls; keep furniture inside its room's extents and clear of doors.
+- When the user refers to a SELECTED element, it is the one they mean.`;
 
 const ASSIST_TOOLS = [
   {
@@ -95,6 +111,39 @@ const ASSIST_TOOLS = [
       properties: {
         instruction: { type: 'string', description: 'The design change as a precise, self-contained instruction (dimensions, rooms, materials).' },
         summary: { type: 'string', description: 'One short sentence telling the user what will change.' },
+        edits: {
+          type: 'array',
+          description: 'Precise edits to apply, in order (see the system prompt for ops). Leave empty only for whole-design changes.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['add_item', 'add_opening', 'add_wall', 'move', 'resize', 'set', 'delete', 'set_roof', 'set_solar'] },
+              id: { type: 'string' },
+              asset: { type: 'string' },
+              wall_id: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+              dx: { type: 'number' },
+              dy: { type: 'number' },
+              x1: { type: 'number' },
+              y1: { type: 'number' },
+              x2: { type: 'number' },
+              y2: { type: 'number' },
+              at: { type: 'number' },
+              rotation: { type: 'number' },
+              width: { type: 'number' },
+              depth: { type: 'number' },
+              height: { type: 'number' },
+              sill: { type: 'number' },
+              thickness: { type: 'number' },
+              exterior: { type: 'boolean' },
+              material: { type: 'string' },
+              level: { type: 'number' },
+              props: { type: 'object' },
+            },
+            required: ['op'],
+          },
+        },
         reasoning: {
           type: 'string',
           description: 'Concise Markdown, shown to the user before they approve: why this approach, how it fits the current plan, knock-on effects and assumptions. 2–5 bullets.',
@@ -113,7 +162,7 @@ const ASSIST_TOOLS = [
 export async function handleAssist(env: Env, req: Request): Promise<Response> {
   if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
   if (!env.ANTHROPIC_API_KEY) return json({ ok: false, error: 'NO_CLAUDE_KEY' }, { status: 503 });
-  const body = await readJson<{ prompt?: string; brief?: unknown; history?: { role: 'user' | 'assistant'; text: string }[] }>(req, 512 * 1024);
+  const body = await readJson<{ prompt?: string; brief?: unknown; library?: unknown; selection?: unknown; history?: { role: 'user' | 'assistant'; text: string }[] }>(req, 768 * 1024);
   const prompt = typeof body.prompt === 'string' ? body.prompt.slice(0, 4000).trim() : '';
   if (!prompt) throw new HttpError(400, 'empty_prompt');
 
@@ -123,7 +172,12 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
     .map((h) => ({ role: h.role, content: h.text.slice(0, 3000) }));
   // The API needs alternating turns starting with the user.
   while (history.length && history[0].role !== 'user') history.shift();
-  const messages = [...history, { role: 'user', content: `PROJECT BRIEF (JSON):\n${JSON.stringify(body.brief ?? {})}\n\nUSER:\n${prompt}` }];
+  const library = Array.isArray(body.library) ? body.library.filter((x) => typeof x === 'string').slice(0, 300).join('\n') : '';
+  const selection = body.selection ? `\n\nSELECTED (the user is pointing at this):\n${JSON.stringify(body.selection).slice(0, 2000)}` : '';
+  const messages = [
+    ...history,
+    { role: 'user', content: `PROJECT BRIEF (JSON):\n${JSON.stringify(body.brief ?? {})}${library ? `\n\nLIBRARY (asset ids):\n${library}` : ''}${selection}\n\nUSER:\n${prompt}` },
+  ];
   const merged: { role: string; content: string }[] = [];
   for (const m of messages) {
     const last = merged[merged.length - 1];
@@ -137,13 +191,21 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 2000, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
+      body: JSON.stringify({ model, max_tokens: 4000, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
     });
     if (resp.ok) {
       const data = (await resp.json()) as { content?: { type: string; name?: string; input?: Record<string, string>; text?: string }[] };
       const call = (data.content ?? []).find((c) => c.type === 'tool_use');
       if (call?.name === 'change_design' && call.input?.instruction)
-        return json({ ok: true, kind: 'change', instruction: call.input.instruction, summary: call.input.summary ?? '', reasoning: call.input.reasoning ?? '', modelUsed: model });
+        return json({
+          ok: true,
+          kind: 'change',
+          instruction: call.input.instruction,
+          summary: call.input.summary ?? '',
+          reasoning: call.input.reasoning ?? '',
+          edits: Array.isArray((call.input as Record<string, unknown>).edits) ? (call.input as Record<string, unknown>).edits : [],
+          modelUsed: model,
+        });
       const text = call?.input?.text ?? (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
       return json({ ok: true, kind: 'answer', text: text || 'I could not work that out. Could you rephrase it?', modelUsed: model });
     }

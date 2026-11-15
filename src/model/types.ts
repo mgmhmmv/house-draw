@@ -247,6 +247,10 @@ export interface Opening {
   sillHeight: number; // meters from floor (0 for doors, ~0.9 for windows)
   swingDirection: 1 | -1; // left/right or inward/outward normal side
   label?: string; // e.g., D1, W1
+  /** Frame (or door leaf) colour, #rrggbb; the project's window-frame / door finish otherwise. */
+  frameColor?: string;
+  /** Finish name for the leaf or frame, e.g. 'oak', 'white', 'anodised'. */
+  finish?: string;
 }
 
 export interface Room {

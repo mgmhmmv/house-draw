@@ -4,6 +4,7 @@ import type { BuildingProject } from '../../model/types';
 import { runPromptArchitect } from '../../ai/promptEngine';
 import { projectBrief } from './projectBrief';
 import { describeChange } from './describeChange';
+import { applyEdits, libraryForAI, type EditOp } from './editOps';
 import type { CommitOptions } from './useProjectDoc';
 import { cx, Spinner } from '../ui';
 
@@ -37,9 +38,19 @@ const SUGGESTIONS = [
   'Move the inverter and battery into the utility room',
 ];
 
+/** An element the user is asking about (from the plan or 3D view). */
+export interface AboutRef {
+  kind: string;
+  id: string;
+  label: string;
+  details?: Record<string, unknown>;
+}
+
 export interface AssistantHandle {
   focus: () => void;
   log: (prompt: string, summary: string) => void;
+  /** Point the next question at an element. */
+  attach: (ref: AboutRef) => void;
 }
 
 interface Props {
@@ -68,6 +79,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
     }
   });
   const [input, setInput] = useState('');
+  const [about, setAbout] = useState<AboutRef | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -86,7 +98,14 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
 
   const log = (prompt: string, summary: string) => setEntries((es) => [...es, { id: Date.now(), prompt, summary, engine: 'tool' }]);
 
-  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus(), log }));
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus(),
+    log,
+    attach: (r: AboutRef) => {
+      setAbout(r);
+      setTimeout(() => inputRef.current?.focus(), 30);
+    },
+  }));
 
   const run = async (text?: string) => {
     const prompt = (text ?? input).trim();
@@ -107,19 +126,37 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
       const routed = await fetch('/api/ai/assist', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, brief: projectBrief(modelRef.current), history }),
+        body: JSON.stringify({ prompt, brief: projectBrief(modelRef.current), library: libraryForAI(), selection: about ?? undefined, history }),
       })
-        .then((r) => r.json() as Promise<{ ok: boolean; kind?: 'answer' | 'change'; text?: string; instruction?: string; summary?: string; reasoning?: string }>)
-        .catch(() => ({ ok: false }) as { ok: false; kind?: undefined; text?: undefined; instruction?: undefined; summary?: undefined; reasoning?: undefined });
+        .then((r) => r.json() as Promise<{ ok: boolean; kind?: 'answer' | 'change'; text?: string; instruction?: string; summary?: string; reasoning?: string; edits?: EditOp[] }>)
+        .catch(() => ({ ok: false }) as { ok: false; kind?: undefined; text?: undefined; instruction?: undefined; summary?: undefined; reasoning?: undefined; edits?: undefined });
 
       if (routed.ok && routed.kind === 'answer') {
         setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: routed.text, engine: 'claude' } : e)));
         return;
       }
-      // A change (or no AI connection): work it out with the design engine, but only propose it.
-      // Nothing touches the project until the user approves.
-      const instruction = routed.ok && routed.kind === 'change' && routed.instruction ? routed.instruction : prompt;
+      // A change: nothing touches the project until the user approves.
       const base = modelRef.current;
+      // Precise edits by element id / library item: applied exactly as proposed.
+      if (routed.ok && routed.kind === 'change' && routed.edits?.length) {
+        const r = applyEdits(base, routed.edits);
+        const diff = describeChange(base, r.next, 50);
+        if (r.applied.length && diff !== 'Edited') {
+          proposals.current.set(id, { base, next: r.next });
+          const failed = r.failed.length ? `\n\n**Couldn't do:** ${r.failed.join('; ')}` : '';
+          setEntries((es) =>
+            es.map((e) => (e.id === id ? { id, prompt, summary: routed.summary || r.applied.join('. '), reasoning: (routed.reasoning ?? '') + failed, changes: r.applied, engine: 'claude', proposal: 'pending', diff } : e))
+          );
+          setAbout(null);
+          return;
+        }
+        if (!r.applied.length && r.failed.length && !routed.instruction) {
+          setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: `I couldn't make that change: ${r.failed.join('; ')}.`, engine: 'claude' } : e)));
+          return;
+        }
+      }
+      // Whole-design changes: the design engine.
+      const instruction = routed.ok && routed.kind === 'change' && routed.instruction ? routed.instruction : prompt;
       const res = await runPromptArchitect(base, instruction, { provider: 'claude' }, prompt);
       const diff = describeChange(base, res.project, 50);
       // 'Edited' means nothing the drawings show changed: the engine couldn't do it.
@@ -216,6 +253,16 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
             Regenerate structure & MEP
           </QuickAction>
         </div>
+        {about && (
+          <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-accent/30 bg-accent-soft px-2.5 py-1.5 text-2xs text-accent">
+            <span className="font-semibold uppercase tracking-wide">About</span>
+            <span className="min-w-0 flex-1 truncate font-medium text-ink">{about.label}</span>
+            <span className="font-mono text-ink-3">{about.id}</span>
+            <button onClick={() => setAbout(null)} aria-label="Remove" className="rounded p-0.5 text-ink-3 hover:text-ink">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-[14px] border border-line bg-raised p-1.5 pl-3.5 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15">
           <textarea
             ref={inputRef}
@@ -232,7 +279,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
                 run();
               }
             }}
-            placeholder="Ask the AI Architect…"
+            placeholder={about ? `Ask about ${about.label}…` : 'Ask the AI Architect…'}
             className="max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent py-2 text-[15px] placeholder:text-ink-3 focus:outline-none sm:text-sm"
           />
           <button

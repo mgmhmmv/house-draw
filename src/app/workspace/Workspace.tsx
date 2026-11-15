@@ -453,6 +453,11 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         traceOpacity={traceOpacity}
         svgRef={svgRef}
         placing={preview ? null : placing}
+        onPlaced={(id, kind) => {
+          // One click places one item; then it is selected, ready to turn or adjust.
+          setPlacing(null);
+          if (id) onSelect(id, kind);
+        }}
       />
 
       {preview && (

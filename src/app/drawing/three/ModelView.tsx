@@ -349,7 +349,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
       {walking && (
         <>
           <div className="pointer-events-none absolute left-1/2 top-16 hidden -translate-x-1/2 rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
-            W A S D to walk · drag to look · Shift to hurry · Esc to leave
+            W A S D to walk · double-click to step there · drag to look · Shift to hurry · Esc to leave
           </div>
           <WalkPad onPress={(m, d) => walkRef.current?.press(m, d)} />
         </>

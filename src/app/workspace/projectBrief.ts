@@ -48,7 +48,20 @@ export function projectBrief(model: BuildingProject) {
       doors: l.openings.filter((o) => o.kind === 'door').map((o) => `${o.label ?? ''} ${o.style} ${Math.round(o.width * 1000)}×${Math.round(o.height * 1000)}mm`.trim()),
       windows: l.openings.filter((o) => o.kind === 'window').map((o) => `${o.label ?? ''} ${o.style} ${Math.round(o.width * 1000)}×${Math.round(o.height * 1000)}mm sill ${Math.round(o.sillHeight * 1000)}`.trim()),
       columns: l.columns.length ? `${l.columns.length} RC columns, e.g. ${Math.round(l.columns[0].width * 1000)}×${Math.round(l.columns[0].depth * 1000)}mm, ${l.columns[0].rebarSpec}, pad ${l.columns[0].footingSize}m` : 'none',
-      furniture: l.furniture.map((f) => f.type),
+      // Every element with its id, so changes can target it exactly.
+      elements: {
+        rooms: l.rooms.map((r) => `${r.id} "${r.name}"`),
+        walls: l.walls.map((w) => `${w.id} (${r2(w.start.x)},${r2(w.start.y)})→(${r2(w.end.x)},${r2(w.end.y)}) ${Math.round(w.thickness * 1000)}mm ${w.isExterior ? 'ext' : 'int'} ${w.material} h${r2(w.height)}`),
+        openings: l.openings.map((o) => {
+          const w = l.walls.find((x) => x.id === o.wallId);
+          const len = w ? wallLength(w) : 0;
+          return `${o.id} ${o.label ?? ''} ${o.kind} ${o.style} ${Math.round(o.width * 1000)}×${Math.round(o.height * 1000)} sill ${Math.round(o.sillHeight * 1000)} on wall ${o.wallId} at ${r2(o.offset * len)}m${o.frameColor ? ` colour ${o.frameColor}` : ''}`;
+        }),
+        furniture: l.furniture.map((f) => `${f.id} ${f.type} at (${r2(f.position.x)},${r2(f.position.y)}) rot ${f.rotation} ${r2(f.width)}×${r2(f.depth)}`),
+        fixtures: l.mepNodes
+          .filter((n) => n.model || ['ac_split', 'ac_condenser', 'ceiling_fan', 'light_ceiling'].includes(n.kind))
+          .map((n) => `${n.id} ${n.model ?? n.kind} at (${r2(n.position.x)},${r2(n.position.y)})`),
+      },
     };
   });
 

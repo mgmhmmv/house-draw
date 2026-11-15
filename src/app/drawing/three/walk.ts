@@ -45,6 +45,8 @@ export class WalkController {
   private fast = false;
   private blockers: Blocker[] = [];
   private drag: { x: number; y: number; id: number } | null = null;
+  /** Double-click walk: heading in the plan and distance still to go. */
+  private auto: { dx: number; dz: number; left: number; yaw: number } | null = null;
 
   constructor(private camera: THREE.PerspectiveCamera, private dom: HTMLElement) {}
 
@@ -100,6 +102,7 @@ export class WalkController {
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('keyup', this.onKey);
     this.dom.addEventListener('pointerdown', this.onDown);
+    this.dom.addEventListener('dblclick', this.onDouble);
     window.addEventListener('pointermove', this.onMove);
     window.addEventListener('pointerup', this.onUp);
   }
@@ -110,7 +113,9 @@ export class WalkController {
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('keyup', this.onKey);
     this.dom.removeEventListener('pointerdown', this.onDown);
+    this.dom.removeEventListener('dblclick', this.onDouble);
     window.removeEventListener('pointermove', this.onMove);
+    this.auto = null;
     window.removeEventListener('pointerup', this.onUp);
     this.camera.fov = 35;
     this.camera.near = 0.1;
@@ -135,6 +140,22 @@ export class WalkController {
     if (this.held.has('back')) (fx += sin, fz += cos);
     if (this.held.has('left')) (fx -= cos, fz += sin);
     if (this.held.has('right')) (fx += cos, fz -= sin);
+    if (this.held.size) this.auto = null; // keys take over
+    if (this.auto) {
+      // Turn towards the target while walking, a few steps in all.
+      let dy = this.auto.yaw - this.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      this.yaw += dy * Math.min(1, dt * 6);
+      const st = Math.min(step * 1.2, this.auto.left);
+      const nx = this.pos.x + this.auto.dx * st;
+      const nz = this.pos.z + this.auto.dz * st;
+      const bx = this.blocked(nx, this.pos.z);
+      const bz = this.blocked(this.pos.x, nz);
+      if (!bx) this.pos.x = nx;
+      if (!bz) this.pos.z = nz;
+      this.auto.left -= st;
+      if (this.auto.left <= 0.001 || (bx && bz)) this.auto = null;
+    }
     const l = Math.hypot(fx, fz);
     if (l > 0) {
       // Move one axis at a time so you slide along walls instead of sticking to them.
@@ -184,8 +205,21 @@ export class WalkController {
     const dx = e.clientX - this.drag.x;
     const dy = e.clientY - this.drag.y;
     this.drag = { ...this.drag, x: e.clientX, y: e.clientY };
-    this.yaw -= dx * 0.0045;
-    this.pitch = Math.max(-1.1, Math.min(1.1, this.pitch - dy * 0.0045));
+    // Drag the scene: the view turns the opposite way to the pointer, like Street View.
+    this.yaw += dx * 0.0045;
+    this.pitch = Math.max(-1.1, Math.min(1.1, this.pitch + dy * 0.0045));
+  };
+
+  /** Double-click: walk a few steps towards the point clicked. */
+  private onDouble = (e: MouseEvent) => {
+    const r = this.dom.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    const d = ray.ray.direction;
+    const h = Math.hypot(d.x, d.z);
+    if (h < 1e-3) return;
+    this.auto = { dx: d.x / h, dz: d.z / h, left: 2.5, yaw: Math.atan2(-d.x, -d.z) };
   };
 
   private onUp = (e: PointerEvent) => {

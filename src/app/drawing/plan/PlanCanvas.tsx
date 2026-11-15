@@ -36,19 +36,32 @@ interface Props {
   traceImageUrl: string | null;
   traceOpacity: number;
   svgRef: RefObject<SVGSVGElement | null>;
-  /** A library item being placed: each click on the plan places one. */
+  /** A library item being placed: the next click on the plan places it. */
   placing?: { def: AssetDef; rotation: number } | null;
+  /** Called after an item is placed, with what was placed (so it can be selected). */
+  onPlaced?: (id: string, kind: SelectableElementKind) => void;
 }
 
 const NS = 'non-scaling-stroke' as const;
 const pts = (a: Vec[]) => a.map((p) => `${p.x},${p.y}`).join(' ');
 const snap = (v: number, step = 0.05) => Math.round(v / step) * step;
 const snapPt = (p: Vec, step = 0.05): Vec => ({ x: snap(p.x, step), y: snap(p.y, step) });
+/** Rotation snapping: square angles pull hardest, then 45°, then 15° steps; Shift for free. */
+const snapAngle = (deg: number, free: boolean) => {
+  const a = ((deg % 360) + 360) % 360;
+  if (free) return Math.round(a);
+  const near = (step: number, tol: number) => {
+    const t = Math.round(a / step) * step;
+    return Math.abs(t - a) <= tol ? t % 360 : null;
+  };
+  return near(90, 8) ?? near(45, 5) ?? Math.round(a / 15) * 15 % 360;
+};
 
 /* Drag state while a pointer is down. The model is edited as a draft and committed on release. */
 type Drag =
   | { kind: 'pan'; x: number; y: number }
   | { kind: 'move'; target: SelectableElementKind; id: string; start: Vec; base: BuildingProject; moved: boolean }
+  | { kind: 'rotate'; target: 'furniture' | 'mep_node'; id: string; center: Vec; base: BuildingProject; angle: number }
   | { kind: 'room_rect'; start: Vec }
   | { kind: 'sketch'; points: Vec[] };
 
@@ -236,13 +249,16 @@ export function PlanCanvas(p: Props) {
           label: `${o.kind === 'door' ? 'D' : 'W'}${lvl.openings.filter((x) => x.kind === o.kind).length + 1}`,
         })
       );
+      p.onPlaced?.('', 'opening');
     } else if (at.kind === 'item' && def.mep) {
       const m = def.mep;
-      edit((lvl) =>
-        lvl.mepNodes.push({ id: uid('mep'), kind: m.kind, system: m.system, position: at.pos, wattage: m.wattage, model: def.id, rotation: at.rot, label: def.name })
-      );
+      const id = uid('mep');
+      edit((lvl) => lvl.mepNodes.push({ id, kind: m.kind, system: m.system, position: at.pos, wattage: m.wattage, model: def.id, rotation: at.rot, label: def.name }));
+      p.onPlaced?.(id, 'mep_node');
     } else if (at.kind === 'item') {
-      edit((lvl) => lvl.furniture.push({ id: uid('f'), type: def.id, position: at.pos, rotation: at.rot, width: def.w, depth: def.d }));
+      const id = uid('f');
+      edit((lvl) => lvl.furniture.push({ id, type: def.id, position: at.pos, rotation: at.rot, width: def.w, depth: def.d }));
+      p.onPlaced?.(id, 'furniture');
     }
   };
 
@@ -259,6 +275,18 @@ export function PlanCanvas(p: Props) {
     if (p.placing) {
       place(raw);
       return;
+    }
+
+    // Rotation handle of the selected item.
+    const rotHandle = (e.target as Element).closest('[data-rotate]') as SVGElement | null;
+    if (rotHandle && p.selectedId) {
+      const f = level.furniture.find((x) => x.id === p.selectedId);
+      const n = level.mepNodes.find((x) => x.id === p.selectedId);
+      const it = f ?? n;
+      if (it) {
+        drag.current = { kind: 'rotate', target: f ? 'furniture' : 'mep_node', id: it.id, center: { ...it.position }, base: p.model, angle: (f ? f.rotation : n?.rotation) ?? 0 };
+        return;
+      }
     }
 
     switch (p.tool) {
@@ -333,6 +361,22 @@ export function PlanCanvas(p: Props) {
       drag.current = { ...d, x: e.clientX, y: e.clientY };
       return;
     }
+    if (d?.kind === 'rotate') {
+      // 0° = handle straight up (north); clockwise like SVG rotate().
+      const ang = snapAngle((Math.atan2(raw.x - d.center.x, -(raw.y - d.center.y)) * 180) / Math.PI, e.shiftKey);
+      d.angle = ang;
+      const next = structuredClone(d.base);
+      const lvl = next.levels[p.levelIndex] ?? next.levels[0];
+      if (d.target === 'furniture') {
+        const f = lvl.furniture.find((x) => x.id === d.id);
+        if (f) f.rotation = ang;
+      } else {
+        const n = lvl.mepNodes.find((x) => x.id === d.id);
+        if (n) n.rotation = ang;
+      }
+      setDraft(next);
+      return;
+    }
     if (d?.kind === 'move') {
       if (!d.moved && Math.hypot(raw.x - d.start.x, raw.y - d.start.y) * k < 4) return;
       d.moved = true;
@@ -355,7 +399,10 @@ export function PlanCanvas(p: Props) {
     drag.current = null;
     if (!d) return;
     const raw = vp.toWorld(e.clientX, e.clientY);
-    if (d.kind === 'move' && d.moved) {
+    if (d.kind === 'rotate') {
+      if (draft) p.onCommit(draft);
+      setDraft(null);
+    } else if (d.kind === 'move' && d.moved) {
       p.onCommit(moveDraft(d, raw));
       setDraft(null);
     } else if (d.kind === 'room_rect') {
@@ -490,6 +537,7 @@ export function PlanCanvas(p: Props) {
               {level.mepNodes.map((n) => (n.model || n.kind === 'ac_split' || n.kind === 'ceiling_fan' ? <Fixture key={n.id} n={n} selected={sel === n.id} /> : null))}
             </g>
           )}
+          {mode === 'plan' && p.tool === 'select' && !p.placing && sel && <RotateHandle level={level} id={sel} k={k} rotating={drag.current?.kind === 'rotate' ? (drag.current as { angle: number }).angle : null} />}
 
           {/* Stairs */}
           <g opacity={wallsFaded}>
@@ -713,7 +761,7 @@ export function PlanCanvas(p: Props) {
       )}
       {p.placing ? (
         <div className="pointer-events-none absolute left-1/2 top-3 hidden -translate-x-1/2 whitespace-nowrap rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
-          Placing {p.placing.def.name} · click to place · R to turn · Esc to stop
+          Placing {p.placing.def.name} · click to place · R to turn · Esc to cancel
         </div>
       ) : (
         <ToolHint tool={p.tool} wallStarted={!!wallStart} />
@@ -996,6 +1044,35 @@ function Furniture({ f, selected }: { f: FurnitureItem; selected: boolean }) {
   );
 }
 
+/** A grab handle off the back of the selected item; drag it round to turn the item. */
+function RotateHandle({ level, id, k, rotating }: { level: FloorLevel; id: string; k: number; rotating: number | null }) {
+  const f = level.furniture.find((x) => x.id === id);
+  const n = !f ? level.mepNodes.find((x) => x.id === id && (x.model || x.kind === 'ac_split' || x.kind === 'ceiling_fan')) : undefined;
+  if (!f && !n) return null;
+  const def = f ? assetFor(f.type) : mepAsset(n!);
+  const pos = (f ?? n)!.position;
+  const rot = (f ? f.rotation : n!.rotation ?? (n!.wallSide ? WALL_SIDE_ROT[n!.wallSide] : 0)) ?? 0;
+  const d = f ? f.depth : def?.d ?? 0.4;
+  const w = f ? f.width : def?.w ?? 0.4;
+  const reach = Math.max(d, w * 0.3) / 2 + 26 / k;
+  const r = 7 / k;
+  return (
+    <g transform={`translate(${pos.x} ${pos.y}) rotate(${rot})`}>
+      <line x1={0} y1={-d / 2} x2={0} y2={-reach + r} stroke={ACCENT} strokeWidth={1.2} vectorEffect={NS} />
+      <circle data-rotate="1" cx={0} cy={-reach} r={r} fill="#FFFFFF" stroke={ACCENT} strokeWidth={1.6} vectorEffect={NS} style={{ cursor: 'grab' }} />
+      <path d={`M ${-r * 0.45} ${-reach - r * 0.1} A ${r * 0.45} ${r * 0.45} 0 1 1 ${r * 0.1} ${-reach + r * 0.42}`} fill="none" stroke={ACCENT} strokeWidth={1.1} vectorEffect={NS} style={{ pointerEvents: 'none' }} />
+      {rotating !== null && (
+        <g transform={`rotate(${-rot} 0 ${-reach - 20 / k})`}>
+          <rect x={-22 / k} y={-reach - 30 / k} width={44 / k} height={18 / k} rx={9 / k} fill="#1A1917" />
+          <text x={0} y={-reach - 21 / k} fontSize={11 / k} fill="#FFFFFF" textAnchor="middle" dominantBaseline="central" style={{ fontFeatureSettings: '"tnum"' }}>
+            {Math.round(rotating)}°
+          </text>
+        </g>
+      )}
+    </g>
+  );
+}
+
 function Fixture({ n, selected }: { n: MEPNode; selected: boolean }) {
   const def = mepAsset(n);
   const prims = useMemo(() => (def ? assetPlan(def, def.w, def.d, def.h, true) : []), [def]);
@@ -1003,8 +1080,10 @@ function Fixture({ n, selected }: { n: MEPNode; selected: boolean }) {
   const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
   return (
     <g data-kind="mep_node" data-id={n.id} transform={`translate(${n.position.x} ${n.position.y}) rotate(${rot})`}>
-      <rect x={-def.w / 2} y={-def.d / 2} width={def.w} height={def.d} fill="transparent" stroke="none" />
-      <PlanPrims prims={prims} ink={selected ? ACCENT : INK_3} width={WEIGHT.light} />
+      {/* Overhead: only its own lines are clickable, so the furniture underneath stays easy to pick. */}
+      <g style={{ pointerEvents: 'visibleStroke' }}>
+        <PlanPrims prims={prims} ink={selected ? ACCENT : INK_3} width={WEIGHT.light} />
+      </g>
     </g>
   );
 }

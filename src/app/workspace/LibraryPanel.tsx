@@ -98,7 +98,7 @@ export function LibraryPanel({ onPick, placingId }: { onPick: (def: AssetDef) =>
             ))}
           </div>
         )}
-        <p className="mt-4 px-1 text-2xs leading-relaxed text-ink-3">Pick an item, then click the plan to place it. R turns it, Esc stops. Wall items snap to the nearest wall.</p>
+        <p className="mt-4 px-1 text-2xs leading-relaxed text-ink-3">Pick an item, then click the plan to place it (R turns it first, Esc cancels). Wall items snap to the nearest wall. Drag the round handle to turn a placed item; it stops at 0°, 45°, 90°… (Shift for free).</p>
       </div>
     </div>
   );

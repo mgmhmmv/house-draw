@@ -29,6 +29,7 @@ interface Props {
   traceOpacity: number;
   svgRef: RefObject<SVGSVGElement | null>;
   placing?: { def: AssetDef; rotation: number } | null;
+  onPlaced?: (id: string, kind: SelectableElementKind) => void;
 }
 
 /**
@@ -76,6 +77,7 @@ export function SheetView(p: Props) {
           traceOpacity={p.traceOpacity}
           svgRef={p.svgRef}
           placing={p.placing}
+          onPlaced={p.onPlaced}
         />
       );
   }
