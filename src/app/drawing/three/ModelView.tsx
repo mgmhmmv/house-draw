@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Maximize2, Scissors, Sun } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Footprints, Maximize2, Scissors, Sun, X } from 'lucide-react';
 import type { BuildingProject } from '../../../model/types';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
+import { WalkController, type Move } from './walk';
 
 type Style = 'rendered' | 'clay' | 'xray';
 type Cut = 'all' | number; // show everything, or levels up to N with the roof off
@@ -24,6 +25,9 @@ export function ModelView({ model }: { model: BuildingProject }) {
   const [showSun, setShowSun] = useState(false);
   const [showCut, setShowCut] = useState(false);
   const [cutZ, setCutZ] = useState<number | null>(null); // horizontal section height (m), null = off
+  const [walking, setWalking] = useState(false);
+  const walkRef = useRef<WalkController | null>(null);
+  const fillRef = useRef<THREE.AmbientLight | null>(null);
 
   // Long-lived three.js objects.
   const ctx = useRef<{
@@ -95,17 +99,27 @@ export function ModelView({ model }: { model: BuildingProject }) {
     ro.observe(host);
     resize();
 
+    // Extra soft light indoors while walking, so rooms under the roof are not in gloom.
+    const fill = new THREE.AmbientLight('#FFFFFF', 0);
+    scene.add(fill);
+    fillRef.current = fill;
+    walkRef.current = new WalkController(camera, renderer.domElement);
+
     const c = { renderer, scene, camera, controls, sun, ground, parts: null as SceneParts | null, frame: 0, fitted: false };
     ctx.current = c;
+    const clock = new THREE.Clock();
     const loop = () => {
       c.frame = requestAnimationFrame(loop);
-      controls.update();
+      const dt = clock.getDelta();
+      if (walkRef.current?.active) walkRef.current.update(dt);
+      else controls.update();
       renderer.render(scene, camera);
     };
     loop();
 
     return () => {
       cancelAnimationFrame(c.frame);
+      walkRef.current?.stop();
       ro.disconnect();
       controls.dispose();
       disposeParts(c);
@@ -161,6 +175,35 @@ export function ModelView({ model }: { model: BuildingProject }) {
     }
   }, [cutZ, parts]);
 
+  // Walk mode on/off.
+  useEffect(() => {
+    const c = ctx.current;
+    const w = walkRef.current;
+    if (!c || !w) return;
+    if (walking) {
+      const li = cut === 'all' ? 0 : Math.min(cut, model.levels.length - 1);
+      c.controls.enabled = false;
+      w.start(model.levels[li]);
+      if (fillRef.current) fillRef.current.intensity = 0.9;
+      const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && setWalking(false);
+      window.addEventListener('keydown', onEsc);
+      return () => window.removeEventListener('keydown', onEsc);
+    }
+    if (w.active) {
+      w.stop();
+      c.controls.enabled = true;
+      if (fillRef.current) fillRef.current.intensity = 0;
+      applyPreset(c, 'iso');
+    }
+    // Re-enter only when toggled; level changes while walking are ignored on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walking]);
+
+  // Doors stand open while walking, so you can see and step through them.
+  useEffect(() => {
+    for (const g of parts.levels) g.traverse((o) => o.userData.kind === 'door' && (o.visible = !walking));
+  }, [walking, parts]);
+
   // Cutaway: hide the roof and levels above the chosen one.
   useEffect(() => {
     const c = ctx.current;
@@ -213,6 +256,15 @@ export function ModelView({ model }: { model: BuildingProject }) {
         />
       </div>
 
+      {walking && (
+        <>
+          <div className="pointer-events-none absolute left-1/2 top-16 hidden -translate-x-1/2 rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
+            W A S D to walk · drag to look · Shift to hurry · Esc to leave
+          </div>
+          <WalkPad onPress={(m, d) => walkRef.current?.press(m, d)} />
+        </>
+      )}
+
       <div className="absolute bottom-[84px] right-3 flex flex-col items-end gap-2 lg:bottom-4">
         {showCut && (
           <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
@@ -238,7 +290,15 @@ export function ModelView({ model }: { model: BuildingProject }) {
             <input type="range" min={6.5} max={17.5} step={0.25} value={hour} onChange={(e) => setHour(Number(e.target.value))} className="w-36 accent-[rgb(var(--accent))]" aria-label="Time of day" />
           </div>
         )}
+        {walking ? (
+          <button onClick={() => setWalking(false)} className="flex h-10 items-center gap-2 rounded-[12px] bg-ink px-4 text-[13px] font-medium text-page shadow-float">
+            <X className="h-4 w-4" /> Leave walk
+          </button>
+        ) : (
         <div className="flex overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur">
+          <button onClick={() => setWalking(true)} className="flex h-9 items-center gap-1.5 border-r border-line px-3 text-[13px] font-medium text-ink-2 hover:bg-sunken hover:text-ink" title="Walk through">
+            <Footprints className="h-4 w-4" /> Walk
+          </button>
           {(['iso', 'front', 'side', 'top'] as Preset[]).map((p) => (
             <button
               key={p}
@@ -258,6 +318,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
             <Maximize2 className="h-4 w-4" />
           </button>
         </div>
+        )}
       </div>
     </div>
   );
@@ -311,4 +372,32 @@ function applyPreset(c: { camera: THREE.PerspectiveCamera; controls: OrbitContro
   c.camera.position.copy(center).addScaledVector(dirs[preset].normalize(), dist);
   c.controls.target.copy(center);
   c.controls.update();
+}
+
+/** Touch pad for walking on phones and tablets (also usable with a mouse). */
+function WalkPad({ onPress }: { onPress: (m: Move, down: boolean) => void }) {
+  const btn = (m: Move, icon: React.ReactNode, cls: string) => (
+    <button
+      aria-label={m}
+      className={cx('absolute flex h-12 w-12 items-center justify-center rounded-full bg-surface/90 text-ink shadow-float backdrop-blur active:bg-ink active:text-page', cls)}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        onPress(m, true);
+      }}
+      onPointerUp={() => onPress(m, false)}
+      onPointerCancel={() => onPress(m, false)}
+      onPointerLeave={() => onPress(m, false)}
+    >
+      {icon}
+    </button>
+  );
+  return (
+    <div className="absolute bottom-[84px] left-4 h-[156px] w-[156px] select-none lg:bottom-6" style={{ touchAction: 'none' }}>
+      {btn('forward', <ChevronUp className="h-5 w-5" />, 'left-[54px] top-0')}
+      {btn('left', <ChevronLeft className="h-5 w-5" />, 'left-0 top-[54px]')}
+      {btn('right', <ChevronRight className="h-5 w-5" />, 'left-[108px] top-[54px]')}
+      {btn('back', <ChevronDown className="h-5 w-5" />, 'left-[54px] top-[108px]')}
+    </div>
+  );
 }

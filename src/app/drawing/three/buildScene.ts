@@ -105,6 +105,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   const levelBuckets = model.levels.map(() => new Map<string, Bucket>());
   const roofBuckets = new Map<string, Bucket>();
   const levelEdges = model.levels.map(() => [] as number[]);
+  const doorEdges = model.levels.map(() => [] as number[]);
   const roofEdges: number[] = [];
   const bucket = (map: Map<string, Bucket>, kind: Bucket['kind'], color: string) => {
     const key = `${kind}|${color}`;
@@ -123,7 +124,9 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     } else {
       const li = levelOf(f, elevations);
       triangulate(f, bucket(levelBuckets[li], f.kind, f.fill));
-      if (f.kind !== 'reveal') edgesOf(f, levelEdges[li]);
+      // Door leaves keep their own edges so walk mode can swing them open (hide) together.
+      if (f.kind === 'door') edgesOf(f, doorEdges[li]);
+      else if (f.kind !== 'reveal') edgesOf(f, levelEdges[li]);
     }
   }
 
@@ -147,6 +150,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
       const mat = materialFor(b.kind, b.color, clay);
       materials.push(mat);
       const mesh = new THREE.Mesh(geo, mat);
+      mesh.userData.kind = b.kind;
       mesh.castShadow = b.kind !== 'glass' && b.kind !== 'floor';
       mesh.receiveShadow = b.kind !== 'glass';
       mesh.renderOrder = b.kind === 'glass' ? 2 : 0;
@@ -169,6 +173,12 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     const e = toEdges(levelEdges[i]);
     g.add(e);
     edges.push(e);
+    if (doorEdges[i].length) {
+      const de = toEdges(doorEdges[i]);
+      de.userData.kind = 'door';
+      g.add(de);
+      edges.push(de);
+    }
   });
   const roof = toGroup(roofBuckets);
   const re = toEdges(roofEdges);
@@ -252,6 +262,25 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
       site.add(pad);
     }
   }
+
+  // Ceilings: one per room at its ceiling height, facing down only, so they close the room
+  // when you walk inside but vanish when you look into a cutaway from above.
+  const ceilMat = new THREE.MeshStandardMaterial({ color: clay ? '#F4F2EE' : '#F7F6F2', roughness: 0.95, side: THREE.FrontSide });
+  materials.push(ceilMat);
+  model.levels.forEach((lvl, i) => {
+    const wallTop = Math.max(...lvl.walls.map((w) => w.height), 2.4);
+    for (const r of lvl.rooms) {
+      if (r.polygon.length < 3) continue;
+      const shape = new THREE.Shape(r.polygon.map((p) => new THREE.Vector2(p.x, p.y)));
+      const geo = new THREE.ShapeGeometry(shape);
+      geo.rotateX(Math.PI / 2); // plan (x, y) → (x, ·, y), normal pointing down
+      const m = new THREE.Mesh(geo, ceilMat);
+      m.position.y = lvl.elevation + Math.min(r.ceilingHeight || wallTop, wallTop) - 0.002;
+      m.receiveShadow = true;
+      m.userData.kind = 'ceiling';
+      levels[i].add(m);
+    }
+  });
 
   // Furniture and AC units, so cutaway and X-ray views read as rooms.
   model.levels.forEach((lvl, i) => {
