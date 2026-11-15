@@ -21,6 +21,7 @@ import {
   Wall,
   WallMaterial,
   WindowFrameFinish,
+  WiringRouteMode,
 } from '../model/types';
 import {
   autoGenerateStructuralGrid,
@@ -29,7 +30,12 @@ import {
   uid,
   wallLength,
 } from '../engine/geometry';
-import { autoPopulateMEPForLevel } from '../engine/mepEngine';
+import {
+  autoPopulateMEPForLevel,
+  computePVAndEquipmentRoutes,
+  getCoreElectricalNodes,
+  relocateMEPNode,
+} from '../engine/mepEngine';
 import { DEFAULT_BOQ_RATES } from '../model/presets';
 
 export interface AILLMConfig {
@@ -83,6 +89,14 @@ interface ClaudeArchitecturalPlan {
   climateZone?: ClimateZone;
   solar?: Partial<SolarPVConfig>;
   hvac?: Partial<HVACConfig>;
+  equipment?: {
+    mdb?: { x: number; y: number };
+    utility_meter?: { x: number; y: number };
+    solar_inv?: { x: number; y: number };
+    solar_bess?: { x: number; y: number };
+    dcRouteMode?: WiringRouteMode;
+    acRouteMode?: WiringRouteMode;
+  };
   levels?: ClaudePlanLevel[];
 }
 
@@ -1154,8 +1168,8 @@ function synthesizeParametricHouse(prompt: string, baseRates = DEFAULT_BOQ_RATES
 
 const CLAUDE_DIRECT_SYSTEM_PROMPT = `You are a Senior Licensed Architect & Structural/MEP BIM Engineer for ArchStudio BIM.
 Respond with JSON ONLY matching:
-{"action":"new_building"|"modify_building","reasoning":string,"title":string,"width":number,"depth":number,"stories":1|2|3,"bedrooms":number,"hasGarage":boolean,"hasOffice":boolean,"roofType":"hip"|"gable"|"flat"|"shed","pitchDeg":number,"roofMaterial":"standing_seam"|"clay_tile"|"natural_slate"|"asphalt_shingle"|"cedar_shake"|"green_roof"|"corrugated_metal"|"marine_metal"|"thatch_palm"|"concrete_slab","wallMaterial":"brick"|"cmu"|"cinder_block"|"coral_stone"|"concrete"|"timber","exteriorFacade":"white_render"|"cement_plaster"|"coral_render"|"tropical_louvres"|"exposed_brick"|"charcoal_cladding"|"stone_veneer"|"timber_slats"|"travertine_stone","interiorWalls":"matte_white"|"smooth_cement_plaster"|"teak_paneling"|"warm_beige"|"sage_green"|"venetian_plaster"|"exposed_concrete"|"oak_paneling","windowFrame":"anthracite"|"matte_black"|"bronze"|"silver_anodized"|"timber_oak","doorMaterial":"walnut"|"oak"|"matte_black"|"white_lacquer"|"frosted_glass","floorFinish":"porcelain"|"hardwood"|"herringbone_oak"|"carrara_marble"|"terrazzo","climateZone":"maldives_tropical"|"temperate"|"arid_desert"|"mediterranean","solar":{"enabled":boolean,"panelCount":number,"inverterKW":number,"batteryKWh":number},"hvac":{"enabled":boolean,"ceilingFansEnabled":boolean},"levels":[{"name":string,"rooms":[{"name":string,"category":"living"|"kitchen"|"dining"|"bedroom"|"bathroom"|"hallway"|"garage"|"office"|"utility"|"porch","x":number,"y":number,"w":number,"h":number}]}]}
-Rules: Every room inside [0,width]x[0,depth], ZERO overlaps, contiguous tiling, always include a "hallway" spine. For Maldives/tropical requests use "cinder_block", "cement_plaster", "marine_metal", and "maldives_tropical".`;
+{"action":"new_building"|"modify_building","reasoning":string,"title":string,"width":number,"depth":number,"stories":1|2|3,"bedrooms":number,"hasGarage":boolean,"hasOffice":boolean,"roofType":"hip"|"gable"|"flat"|"shed","pitchDeg":number,"roofMaterial":"standing_seam"|"clay_tile"|"natural_slate"|"asphalt_shingle"|"cedar_shake"|"green_roof"|"corrugated_metal"|"marine_metal"|"thatch_palm"|"concrete_slab","wallMaterial":"brick"|"cmu"|"cinder_block"|"coral_stone"|"concrete"|"timber","exteriorFacade":"white_render"|"cement_plaster"|"coral_render"|"tropical_louvres"|"exposed_brick"|"charcoal_cladding"|"stone_veneer"|"timber_slats"|"travertine_stone","interiorWalls":"matte_white"|"smooth_cement_plaster"|"teak_paneling"|"warm_beige"|"sage_green"|"venetian_plaster"|"exposed_concrete"|"oak_paneling","windowFrame":"anthracite"|"matte_black"|"bronze"|"silver_anodized"|"timber_oak","doorMaterial":"walnut"|"oak"|"matte_black"|"white_lacquer"|"frosted_glass","floorFinish":"porcelain"|"hardwood"|"herringbone_oak"|"carrara_marble"|"terrazzo","climateZone":"maldives_tropical"|"temperate"|"arid_desert"|"mediterranean","solar":{"enabled":boolean,"panelCount":number,"inverterKW":number,"batteryKWh":number},"hvac":{"enabled":boolean,"ceilingFansEnabled":boolean},"equipment":{"mdb":{"x":number,"y":number},"utility_meter":{"x":number,"y":number},"solar_inv":{"x":number,"y":number},"solar_bess":{"x":number,"y":number},"dcRouteMode":"auto"|"north_wall"|"south_wall"|"west_wall"|"east_wall"|"corridor","acRouteMode":"auto"|"north_wall"|"south_wall"|"west_wall"|"east_wall"|"corridor"},"levels":[{"name":string,"rooms":[{"name":string,"category":"living"|"kitchen"|"dining"|"bedroom"|"bathroom"|"hallway"|"garage"|"office"|"utility"|"porch","x":number,"y":number,"w":number,"h":number}]}]}
+Rules: When moving electrical items (MDB, inverter, battery, meter) into an interior room or entrance/foyer, use "action":"modify_building", omit "levels", and set "equipment" coordinates inside that room's bounds. Every room inside [0,width]x[0,depth], ZERO overlaps, contiguous tiling, always include a "hallway" spine. For Maldives/tropical requests use "cinder_block", "cement_plaster", "marine_metal", and "maldives_tropical".`;
 
 async function requestClaudePlan(
   prompt: string,
@@ -1163,17 +1177,51 @@ async function requestClaudePlan(
   llmConfig: AILLMConfig
 ): Promise<{ plan: ClaudeArchitecturalPlan; modelUsed: string }> {
   const g0 = currentProject.levels[0];
-  const bb = g0 ? levelBoundingBox(g0) : { width: 14, depth: 10 };
+  const bb = g0 ? levelBoundingBox(g0) : { minX: 0, minY: 0, maxX: 14, maxY: 10, width: 14, depth: 10 };
+  const roomBounds = (g0?.rooms || []).map((r) => {
+    const xs = r.polygon.map((p) => p.x);
+    const ys = r.polygon.map((p) => p.y);
+    return {
+      name: r.name,
+      category: r.category,
+      bounds: {
+        minX: Number(Math.min(...xs).toFixed(2)),
+        minY: Number(Math.min(...ys).toFixed(2)),
+        maxX: Number(Math.max(...xs).toFixed(2)),
+        maxY: Number(Math.max(...ys).toFixed(2)),
+      },
+    };
+  });
+  const entranceRoom =
+    roomBounds.find((r) => /foyer|entrance|entry|gallery|hall/i.test(r.name) || r.category === 'hallway') ?? null;
+  const coreEquip = g0 ? getCoreElectricalNodes(g0) : null;
+
   const projectContext = {
     title: currentProject.meta.title,
-    footprintMeters: { width: Number(bb.width.toFixed(1)), depth: Number(bb.depth.toFixed(1)) },
+    footprintMeters: {
+      minX: Number(bb.minX.toFixed(2)),
+      minY: Number(bb.minY.toFixed(2)),
+      maxX: Number(bb.maxX.toFixed(2)),
+      maxY: Number(bb.maxY.toFixed(2)),
+      width: Number(bb.width.toFixed(1)),
+      depth: Number(bb.depth.toFixed(1)),
+    },
     stories: currentProject.levels.length,
     roof: currentProject.roof,
     solar: getSolarConfig(currentProject),
     design: getDesignConfig(currentProject),
-    levels: currentProject.levels.map((l) => ({
+    entranceRoom,
+    currentEquipment: coreEquip
+      ? {
+          mdb: coreEquip.mdb.position,
+          utility_meter: coreEquip.meter.position,
+          solar_inv: coreEquip.inverter.position,
+          solar_bess: coreEquip.bess.position,
+        }
+      : null,
+    levels: currentProject.levels.map((l, idx) => ({
       name: l.name,
-      rooms: l.rooms.map((r) => r.name),
+      rooms: idx === 0 ? roomBounds : l.rooms.map((r) => r.name),
     })),
   };
 
@@ -1285,7 +1333,151 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
     }
   }
 
-  // 1c. Solar PV & Battery Storage configuration
+  // 1c. Electrical Equipment Relocation (MDB, Hybrid Inverter, BESS Battery, Utility Meter) & Wiring Routes
+  const isRelocateVerb =
+    /\b(move|relocate|shift|put|place|bring|install|reposition|transfer|keep|inside|interior|indoors)\b/i.test(prompt);
+  const mentionsCoreEquip =
+    /(electrical\s*(?:item|items|panel|panels|gear|equipment|box|boxes|board)?|mdb|main\s*db|distribution\s*board|breaker|inverter|inv\b|battery|bess|utility\s*meter|kwh\s*meter|meter)/i.test(
+      prompt
+    );
+  const isEquipMoveRequest = isRelocateVerb && mentionsCoreEquip;
+
+  if (isEquipMoveRequest && next.levels[0]) {
+    const g0 = next.levels[0];
+    const bb = levelBoundingBox(g0);
+    const hasGroupWords =
+      /(electrical\s*(?:item|items|equipment|gear|stuff|panel|panels|box|boxes)|all\b|everything|\betc\b)/i.test(prompt);
+    const moveTargets: Array<'mdb' | 'solar_inv' | 'solar_bess' | 'utility_meter'> = [];
+    if (hasGroupWords || /\b(mdb|main\s*db|distribution|breaker)\b/i.test(prompt)) moveTargets.push('mdb');
+    if (hasGroupWords || /\b(inverter|inv)\b/i.test(prompt)) moveTargets.push('solar_inv');
+    if (hasGroupWords || /\b(bess|battery)\b/i.test(prompt)) moveTargets.push('solar_bess');
+    if (hasGroupWords || /\b(meter|kwh)\b/i.test(prompt)) moveTargets.push('utility_meter');
+    if (moveTargets.length === 0) moveTargets.push('mdb', 'solar_inv', 'solar_bess', 'utility_meter');
+
+    // Resolve target room on Ground Floor
+    const wantsEntrance = /enterance|entrance|entry|foyer|lobby|vestibule|front\s*door|gallery|hall/i.test(prompt);
+    const wantsInside = /inside|interior|in\s+the\s+house|indoors/i.test(prompt) || wantsEntrance;
+
+    const findTargetRoom = (): Room | undefined => {
+      const rooms = g0.rooms;
+      if (wantsEntrance) {
+        const foyerMatch = rooms.find(
+          (r) =>
+            /foyer|entrance|entry|gallery/i.test(r.name) ||
+            (r.category === 'hallway' && Math.max(...r.polygon.map((p) => p.y)) >= bb.maxY - 1.5)
+        );
+        if (foyerMatch) return foyerMatch;
+        const anyHall = rooms.find((r) => r.category === 'hallway' || /hall|corridor/i.test(r.name));
+        if (anyHall) return anyHall;
+      }
+      const roomPatterns: [RegExp, RegExp, RoomCategory?][] = [
+        [/kitchen/i, /kitchen/i, 'kitchen'],
+        [/living|lounge/i, /living|lounge/i, 'living'],
+        [/dining/i, /dining/i, 'dining'],
+        [/study|office|flex/i, /study|office|flex/i, 'office'],
+        [/utility|laundry|service|plant/i, /utility|laundry|plant/i, 'utility'],
+        [/garage|carport/i, /garage|carport/i, 'garage'],
+        [/master/i, /master/i, 'bedroom'],
+        [/bedroom/i, /bedroom/i, 'bedroom'],
+        [/bath/i, /bath/i, 'bathroom'],
+        [/porch|veranda/i, /porch|veranda/i, 'porch'],
+      ];
+      for (const [promptRx, nameRx, cat] of roomPatterns) {
+        if (promptRx.test(prompt)) {
+          const hit = rooms.find((r) => nameRx.test(r.name) || (cat ? r.category === cat : false));
+          if (hit) return hit;
+        }
+      }
+      if (wantsInside) {
+        return (
+          rooms.find((r) => /foyer|entrance|gallery/i.test(r.name) || r.category === 'hallway') ?? rooms[0]
+        );
+      }
+      return undefined;
+    };
+
+    const targetRoom = findTargetRoom();
+    const pvRoutes = computePVAndEquipmentRoutes(next, 0);
+    const pvOrigin = pvRoutes.pvCombinerPos;
+    const movedLabels: string[] = [];
+
+    if (targetRoom && targetRoom.polygon.length >= 3) {
+      const xs = targetRoom.polygon.map((p) => p.x);
+      const ys = targetRoom.polygon.map((p) => p.y);
+      const rMinX = Math.min(...xs);
+      const rMaxX = Math.max(...xs);
+      const rMinY = Math.min(...ys);
+      const rMaxY = Math.max(...ys);
+      const rW = rMaxX - rMinX;
+      const rD = rMaxY - rMinY;
+      const wallInset = 0.28;
+
+      const preferNorth = /\bnorth|back|rear\b/i.test(prompt);
+      const preferSouth = /\bsouth|front\b/i.test(prompt);
+      const preferEast = /\beast|right\b/i.test(prompt);
+      const preferWest = /\bwest|left\b/i.test(prompt);
+
+      const useHorizWall = preferNorth || preferSouth || (!preferEast && !preferWest && rW > rD + 0.6);
+      const count = moveTargets.length;
+
+      moveTargets.forEach((kind, idx) => {
+        let px: number;
+        let py: number;
+        if (useHorizWall) {
+          const usableW = Math.max(0.4, rW - 0.8);
+          const spacing = Math.min(0.65, usableW / Math.max(1, count));
+          const startX = rMinX + Math.max(0.42, (rW - spacing * (count - 1)) / 2);
+          px = Math.min(rMaxX - 0.3, Math.max(rMinX + 0.3, startX + idx * spacing));
+          py = preferSouth ? rMaxY - wallInset : rMinY + wallInset;
+        } else {
+          // Place along the room's clear interior side wall away from South front entry door
+          const usableD = Math.max(0.4, rD - 1.25);
+          const spacing = Math.min(0.65, usableD / Math.max(1, count));
+          const startY = rMinY + 0.55;
+          px = preferEast ? rMaxX - wallInset : rMinX + wallInset;
+          py = Math.min(rMaxY - 0.55, Math.max(rMinY + 0.35, startY + idx * spacing));
+        }
+        relocateMEPNode(g0, kind, { x: Number(px.toFixed(2)), y: Number(py.toFixed(2)) }, pvOrigin);
+        movedLabels.push(`${kind === 'mdb' ? 'MDB-1' : kind === 'solar_inv' ? 'HYB-INV' : kind === 'solar_bess' ? 'BESS' : 'KWH-MTR'} (${px.toFixed(2)}m, ${py.toFixed(2)}m)`);
+      });
+
+      const curSolar = getSolarConfig(next);
+      next.solar = {
+        ...curSolar,
+        dcWaypoints: undefined,
+        acWaypoints: undefined,
+      };
+      changes.push(`Moved ${movedLabels.join(', ')} inside ${targetRoom.name}`);
+    } else {
+      // Cardinal exterior/interior wall fallback when no specific room matched
+      const side: 'west' | 'north' | 'east' | 'south' = /\bnorth\b/i.test(prompt)
+        ? 'north'
+        : /\beast\b/i.test(prompt)
+        ? 'east'
+        : /\bsouth\b/i.test(prompt)
+        ? 'south'
+        : 'west';
+      const insetSign = wantsInside ? 0.32 : -0.14;
+      moveTargets.forEach((kind, idx) => {
+        const slot = 0.65 + idx * 0.72;
+        const pos =
+          side === 'west'
+            ? { x: bb.minX + insetSign, y: bb.minY + slot }
+            : side === 'east'
+            ? { x: bb.maxX - insetSign, y: bb.minY + slot }
+            : side === 'north'
+            ? { x: bb.minX + slot, y: bb.minY + insetSign }
+            : { x: (bb.minX + bb.maxX) / 2 - 1.1 + idx * 0.65, y: bb.maxY - insetSign };
+        relocateMEPNode(g0, kind, pos, pvOrigin);
+        movedLabels.push(kind);
+      });
+      const curSolar = getSolarConfig(next);
+      next.solar = { ...curSolar, dcWaypoints: undefined, acWaypoints: undefined };
+      changes.push(`Moved ${movedLabels.join(', ')} to ${wantsInside ? 'interior ' : ''}${side} wall`);
+    }
+  }
+
+  // 1d. Solar PV & Battery Storage configuration (skip sizing overwrite when prompt only relocates equipment)
   const hvacState = getHVACConfig(next);
   if (/(no solar|remove solar|disable solar|solar off)/i.test(prompt)) {
     const cur = getSolarConfig(next);
@@ -1294,7 +1486,10 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
       autoPopulateMEPForLevel(l, false, hvacState.enabled, hvacState.ceilingFansEnabled)
     );
     changes.push('Disabled Solar PV array & BESS circuits');
-  } else if (/(solar|pv\b|photovoltaic|inverter|bess|battery)/i.test(prompt)) {
+  } else if (
+    /(solar|pv\b|photovoltaic|inverter|bess|battery)/i.test(prompt) &&
+    (!isEquipMoveRequest || /\d+\s*(?:panel|panels|module|modules|kwp?|kwh)/i.test(prompt))
+  ) {
     const cur = getSolarConfig(next);
     const panelMatch = lower.match(/(\d+)\s*(?:panel|panels|module|modules)/);
     const kwMatch = lower.match(/(\d+(?:\.\d+)?)\s*kwp?\b/);
@@ -1543,8 +1738,8 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
     }
   }
 
-  // 6. Auto MEP or structural column refresh
-  if (lower.includes('mep') || lower.includes('electrical') || lower.includes('plumbing') || lower.includes('schematic')) {
+  // 6. Auto MEP or structural column refresh (never overwrite explicitly relocated equipment)
+  if (!isEquipMoveRequest && (lower.includes('mep') || lower.includes('electrical') || lower.includes('plumbing') || lower.includes('schematic'))) {
     next.levels = next.levels.map((l) => autoPopulateMEPForLevel(l, getSolarConfig(next).enabled));
     changes.push('Regenerated Electrical circuits, Solar PV and Plumbing fixture routing across all floors');
   }
@@ -1578,7 +1773,13 @@ export async function runPromptArchitect(
   if (!llmConfig || llmConfig.provider === 'claude') {
     try {
       const { plan, modelUsed } = await requestClaudePlan(prompt, currentProject, llmConfig || { provider: 'claude' });
-      const action = plan.action || (wantsNewHouse ? 'new_building' : 'modify_building');
+      const isModifyVerb = /\b(move|relocate|shift|put|place|bring|reposition|change|update|modify|route|add)\b/i.test(
+        prompt
+      );
+      const action =
+        !wantsNewHouse && isModifyVerb && currentProject.levels[0].walls.length > 0
+          ? 'modify_building'
+          : plan.action || (wantsNewHouse ? 'new_building' : 'modify_building');
 
       if (action === 'new_building' || currentProject.levels[0].walls.length === 0) {
         const width = Math.max(9.5, Math.min(30, Number(plan.width) || 14));
@@ -1662,6 +1863,7 @@ export async function runPromptArchitect(
       };
       if (plan.solar) {
         const curSolar = getSolarConfig(next);
+        const solarToggleChanged = plan.solar.enabled !== undefined && plan.solar.enabled !== curSolar.enabled;
         next.solar = {
           ...curSolar,
           enabled: plan.solar.enabled ?? curSolar.enabled,
@@ -1669,7 +1871,51 @@ export async function runPromptArchitect(
           inverterKW: plan.solar.inverterKW ?? curSolar.inverterKW,
           batteryKWh: plan.solar.batteryKWh ?? curSolar.batteryKWh,
         };
-        next.levels = next.levels.map((l) => autoPopulateMEPForLevel(l, next.solar!.enabled));
+        if (solarToggleChanged) {
+          next.levels = next.levels.map((l) => autoPopulateMEPForLevel(l, next.solar!.enabled));
+        }
+      }
+      if (plan.equipment && next.levels[0]) {
+        const g0 = next.levels[0];
+        const bb0 = levelBoundingBox(g0);
+        const pvOrigin = computePVAndEquipmentRoutes(next, 0).pvCombinerPos;
+        const alreadyMovedLocally = changes.some((c) => c.startsWith('Moved '));
+        const mustBeInside = /inside|interior|enterance|entrance|entry|foyer|in\s+the\s+house|indoors/i.test(prompt);
+        const clampIfInside = (pt: { x: number; y: number }) =>
+          mustBeInside
+            ? {
+                x: Math.min(bb0.maxX - 0.3, Math.max(bb0.minX + 0.3, pt.x)),
+                y: Math.min(bb0.maxY - 0.3, Math.max(bb0.minY + 0.3, pt.y)),
+              }
+            : pt;
+        if (!alreadyMovedLocally) {
+          const eqEntries: Array<['mdb' | 'utility_meter' | 'solar_inv' | 'solar_bess', { x: number; y: number } | undefined]> = [
+            ['mdb', plan.equipment.mdb],
+            ['utility_meter', plan.equipment.utility_meter],
+            ['solar_inv', plan.equipment.solar_inv],
+            ['solar_bess', plan.equipment.solar_bess],
+          ];
+          const applied: string[] = [];
+          for (const [k, pos] of eqEntries) {
+            if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+              const finalPos = clampIfInside(pos);
+              relocateMEPNode(g0, k, finalPos, pvOrigin);
+              applied.push(`${k}(${finalPos.x.toFixed(1)},${finalPos.y.toFixed(1)})`);
+            }
+          }
+          if (applied.length > 0) {
+            next.solar = { ...getSolarConfig(next), dcWaypoints: undefined, acWaypoints: undefined };
+            changes.push(`Claude positioned equipment: ${applied.join(', ')}`);
+          }
+        }
+        if (plan.equipment.dcRouteMode || plan.equipment.acRouteMode) {
+          next.solar = {
+            ...getSolarConfig(next),
+            ...(plan.equipment.dcRouteMode ? { dcRouteMode: plan.equipment.dcRouteMode, dcWaypoints: undefined } : {}),
+            ...(plan.equipment.acRouteMode ? { acRouteMode: plan.equipment.acRouteMode, acWaypoints: undefined } : {}),
+          };
+          changes.push('Updated AI conduit route presets');
+        }
       }
       if (plan.floorFinish) {
         next.levels = next.levels.map((l) => ({
@@ -1686,7 +1932,8 @@ export async function runPromptArchitect(
 
       return {
         project: next,
-        summary: plan.reasoning || changes.join('. ') + '.',
+        summary:
+          changes.length > 0 ? changes.join('. ') + '.' : plan.reasoning || `Applied architectural modifications (${modelUsed}).`,
         changes,
         reasoning: plan.reasoning,
         engineUsed: 'claude',

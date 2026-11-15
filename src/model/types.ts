@@ -41,6 +41,103 @@ export type RoofMaterial =
   | 'marine_metal'
   | 'thatch_palm';
 
+export type GutterProfile =
+  | 'half_round_pvc'
+  | 'k_style_alu'
+  | 'box_concealed'
+  | 'copper_half_round';
+
+export type WaterCollectionMode =
+  | 'harvesting_tank'
+  | 'underground_cistern'
+  | 'municipal_storm'
+  | 'soakaway_pit'
+  | 'garden_redirect';
+
+export interface RoofDrainageConfig {
+  gutterEnabled: boolean;
+  gutterProfile: GutterProfile;
+  downpipeCount: number;
+  waterCollectionMode: WaterCollectionMode;
+  harvestingTankLiters: number;
+  firstFlushDiverter: boolean;
+}
+
+export const GUTTER_PROFILE_META: Record<
+  GutterProfile,
+  { label: string; shortLabel: string; spec: string; colorHex: string; ratePerM: number }
+> = {
+  half_round_pvc: {
+    label: '150mm uPVC Half-Round Gutter',
+    shortLabel: 'uPVC Half-Round',
+    spec: 'Ø150mm UV-Stabilized uPVC + Ø100mm RWP',
+    colorHex: '#e2e8f0',
+    ratePerM: 22,
+  },
+  k_style_alu: {
+    label: '150mm Powder-Coated K-Style Aluminum',
+    shortLabel: 'K-Style Aluminum',
+    spec: '150mm Marine-Grade Al K-Style + Rectangular RWP',
+    colorHex: '#334155',
+    ratePerM: 34,
+  },
+  box_concealed: {
+    label: '200mm Concealed Box Parapet Gutter',
+    shortLabel: 'Box Concealed',
+    spec: '200×120mm Anodized Box Channel + Twin RWP',
+    colorHex: '#475569',
+    ratePerM: 46,
+  },
+  copper_half_round: {
+    label: '150mm Architectural Marine Copper',
+    shortLabel: 'Marine Copper',
+    spec: '150mm Half-Round Patina Copper + Ø100mm Cu RWP',
+    colorHex: '#b45309',
+    ratePerM: 78,
+  },
+};
+
+export const WATER_COLLECTION_META: Record<
+  WaterCollectionMode,
+  { label: string; shortLabel: string; desc: string; unitCost: number; badgeColor: string }
+> = {
+  harvesting_tank: {
+    label: 'Rainwater Harvesting Tank (Above-Ground HDPE)',
+    shortLabel: 'Harvesting Tank',
+    desc: 'Collects roof runoff via first-flush diverter & leaf screen into UV-stabilized potable/utility HDPE storage tank.',
+    unitCost: 1450,
+    badgeColor: '#0284c7',
+  },
+  underground_cistern: {
+    label: 'Underground RC Rainwater Cistern & Pump',
+    shortLabel: 'Underground Cistern',
+    desc: 'Redirects all downpipes into a buried reinforced concrete cistern with submersible filtration & booster pump.',
+    unitCost: 2600,
+    badgeColor: '#2563eb',
+  },
+  soakaway_pit: {
+    label: 'Coral / Gravel Infiltration Soakaway Pit',
+    shortLabel: 'Soakaway Pit',
+    desc: 'Redirects stormwater into an excavated crushed-coral infiltration soakaway chamber for aquifer recharge.',
+    unitCost: 680,
+    badgeColor: '#0d9488',
+  },
+  municipal_storm: {
+    label: 'Municipal Storm Drain Redirect (Silt Trap)',
+    shortLabel: 'Storm Drain Redirect',
+    desc: 'Routes roof downpipes through a 600×600mm silt-trap catch basin directly to the street storm sewer main.',
+    unitCost: 540,
+    badgeColor: '#475569',
+  },
+  garden_redirect: {
+    label: 'Landscape Bioswale & Garden Irrigation Redirect',
+    shortLabel: 'Garden Redirect',
+    desc: 'Diverts gutter downpipes via splash blocks & perforated sub-surface distribution pipes into garden planter swales.',
+    unitCost: 420,
+    badgeColor: '#16a34a',
+  },
+};
+
 export type ExteriorFacadeMaterial =
   | 'white_render'
   | 'exposed_brick'
@@ -82,12 +179,43 @@ export interface HVACConfig {
   freshAirERV: boolean;
 }
 
+export type SolarRoofFace = 'south' | 'north' | 'east' | 'west' | 'flat_center';
+
+export type WiringRouteMode =
+  | 'auto'
+  | 'north_wall'
+  | 'south_wall'
+  | 'west_wall'
+  | 'east_wall'
+  | 'corridor';
+
+export type SelectableElementKind =
+  | 'wall'
+  | 'opening'
+  | 'room'
+  | 'column'
+  | 'furniture'
+  | 'mep_node'
+  | 'solar_array'
+  | 'solar_panel';
+
 export interface SolarPVConfig {
   enabled: boolean;
   panelCount: number; // e.g. 12 panels
   panelWattage: number; // e.g. 450 Wp
   inverterKW: number; // e.g. 6.0 kW hybrid
   batteryKWh: number; // e.g. 10.0 kWh LiFePO4 (0 = no battery)
+  offsetX?: number; // East (+) / West (-) offset in meters from default slope anchor
+  offsetY?: number; // South (+) / North (-) offset in meters from default slope anchor
+  rotationDeg?: number; // 0 | 90 | 180 | 270
+  roofFace?: SolarRoofFace; // default 'south'
+  columns?: number; // 0 or undefined = auto-fit to roof slope
+  panelOffsets?: Record<number, Point2D>; // per-panel manual (x, y) offset in meters
+  dcRouteMode?: WiringRouteMode; // PV array -> Inverter conduit route preset
+  acRouteMode?: WiringRouteMode; // Inverter -> MDB feeder conduit route preset
+  dcWaypoints?: Point2D[]; // manual 2D/3D adjustment waypoints along PV -> Inverter route
+  acWaypoints?: Point2D[]; // manual 2D/3D adjustment waypoints along Inverter -> MDB route
+  conduitElevationOffset?: number; // vertical trim offset (meters, -0.5 to +0.2) for trunking
 }
 
 export interface MaterialDesignConfig {
@@ -172,6 +300,8 @@ export interface FurnitureItem {
 
 export type MEPNodeKind =
   | 'mdb' // Main Distribution Board
+  | 'sub_db' // Room Sub-Distribution Board (Room RCBO Enclosure)
+  | 'utility_meter' // Utility Bi-Directional kWh Smart Meter & Service Cutout
   | 'light_ceiling'
   | 'switch_1g'
   | 'outlet_duplex'
@@ -198,12 +328,16 @@ export interface MEPNode {
   wattage?: number; // for electrical
   dfu?: number; // drainage fixture units for plumbing
   label?: string;
+  roomId?: string;
+  wallSide?: 'north' | 'south' | 'west' | 'east';
 }
 
 export interface MEPCircuit {
   id: string;
   name: string;
   system:
+    | 'electrical_grid'
+    | 'electrical_submain'
     | 'electrical_light'
     | 'electrical_power'
     | 'electrical_hvac'
@@ -245,6 +379,23 @@ export interface RoofConfig {
   overhang: number; // meters (e.g., 0.6m)
   material: RoofMaterial;
   parapetHeight: number; // meters if flat roof
+  gutterEnabled?: boolean;
+  gutterProfile?: GutterProfile;
+  downpipeCount?: number;
+  waterCollectionMode?: WaterCollectionMode;
+  harvestingTankLiters?: number;
+  firstFlushDiverter?: boolean;
+}
+
+export function getRoofDrainageConfig(roof: RoofConfig): RoofDrainageConfig {
+  return {
+    gutterEnabled: roof.gutterEnabled ?? true,
+    gutterProfile: roof.gutterProfile ?? 'half_round_pvc',
+    downpipeCount: roof.downpipeCount ?? 4,
+    waterCollectionMode: roof.waterCollectionMode ?? 'harvesting_tank',
+    harvestingTankLiters: roof.harvestingTankLiters ?? 3500,
+    firstFlushDiverter: roof.firstFlushDiverter ?? true,
+  };
 }
 
 export interface SectionLine {
@@ -309,6 +460,12 @@ export const DEFAULT_SOLAR_CONFIG: SolarPVConfig = {
   panelWattage: 450,
   inverterKW: 6.0,
   batteryKWh: 10.0,
+  offsetX: 0,
+  offsetY: 0,
+  rotationDeg: 0,
+  roofFace: 'south',
+  columns: 0,
+  panelOffsets: {},
 };
 
 export const DEFAULT_DESIGN_CONFIG: MaterialDesignConfig = {

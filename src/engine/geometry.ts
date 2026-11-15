@@ -1,6 +1,7 @@
 import {
   BuildingProject,
   FloorLevel,
+  getSolarConfig,
   Opening,
   Point2D,
   Room,
@@ -167,6 +168,7 @@ export function autoGenerateStructuralGrid(level: FloorLevel): StructuralGrid {
   const xCoords = new Set<number>();
   const yCoords = new Set<number>();
   for (const w of level.walls) {
+    if (!w.isExterior && !(w.isLoadBearing && wallLength(w) >= 2.5)) continue;
     if (Math.abs(w.start.x - w.end.x) < 0.08) {
       xCoords.add(Number(roundTo(w.start.x, 0.1).toFixed(2)));
     }
@@ -179,7 +181,7 @@ export function autoGenerateStructuralGrid(level: FloorLevel): StructuralGrid {
     yCoords.add(Number(roundTo(c.position.y, 0.1).toFixed(2)));
   }
 
-  const filterClose = (vals: number[], minGap = 0.6): number[] => {
+  const filterClose = (vals: number[], minGap = 1.35): number[] => {
     const sorted = [...vals].sort((a, b) => a - b);
     const out: number[] = [];
     for (const v of sorted) {
@@ -208,11 +210,18 @@ export function autoGenerateStructuralGrid(level: FloorLevel): StructuralGrid {
 export function autoPlaceStructuralColumns(level: FloorLevel): StructuralColumn[] {
   const intersections: Point2D[] = [];
   const addUnique = (pt: Point2D) => {
-    if (!intersections.some((p) => dist(p, pt) < 0.65)) {
+    if (!intersections.some((p) => dist(p, pt) < 1.55)) {
       intersections.push(snapPoint(pt, 0.05));
     }
   };
 
+  // Pass 1: Exterior perimeter corners first so primary building extents always receive corner columns
+  for (const wi of level.walls) {
+    if (!wi.isExterior) continue;
+    addUnique(wi.start);
+    addUnique(wi.end);
+  }
+  // Pass 2: Structural/exterior wall intersections and load-bearing wall endpoints
   for (let i = 0; i < level.walls.length; i++) {
     const wi = level.walls[i];
     if (!wi.isLoadBearing && !wi.isExterior) continue;
@@ -324,4 +333,229 @@ export function computeTotalFloorArea(project: BuildingProject): number {
     }
   }
   return total;
+}
+
+export interface ComputedSolarPanel {
+  index: number;
+  x: number; // world X center (meters)
+  y: number; // world Y/Z center in plan (meters)
+  z3d: number; // 3D elevation Y above ground datum (meters)
+  width: number; // panel width in X (meters)
+  depth: number; // panel depth in Z/Y (meters)
+  rotX: number; // 3D pitch rotation (rad)
+  rotY: number; // 3D yaw rotation (rad)
+  rotZ: number; // 3D roll rotation (rad)
+  rotationDeg: number; // 2D plan rotation (deg)
+}
+
+export interface ComputedSolarLayout {
+  anchorX: number;
+  anchorY: number;
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    width: number;
+    depth: number;
+    centerX: number;
+    centerY: number;
+  };
+  cols: number;
+  rows: number;
+  panels: ComputedSolarPanel[];
+}
+
+export function computeRoofSurfaceAt(
+  project: BuildingProject,
+  worldX: number,
+  worldY: number
+): { y3d: number; rotX: number; rotY: number; rotZ: number } {
+  const lastLevel = project.levels[project.levels.length - 1];
+  const rBB = lastLevel ? levelBoundingBox(lastLevel) : { minX: 0, maxX: 12, minY: 0, maxY: 10, width: 12, depth: 10 };
+  const eaveY = lastLevel ? lastLevel.elevation + lastLevel.floorToFloorHeight : 3.5;
+  const ov = project.roof.overhang;
+  const w = rBB.width + ov * 2;
+  const d = rBB.depth + ov * 2;
+  const cx = (rBB.minX + rBB.maxX) / 2;
+  const cz = (rBB.minY + rBB.maxY) / 2;
+  const hw = Math.max(0.5, w / 2);
+  const hd = Math.max(0.5, d / 2);
+  const pitchRad = (project.roof.pitchDeg * Math.PI) / 180;
+  const rise = Math.max(0.4, (Math.min(w, d) / 2) * Math.tan(pitchRad));
+  const ridgeHalf = project.roof.type === 'hip' ? Math.max(0.2, hw - hd * 0.85) : hw;
+
+  if (project.roof.type === 'flat') {
+    return { y3d: eaveY + 0.38, rotX: 0.22, rotY: 0, rotZ: 0 };
+  }
+
+  if (project.roof.type === 'shed') {
+    const slopeAngle = Math.atan2(rise, Math.max(0.4, d));
+    const tNorm = Math.max(0.04, Math.min(0.96, 0.5 + (worldY - cz) / Math.max(0.4, d)));
+    return {
+      y3d: eaveY + rise * tNorm + 0.16,
+      rotX: -slopeAngle,
+      rotY: 0,
+      rotZ: 0,
+    };
+  }
+
+  const dx = worldX - cx;
+  const dz = worldY - cz;
+  const tNS = Math.min(1.02, Math.abs(dz) / hd);
+  const tEW =
+    project.roof.type === 'hip'
+      ? Math.min(1.02, Math.max(0, (Math.abs(dx) - ridgeHalf) / Math.max(0.2, hw - ridgeHalf)))
+      : 0;
+  const tDrop = Math.min(0.98, Math.max(tNS, tEW));
+  const y3d = eaveY + rise * (1 - tDrop) + 0.14;
+
+  if (project.roof.type === 'hip' && tEW > tNS) {
+    const hipPitch = Math.atan2(rise, Math.max(0.25, hw - ridgeHalf));
+    return {
+      y3d,
+      rotX: 0,
+      rotY: 0,
+      rotZ: dx >= 0 ? -hipPitch : hipPitch,
+    };
+  }
+
+  const slopePitch = Math.atan2(rise, hd);
+  return {
+    y3d,
+    rotX: dz >= 0 ? slopePitch : -slopePitch,
+    rotY: 0,
+    rotZ: 0,
+  };
+}
+
+export function computeSolarArrayLayout(project: BuildingProject): ComputedSolarLayout {
+  const solar = getSolarConfig(project);
+  const lastLevel = project.levels[project.levels.length - 1];
+  const rBB = lastLevel ? levelBoundingBox(lastLevel) : { minX: 0, maxX: 12, minY: 0, maxY: 10, width: 12, depth: 10 };
+  const ov = project.roof.overhang;
+  const w = rBB.width + ov * 2;
+  const d = rBB.depth + ov * 2;
+  const cx = (rBB.minX + rBB.maxX) / 2;
+  const cz = (rBB.minY + rBB.maxY) / 2;
+  const hw = Math.max(0.5, w / 2);
+  const hd = Math.max(0.5, d / 2);
+  const ridgeHalf = project.roof.type === 'hip' ? Math.max(0.2, hw - hd * 0.85) : hw;
+
+  const face = solar.roofFace ?? 'south';
+  let baseAnchorX = cx;
+  let baseAnchorY = cz + hd * 0.56;
+  if (project.roof.type === 'flat' || face === 'flat_center') {
+    baseAnchorX = cx;
+    baseAnchorY = cz;
+  } else if (face === 'north') {
+    baseAnchorX = cx;
+    baseAnchorY = cz - hd * 0.56;
+  } else if (face === 'east') {
+    baseAnchorX = cx + ridgeHalf + (hw - ridgeHalf) * 0.45;
+    baseAnchorY = cz;
+  } else if (face === 'west') {
+    baseAnchorX = cx - ridgeHalf - (hw - ridgeHalf) * 0.45;
+    baseAnchorY = cz;
+  }
+
+  const anchorX = baseAnchorX + (solar.offsetX ?? 0);
+  const anchorY = baseAnchorY + (solar.offsetY ?? 0);
+  const rotDeg = (((solar.rotationDeg ?? 0) % 360) + 360) % 360;
+  const isSideways = rotDeg === 90 || rotDeg === 270;
+
+  const baseW = 1.0;
+  const baseD = 1.55;
+  const modW = isSideways ? baseD : baseW;
+  const modD = isSideways ? baseW : baseD;
+  const gap = 0.08;
+
+  const count = Math.max(1, solar.panelCount || 1);
+  let cols = solar.columns && solar.columns > 0 ? Math.min(count, solar.columns) : 0;
+  if (!cols) {
+    if (face === 'east' || face === 'west') {
+      cols = Math.min(3, Math.max(2, Math.floor(count / 3) || 2));
+    } else if (project.roof.type === 'hip') {
+      const slopeWidthAtAnchor = Math.max(3.6, (ridgeHalf + 0.36 * (hw - ridgeHalf)) * 2);
+      const maxFitCols = Math.max(3, Math.min(8, Math.floor((slopeWidthAtAnchor - 0.3) / (modW + gap))));
+      cols = Math.min(maxFitCols, Math.max(3, Math.ceil(count / 2)));
+    } else {
+      cols = Math.min(8, Math.max(3, Math.ceil(count / 2)));
+    }
+  }
+  const rows = Math.max(1, Math.ceil(count / cols));
+
+  const rad = (rotDeg * Math.PI) / 180;
+  const cosR = Math.cos(rad);
+  const sinR = Math.sin(rad);
+  const totalGridD = rows * modD + (rows - 1) * gap;
+
+  const panels: ComputedSolarPanel[] = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (let idx = 0; idx < count; idx++) {
+    const r = Math.floor(idx / cols);
+    const c = idx % cols;
+    const colsInRow = Math.min(cols, count - r * cols);
+    const rowW = colsInRow * modW + (colsInRow - 1) * gap;
+
+    // Local coordinates unrotated before array rotation
+    const lxBase = -rowW / 2 + modW / 2 + c * (modW + gap);
+    const lyBase = -totalGridD / 2 + modD / 2 + r * (modD + gap);
+    // Keep grid orientation steady around array center when rotating module layout
+    const rx = isSideways ? lxBase : lxBase * cosR - lyBase * sinR;
+    const ry = isSideways ? lyBase : lxBase * sinR + lyBase * cosR;
+
+    const pOff = solar.panelOffsets?.[idx];
+    const px = Number((anchorX + rx + (pOff?.x ?? 0)).toFixed(3));
+    const py = Number((anchorY + ry + (pOff?.y ?? 0)).toFixed(3));
+
+    const surf = computeRoofSurfaceAt(project, px, py);
+
+    panels.push({
+      index: idx,
+      x: px,
+      y: py,
+      z3d: surf.y3d,
+      width: modW,
+      depth: modD,
+      rotX: surf.rotX,
+      rotY: surf.rotY,
+      rotZ: surf.rotZ,
+      rotationDeg: rotDeg,
+    });
+
+    minX = Math.min(minX, px - modW / 2);
+    maxX = Math.max(maxX, px + modW / 2);
+    minY = Math.min(minY, py - modD / 2);
+    maxY = Math.max(maxY, py + modD / 2);
+  }
+
+  if (!Number.isFinite(minX)) {
+    minX = anchorX - 1;
+    maxX = anchorX + 1;
+    minY = anchorY - 1;
+    maxY = anchorY + 1;
+  }
+
+  return {
+    anchorX,
+    anchorY,
+    bounds: {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: maxX - minX,
+      depth: maxY - minY,
+      centerX: (minX + maxX) / 2,
+      centerY: (minY + maxY) / 2,
+    },
+    cols,
+    rows,
+    panels,
+  };
 }

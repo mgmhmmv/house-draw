@@ -1,4 +1,13 @@
-import { BuildingProject, getDesignConfig, getHVACConfig, getSolarConfig, RoofMaterial } from '../model/types';
+import {
+  BuildingProject,
+  getDesignConfig,
+  getHVACConfig,
+  getRoofDrainageConfig,
+  getSolarConfig,
+  GUTTER_PROFILE_META,
+  RoofMaterial,
+  WATER_COLLECTION_META,
+} from '../model/types';
 import { levelBoundingBox, openingWorldCenter, polygonArea, polygonPerimeter, wallLength } from './geometry';
 import { computeHVACReport } from './mepEngine';
 
@@ -218,7 +227,26 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
     r.roofStructurePerM2
   );
   add('03.02', '03 Roofing', `Roof Cladding (${project.roof.material.replace(/_/g, ' ')}) & Waterproofing`, 'm²', slopedRoofArea, roofCladRate);
-  add('03.03', '03 Roofing', 'uPVC Half-Round Gutters & Downpipes', 'lm', gutterLen, 22);
+  const drainage = getRoofDrainageConfig(project.roof);
+  if (drainage.gutterEnabled) {
+    const gutterMeta = GUTTER_PROFILE_META[drainage.gutterProfile];
+    const collectMeta = WATER_COLLECTION_META[drainage.waterCollectionMode];
+    const rwpLen = drainage.downpipeCount * Math.max(3.2, project.levels.length * 3.1);
+    add('03.03', '03 Roofing', `${gutterMeta.label} + Brackets & ${drainage.downpipeCount}× Ø100 RWP Downpipes`, 'lm', gutterLen + rwpLen, gutterMeta.ratePerM);
+    const tankPremium =
+      drainage.waterCollectionMode === 'harvesting_tank' || drainage.waterCollectionMode === 'underground_cistern'
+        ? Math.round(drainage.harvestingTankLiters * 0.22)
+        : 0;
+    const diverterCost = drainage.firstFlushDiverter ? 185 : 0;
+    add(
+      '03.04',
+      '03 Roofing',
+      `${collectMeta.label}${drainage.waterCollectionMode === 'harvesting_tank' || drainage.waterCollectionMode === 'underground_cistern' ? ` (${drainage.harvestingTankLiters.toLocaleString()}L)` : ''}${drainage.firstFlushDiverter ? ' + First-Flush Diverter' : ''}`,
+      'sys',
+      1,
+      collectMeta.unitCost + tankPremium + diverterCost
+    );
+  }
 
   const designCfg = getDesignConfig(project);
 
