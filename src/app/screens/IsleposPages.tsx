@@ -84,6 +84,8 @@ export function IsleposSettings() {
 
 /** Fields IslePOS already shows elsewhere, or that are internal. */
 const HIDDEN = new Set(['id', 'name', 'mobile', 'email', 'address', 'tin', 'notes', 'existing', 'created_at', 'updated_at']);
+/** Address with island and atoll, the way Maldivian addresses are read. */
+const place = (c: IsleCustomer) => [c.address, c.island, c.atoll].filter((x) => typeof x === 'string' && x.trim()).join(', ');
 const label = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
 /** Clients: the customers in the studio's IslePOS books, with their full details. */
@@ -203,8 +205,8 @@ export function ClientsPage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-ink-2">{c.mobile || '—'}</td>
                         <td className="px-4 py-3 text-ink-2">{c.email || '—'}</td>
-                        <td className="max-w-[280px] truncate px-4 py-3 text-ink-2" title={c.address ?? ''}>
-                          {c.address || '—'}
+                        <td className="max-w-[280px] truncate px-4 py-3 text-ink-2" title={place(c)}>
+                          {place(c) || '—'}
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 font-mono text-2xs text-ink-3">{c.tin || '—'}</td>
                       </tr>
