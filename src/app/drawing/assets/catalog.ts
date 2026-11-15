@@ -18,7 +18,8 @@ export type Category =
   | 'openings'
   | 'outdoor'
   | 'trees'
-  | 'boundary';
+  | 'boundary'
+  | 'people';
 
 export const CATEGORIES: { id: Category; name: string }[] = [
   { id: 'living', name: 'Living' },
@@ -33,6 +34,7 @@ export const CATEGORIES: { id: Category; name: string }[] = [
   { id: 'outdoor', name: 'Outdoor' },
   { id: 'trees', name: 'Trees & plants' },
   { id: 'boundary', name: 'Gates & boundary' },
+  { id: 'people', name: 'People' },
 ];
 
 export interface AssetDef {
@@ -151,6 +153,41 @@ function palm(w: number, h: number, lean = 0.12, fronds = 9): Part[] {
     out.push({ g: 'box', p: [cx, topY + 0.1 - droop * len * 0.3, cz], s: [len, 0.02, 0.32], m: 'leaf', rot: [0, -a, -droop * (Math.cos(a) >= 0 ? 1 : -1) * 0], plan: 'fill' });
     out.push({ g: 'box', p: [cx, topY + 0.08 - droop * len * 0.3, cz], s: [len * 0.98, 0.02, 0.32], m: 'leaf', rot: [droop * 0.9, -a, 0], plan: false });
   }
+  return out;
+}
+
+/**
+ * A standing figure, to scale, in the same quiet style as the furniture. Proportions follow
+ * standard anthropometrics (head ≈ 1/7.5 of height for adults, ≈ 1/6 for a child).
+ */
+function person(h: number, kind: 'man' | 'woman' | 'child'): Part[] {
+  const head = kind === 'child' ? h / 6 : h / 7.5;
+  const shoulder = kind === 'man' ? h * 0.26 : kind === 'woman' ? h * 0.23 : h * 0.24;
+  const hip = kind === 'woman' ? h * 0.2 : h * 0.18;
+  const legH = h * (kind === 'child' ? 0.45 : 0.47);
+  const torsoH = h - legH - head * 1.05;
+  const top: Part['m'] = kind === 'man' ? 'paint' : kind === 'woman' ? 'accent' : 'book3';
+  const bottom: Part['m'] = kind === 'man' ? 'black' : kind === 'woman' ? 'linen' : 'book2';
+  const out: Part[] = [];
+  // Legs (or a skirt for the woman) and shoes.
+  if (kind === 'woman') {
+    out.push(C(0, 0, legH * 0.42, hip * 0.62, legH * 0.58, bottom, { r2: hip * 0.45, seg: 18, plan: false }));
+    for (const sx of [-1, 1]) out.push(C(sx * hip * 0.2, 0, 0.02, h * 0.028, legH * 0.45, 'cushion', { plan: false }));
+  } else {
+    for (const sx of [-1, 1]) out.push(C(sx * hip * 0.24, 0, 0.02, h * 0.04, legH, bottom, { r2: h * 0.034, seg: 12, plan: false }));
+  }
+  for (const sx of [-1, 1]) out.push(R(sx * hip * 0.24, 0.03, 0, h * 0.06, h * 0.15, 0.05, 'black', 0.02, { plan: false }));
+  // Torso, tapering to the waist.
+  out.push(C(0, 0, legH - 0.02, shoulder / 2, torsoH + 0.02, top, { r2: hip / 2, seg: 20, sc: [1, 1, 0.55] }));
+  // Arms hanging relaxed, slightly away from the body.
+  for (const sx of [-1, 1])
+    out.push({ g: 'cyl', p: [sx * (shoulder / 2 + 0.02), legH + torsoH * 0.45, 0], s: [h * 0.03, torsoH * 1.05, h * 0.025], m: top, rot: [0, 0, sx * 0.08], seg: 10, plan: false });
+  for (const sx of [-1, 1]) out.push(S(sx * (shoulder / 2 + 0.05), legH - torsoH * 0.12, 0, h * 0.028, 'offwhite', { seg: 10, plan: false }));
+  // Neck, head and hair.
+  out.push(C(0, 0, legH + torsoH, head * 0.22, head * 0.3, 'offwhite', { plan: false }));
+  out.push(S(0, h - head / 2, 0, head / 2, 'offwhite', { seg: 18, sc: [0.86, 1, 0.95] }));
+  out.push(S(0, h - head * 0.42, -head * 0.06, head / 2 + 0.006, 'woodDark', { seg: 18, sc: [0.88, kind === 'man' ? 0.62 : 0.8, 0.98], plan: false }));
+  if (kind === 'woman') out.push(R(0, -head * 0.32, h - head * 1.6, head * 0.7, head * 0.25, head * 1.0, 'woodDark', 0.06, { plan: false }));
   return out;
 }
 
@@ -1413,6 +1450,11 @@ export const ASSETS: AssetDef[] = [
     keywords: 'balcony balustrade fence',
     parts: (w, _d, h) => [...Array.from({ length: Math.round(w / 1.5) + 1 }, (_, i) => B(-w / 2 + i * (w / Math.round(w / 1.5)), 0, 0, 0.05, 0.05, h, 'black')), B(0, 0, h - 0.04, w, 0.06, 0.04, 'black'), B(0, 0, 0.08, w, 0.03, 0.03, 'black', { plan: false }), ...bars(-w / 2 + 0.06, w / 2 - 0.06, 0, 0.11, h - 0.04, 0.11)],
   },
+
+  /* People, to scale */
+  { id: 'person_man', name: 'Man, 1.78 m', category: 'people', w: 0.5, d: 0.3, h: 1.78, keywords: 'person adult figure scale', parts: (_w, _d, h) => person(h, 'man') },
+  { id: 'person_woman', name: 'Woman, 1.65 m', category: 'people', w: 0.46, d: 0.3, h: 1.65, keywords: 'person adult figure scale', parts: (_w, _d, h) => person(h, 'woman') },
+  { id: 'person_child', name: 'Child, 1.20 m', category: 'people', w: 0.36, d: 0.24, h: 1.2, keywords: 'person kid figure scale', parts: (_w, _d, h) => person(h, 'child') },
 ];
 
 /** Walls, doors and windows of a frame, split into panes, for window thumbnails and models. */

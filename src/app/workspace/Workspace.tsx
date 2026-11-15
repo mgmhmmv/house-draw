@@ -59,10 +59,10 @@ import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
 import { Button, cx, Dialog, Field, IconButton, Input, Kbd, Menu, MenuItem, Spinner, STATUS_META, StatusPill, toast } from '../ui';
-import { Assistant, type AssistantHandle } from './Assistant';
+import { Assistant, type AboutRef, type AssistantHandle } from './Assistant';
 import { HistoryPanel } from './HistoryPanel';
 import { LibraryPanel } from './LibraryPanel';
-import type { AssetDef } from '../drawing/assets/catalog';
+import { assetFor, type AssetDef } from '../drawing/assets/catalog';
 import { Inspector, type Selection } from './Inspector';
 import { SheetView } from './SheetView';
 import { SHEET_GROUPS, SHEETS, sheetBySlug, type SheetDef } from './sheets';
@@ -122,6 +122,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   /** An older version shown read-only on the canvas, from History. */
   const [preview, setPreview] = useState<{ version: ProjectVersion; model: BuildingProject } | null>(null);
   const [restoreArmed, setRestoreArmed] = useState(false);
+  /** 3D select tool: edits made while it is on wait for Save changes. */
+  const [select3d, setSelect3d] = useState(false);
   /** A library item being placed on the plan. */
   const [placing, setPlacing] = useState<{ def: AssetDef; rotation: number } | null>(null);
 
@@ -452,6 +454,24 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         traceImageUrl={trace}
         traceOpacity={traceOpacity}
         svgRef={svgRef}
+        select3d={{
+          active: select3d,
+          onActive: (on) => {
+            setSelect3d(on);
+            doc.setHold(on || doc.held > 0);
+            if (!on) setSelection(null);
+          },
+          selected: selection,
+          onPick: (id, kind) => onSelect(id, kind),
+          onAsk: () => {
+            if (!selection) return;
+            assistantRef.current?.attach(describeSelection(model, selection));
+            if (isDesktop) {
+              setPanel('assistant');
+              setPanelOpen(true);
+            } else setMobileSheet('assistant');
+          },
+        }}
         placing={preview ? null : placing}
         onPlaced={(id, kind) => {
           // One click places one item; then it is selected, ready to turn or adjust.
@@ -459,6 +479,32 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           if (id) onSelect(id, kind);
         }}
       />
+
+      {doc.held > 0 && !preview && (
+        <div className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-[14px] border border-warn/40 bg-surface/95 py-1.5 pl-3.5 pr-1.5 shadow-float backdrop-blur animate-fade-up">
+          <span className="h-2 w-2 rounded-full bg-warn" />
+          <span className="text-[13px] font-medium">
+            {doc.held} unsaved {doc.held === 1 ? 'change' : 'changes'}
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => doc.discardHeld()}>
+            Discard
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() =>
+              void doc.saveHeld().then((ok) => {
+                if (ok) {
+                  toast('Saved as a new version');
+                  doc.setHold(select3d);
+                }
+              })
+            }
+          >
+            Save changes
+          </Button>
+        </div>
+      )}
 
       {preview && (
         <div className="absolute inset-x-3 top-3 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-[14px] border border-accent/40 bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
@@ -1080,3 +1126,24 @@ function ProjectDetailsDialog({ open, onClose, doc }: { open: boolean; onClose: 
   );
 }
 
+/** A short description of the selected element, for pointing the AI at it. */
+function describeSelection(model: BuildingProject | null, sel: Selection): AboutRef {
+  const ref: AboutRef = { kind: sel.kind, id: sel.id, label: sel.kind.replace(/_/g, ' ') };
+  if (!model) return ref;
+  for (const [li, l] of model.levels.entries()) {
+    const at = model.levels.length > 1 ? ` · ${l.name}` : '';
+    const w = l.walls.find((x) => x.id === sel.id);
+    if (w) return { ...ref, label: `${w.isExterior ? 'Exterior' : 'Interior'} wall${at}`, details: { level: li, ...w } };
+    const o = l.openings.find((x) => x.id === sel.id);
+    if (o) return { ...ref, label: `${o.kind === 'door' ? 'Door' : 'Window'} ${o.label ?? ''}${at}`.trim(), details: { level: li, ...o } };
+    const r = l.rooms.find((x) => x.id === sel.id);
+    if (r) return { ...ref, label: `${r.name}${at}`, details: { level: li, id: r.id, name: r.name, category: r.category, finish: r.finish } };
+    const f = l.furniture.find((x) => x.id === sel.id);
+    if (f) return { ...ref, label: `${assetFor(f.type)?.name ?? f.type}${at}`, details: { level: li, ...f } };
+    const n = l.mepNodes.find((x) => x.id === sel.id);
+    if (n) return { ...ref, label: `${n.label ?? n.kind}${at}`, details: { level: li, ...n } };
+  }
+  if (sel.kind === 'solar_panel') return { ...ref, label: `Solar panel ${Number(sel.id.replace('solar_panel_', '')) + 1}` };
+  if (sel.kind === 'solar_array') return { ...ref, label: 'Solar array' };
+  return ref;
+}

@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, SketchStroke } from '../../model/types';
 import { PlanCanvas } from '../drawing/plan/PlanCanvas';
 import type { AssetDef } from '../drawing/assets/catalog';
-import { ModelView } from '../drawing/three/ModelView';
+import { ModelView, type ModelViewSelect } from '../drawing/three/ModelView';
 import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
 import { ElectricalSheet } from '../sheets/ElectricalSheet';
 import { HvacSheet } from '../sheets/HvacSheet';
@@ -30,6 +30,7 @@ interface Props {
   svgRef: RefObject<SVGSVGElement | null>;
   placing?: { def: AssetDef; rotation: number } | null;
   onPlaced?: (id: string, kind: SelectableElementKind) => void;
+  select3d?: ModelViewSelect;
 }
 
 /**
@@ -40,7 +41,7 @@ export function SheetView(p: Props) {
   let view: React.ReactNode;
   switch (p.sheet) {
     case '3D-VIEW':
-      view = <ModelView model={p.model} />;
+      view = <ModelView model={p.model} select={p.select3d} />;
       break;
     case 'A-201':
     case 'A-301':

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Footprints, Maximize2, Scissors, Sun, X } from 'lucide-react';
-import type { BuildingProject } from '../../../model/types';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Footprints, Maximize2, MessageSquarePlus, MousePointer2, Scissors, Sun, X } from 'lucide-react';
+import type { BuildingProject, SelectableElementKind } from '../../../model/types';
+import { resolvePick, selectionOutline } from './pick';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
 import { WalkController, type Move } from './walk';
@@ -18,7 +19,17 @@ const PAPER = new THREE.Color('#F6F5F2');
  * The 3D model. Built from the same face model as the elevations and sections, lit like a
  * physical study model: soft sky light, one sun with shadows, a quiet ground.
  */
-export function ModelView({ model }: { model: BuildingProject }) {
+export interface ModelViewSelect {
+  /** Select tool on: clicks pick elements. */
+  active: boolean;
+  onActive: (on: boolean) => void;
+  selected: { id: string; kind: SelectableElementKind } | null;
+  onPick: (id: string | null, kind?: SelectableElementKind) => void;
+  /** Ask the AI about the selected element. */
+  onAsk: () => void;
+}
+
+export function ModelView({ model, select }: { model: BuildingProject; select?: ModelViewSelect }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const compassRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<Style>('rendered');
@@ -195,6 +206,66 @@ export function ModelView({ model }: { model: BuildingProject }) {
       // Disposal happens when the next parts replace these (or on unmount).
     };
   }, [parts]);
+
+  // Select tool: a click (not a drag) picks the element under the pointer.
+  const selectRef = useRef(select);
+  selectRef.current = select;
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  useEffect(() => {
+    const c = ctx.current;
+    if (!c) return;
+    const el = c.renderer.domElement;
+    let down: { x: number; y: number } | null = null;
+    const onDown = (e: PointerEvent) => (down = { x: e.clientX, y: e.clientY });
+    const onUp = (e: PointerEvent) => {
+      const sel = selectRef.current;
+      if (!down || !sel?.active || walkRef.current?.active) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved > 4 || e.button !== 0) return;
+      const r = el.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), c.camera);
+      const targets: THREE.Object3D[] = [];
+      c.parts?.levels.forEach((g) => g.visible && targets.push(g));
+      if (c.parts?.roof.visible) targets.push(c.parts.roof);
+      const hits = ray.intersectObjects(targets, true).filter((h) => (h.object as THREE.Mesh).isMesh && h.object.visible && isShown(h, c.renderer));
+      for (const h of hits) {
+        const p = resolvePick(modelRef.current, h);
+        if (p) return sel.onPick(p.id, p.kind);
+        // Roof faces: keep looking underneath only if the roof is see-through.
+        if (h.object.userData.kind === 'roof' || h.object.userData.kind === 'fascia') break;
+      }
+      sel.onPick(null);
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerup', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointerup', onUp);
+    };
+  }, []);
+
+  // Outline the selection.
+  const selId = select?.selected?.id;
+  const selKind = select?.selected?.kind;
+  useEffect(() => {
+    const c = ctx.current;
+    if (!c || !selId) return;
+    const o = selectionOutline(model, selId, selKind);
+    if (!o) return;
+    c.scene.add(o);
+    return () => {
+      c.scene.remove(o);
+      o.traverse((x) => {
+        if (x instanceof THREE.LineSegments || x instanceof THREE.Line) {
+          x.geometry.dispose();
+          (x.material as THREE.Material).dispose();
+        }
+      });
+    };
+  }, [model, selId, selKind]);
 
   // X-ray: the building shell turns to glass so rooms, furniture and services show through.
   useEffect(() => {
@@ -407,7 +478,27 @@ export function ModelView({ model }: { model: BuildingProject }) {
             <X className="h-4 w-4" /> Leave walk
           </button>
         ) : (
+        <div className="flex items-center gap-2">
+        {select?.active && select.selected && (
+          <button
+            onClick={select.onAsk}
+            title="Ask the AI about this"
+            className="flex h-9 items-center gap-1.5 rounded-[12px] border border-line bg-surface/95 px-3 text-[13px] font-medium text-accent shadow-float backdrop-blur hover:border-accent/40 animate-fade-up"
+          >
+            <MessageSquarePlus className="h-4 w-4" /> Ask AI about this
+          </button>
+        )}
         <div className="flex overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur">
+          {select && (
+            <button
+              onClick={() => select.onActive(!select.active)}
+              title="Select and edit (changes wait for Save)"
+              aria-pressed={select.active}
+              className={cx('flex h-9 w-9 items-center justify-center border-r border-line', select.active ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken hover:text-ink')}
+            >
+              <MousePointer2 className="h-4 w-4" />
+            </button>
+          )}
           <button onClick={() => setWalking(true)} className="flex h-9 items-center gap-1.5 border-r border-line px-3 text-[13px] font-medium text-ink-2 hover:bg-sunken hover:text-ink" title="Walk through">
             <Footprints className="h-4 w-4" /> Walk
           </button>
@@ -429,6 +520,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
           <button aria-label="Fit model" title="Fit model" onClick={() => ctx.current && applyPreset(ctx.current, 'iso')} className="flex h-9 w-9 items-center justify-center border-l border-line text-ink-2 hover:bg-sunken hover:text-ink">
             <Maximize2 className="h-4 w-4" />
           </button>
+        </div>
         </div>
         )}
       </div>
@@ -522,4 +614,11 @@ function WalkPad({ onPress }: { onPress: (m: Move, down: boolean) => void }) {
       {btn('back', <ChevronDown className="h-5 w-5" />, 'left-[54px] top-[108px]')}
     </div>
   );
+}
+
+/** Ignore hits on geometry hidden by the section cut. */
+function isShown(h: THREE.Intersection, renderer: THREE.WebGLRenderer) {
+  const mat = (h.object as THREE.Mesh).material as THREE.Material | THREE.Material[];
+  const planes = (Array.isArray(mat) ? mat[0] : mat)?.clippingPlanes ?? renderer.clippingPlanes;
+  return !planes?.length || planes.every((p) => p.distanceToPoint(h.point) >= -1e-3);
 }

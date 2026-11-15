@@ -304,11 +304,19 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
               <Num value={f.rotation} unit="°" step={15} onChange={(v) => set((x) => (x.rotation = ((v % 360) + 360) % 360))} />
             </Row>
             <Row label="Width">
-              <Num value={f.width} unit="m" min={0.3} max={6} onChange={(v) => set((x) => (x.width = v))} />
+              <Num value={f.width} unit="m" min={0.05} max={60} onChange={(v) => set((x) => (x.width = v))} />
             </Row>
             <Row label="Depth">
-              <Num value={f.depth} unit="m" min={0.3} max={6} onChange={(v) => set((x) => (x.depth = v))} />
+              <Num value={f.depth} unit="m" min={0.05} max={60} onChange={(v) => set((x) => (x.depth = v))} />
             </Row>
+            <Row label="Height">
+              <Num value={f.height ?? assetFor(f.type)?.h ?? 0.75} unit="m" min={0.01} max={20} onChange={(v) => set((x) => (x.height = v))} />
+            </Row>
+            {assetFor(f.type)?.mount === 'wall' && (
+              <Row label="Mounted at">
+                <Num value={f.elevation ?? assetFor(f.type)?.elevation ?? 0} unit="m" min={0} max={4} onChange={(v) => set((x) => (x.elevation = v))} />
+              </Row>
+            )}
           </Section>
         </>
       );

@@ -43,6 +43,9 @@ export function useProjectDoc(projectId: string) {
   const timerRef = useRef<number>();
   const savingRef = useRef(false);
   const conflictRef = useRef(false);
+  /** While held, edits wait for an explicit Save (3D editing); `held` counts them. */
+  const holdRef = useRef(false);
+  const [held, setHeld] = useState(0);
   const coverAtRef = useRef(0);
   const coverTimer = useRef<number>();
   /** The model as last saved, to describe what the next save changes. */
@@ -112,6 +115,7 @@ export function useProjectDoc(projectId: string) {
       const r = await api.saveModel(projectId, { model: snapshot, summary: summarize(snapshot), baseVersion: force ? undefined : versionRef.current, source: pending.source, label });
       versionRef.current = r.version;
       savedRef.current = snapshot;
+      if (!dirtyRef.current) setHeld(0);
       conflictRef.current = false;
       setProject((p) => (p ? { ...p, version: r.version, updatedAt: r.updatedAt, summary: summarize(snapshot) } : p));
       setSaveState(dirtyRef.current ? 'unsaved' : 'saved');
@@ -143,6 +147,10 @@ export function useProjectDoc(projectId: string) {
     dirtyRef.current = true;
     setSaveState((s) => (s === 'conflict' ? s : 'unsaved'));
     window.clearTimeout(timerRef.current);
+    if (holdRef.current) {
+      setHeld((n) => n + 1);
+      return;
+    }
     timerRef.current = window.setTimeout(() => save(), AUTOSAVE_MS);
   }, [save]);
 
@@ -155,6 +163,7 @@ export function useProjectDoc(projectId: string) {
       schedule();
       if (opts?.saveNow) {
         window.clearTimeout(timerRef.current);
+        setHeld(0);
         return save();
       }
       return Promise.resolve(true);
@@ -255,6 +264,29 @@ export function useProjectDoc(projectId: string) {
     canUndo: pastRef.current.length > 0,
     canRedo: futureRef.current.length > 0,
     saveNow: () => save(),
+    /** Hold autosave (edits wait for Save changes), or release it. */
+    setHold: (on: boolean) => {
+      holdRef.current = on;
+      if (!on && dirtyRef.current && !held) schedule();
+    },
+    held,
+    /** Save held edits now. */
+    saveHeld: () => {
+      setHeld(0);
+      return save();
+    },
+    /** Drop held edits: back to the last saved design. */
+    discardHeld: () => {
+      const m = savedRef.current;
+      if (!m) return;
+      window.clearTimeout(timerRef.current);
+      dirtyRef.current = false;
+      pendingRef.current = { labels: [], source: 'edit' };
+      modelRef.current = m;
+      setModel(m);
+      setHeld(0);
+      setSaveState('saved');
+    },
     /** After a conflict: save this tab's design over the other one (which stays in History). */
     keepMine: () => {
       dirtyRef.current = true;
