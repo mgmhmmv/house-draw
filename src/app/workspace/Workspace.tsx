@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -49,7 +49,7 @@ import {
   exportSVGElement,
   exportViewportPNG,
 } from '../../export/exporters';
-import type { ProjectStatus } from '../lib/api';
+import { STAGES, type ProjectStatus } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
 import { Button, cx, Dialog, Field, IconButton, Input, Kbd, Menu, MenuItem, Spinner, STATUS_META, StatusPill, toast } from '../ui';
@@ -326,6 +326,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       <SheetView
         model={model}
         projectId={projectId}
+        stage={project.status}
+        onStage={(st) => doc.updateMeta({ status: st }).then(() => toast(`Stage: ${STATUS_META[st].label}`)).catch(() => toast('Could not change the stage'))}
         sheet={sheet.id}
         levelIndex={safeLevel}
         tool={tool}
@@ -776,7 +778,7 @@ function ProjectDetailsForm({ doc, onDone }: { doc: Doc; onDone: () => void }) {
   const [location, setLocation] = useState(p.location);
   const [status, setStatus] = useState<ProjectStatus>(p.status);
   const [busy, setBusy] = useState(false);
-  const statuses = useMemo(() => (['concept', 'design', 'documentation', 'construction', 'complete'] as ProjectStatus[]), []);
+  const statuses = STAGES;
 
   const save = async () => {
     setBusy(true);

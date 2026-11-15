@@ -8,6 +8,7 @@ import { NewProjectDialog } from './screens/NewProjectDialog';
 import { ProjectsPage } from './screens/ProjectsPage';
 import { SettingsPage, TemplatesPage } from './screens/SimplePages';
 import { ClientsPage } from './screens/IsleposPages';
+import { ClientPage } from './screens/ClientPage';
 
 // The workspace carries three.js and the drawing engines; the dashboard should not wait for them.
 const Workspace = lazy(() => import('./workspace/Workspace'));
@@ -53,6 +54,7 @@ function Routes() {
 
   let page: React.ReactNode;
   if (path.startsWith('/templates')) page = <TemplatesPage onUse={openNew} />;
+  else if (matchPath('/clients/:id', path)) page = <ClientPage customerId={matchPath('/clients/:id', path)!.id} />;
   else if (path.startsWith('/clients')) page = <ClientsPage />;
   else if (path.startsWith('/settings')) page = <SettingsPage />;
   else page = <ProjectsPage onNewProject={() => openNew()} />;

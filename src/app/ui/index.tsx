@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2, X } from 'lucide-react';
 import type { ProjectStatus } from '../lib/api';
@@ -158,13 +158,15 @@ export function Segmented<T extends string>({
 
 /* ── Display ───────────────────────────────────────────────────────── */
 
-export const STATUS_META: Record<ProjectStatus, { label: string; dot: string }> = {
-  concept: { label: 'Concept', dot: 'bg-ink-3' },
-  design: { label: 'Design', dot: 'bg-accent' },
-  documentation: { label: 'Documentation', dot: 'bg-violet-500' },
-  construction: { label: 'Construction', dot: 'bg-warn' },
-  complete: { label: 'Complete', dot: 'bg-ok' },
-  archived: { label: 'Archived', dot: 'bg-line-strong' },
+export const STATUS_META: Record<ProjectStatus, { label: string; dot: string; hint: string }> = {
+  brief: { label: 'Brief', dot: 'bg-ink-3', hint: 'Enquiry, site and requirements' },
+  concept: { label: 'Concept', dot: 'bg-sky-400', hint: 'Early layouts and massing' },
+  design: { label: 'Design', dot: 'bg-accent', hint: 'Developing the chosen design' },
+  drawings: { label: 'Drawings', dot: 'bg-violet-500', hint: 'Working drawings, MEP and BOQ' },
+  review: { label: 'Client review', dot: 'bg-warn', hint: 'With the client for sign-off or approvals' },
+  handover: { label: 'Handed over', dot: 'bg-orange-500', hint: 'Delivered, waiting for payment' },
+  done: { label: 'Done', dot: 'bg-ok', hint: 'Handed over and paid' },
+  archived: { label: 'Archived', dot: 'bg-line-strong', hint: 'Put away' },
 };
 
 export function StatusPill({ status }: { status: ProjectStatus }) {
@@ -273,32 +275,59 @@ export function Menu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const inside = (t: EventTarget | null) => ref.current?.contains(t as Node) || menuRef.current?.contains(t as Node);
+    const onDown = (e: PointerEvent) => !inside(e.target) && setOpen(false);
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onMove = (e: Event) => !inside(e.target) && setOpen(false);
     window.addEventListener('pointerdown', onDown);
     window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onMove);
+    window.addEventListener('scroll', onMove, true);
     return () => {
       window.removeEventListener('pointerdown', onDown);
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onMove);
+      window.removeEventListener('scroll', onMove, true);
     };
   }, [open]);
+
+  // The menu floats above the page (portal + fixed position), so a card with overflow
+  // hidden can't clip it. Placed against the trigger, flipped if it would leave the screen.
+  useLayoutEffect(() => {
+    if (!open) return setPos(null);
+    const t = ref.current?.getBoundingClientRect();
+    const m = menuRef.current?.getBoundingClientRect();
+    if (!t || !m) return;
+    const gap = 6;
+    const margin = 8;
+    let top = side === 'bottom' ? t.bottom + gap : t.top - gap - m.height;
+    if (side === 'bottom' && top + m.height > window.innerHeight - margin && t.top - gap - m.height > margin) top = t.top - gap - m.height;
+    if (side === 'top' && top < margin) top = t.bottom + gap;
+    let left = align === 'end' ? t.right - m.width : t.left;
+    left = Math.min(Math.max(margin, left), window.innerWidth - m.width - margin);
+    setPos({ top: Math.max(margin, top), left });
+  }, [open, side, align]);
+
   return (
     <div ref={ref} className="relative">
       {trigger({ onClick: () => setOpen((o) => !o), 'aria-expanded': open })}
-      {open && (
-        <div
-          role="menu"
-          className={cx(
-            side === 'bottom' ? 'top-full mt-1.5' : 'bottom-full mb-1.5',
-            'absolute z-40 min-w-[200px] rounded-[12px] border border-line bg-surface p-1 shadow-float animate-fade-up',
-            align === 'end' ? 'right-0' : 'left-0'
-          )}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ position: 'fixed', top: pos?.top ?? -9999, left: pos?.left ?? -9999, visibility: pos ? 'visible' : 'hidden' }}
+            className="z-[55] max-h-[70vh] min-w-[200px] overflow-y-auto rounded-[12px] border border-line bg-surface p-1 shadow-float animate-fade-up"
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

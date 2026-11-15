@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BuildingProject } from '../../model/types';
 import { api, ApiError, type Project } from '../lib/api';
 import { summarize } from '../lib/templates';
+import { updateCover } from '../drawing/three/cover';
+
+const COVER_EVERY_MS = 45_000;
 
 export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error' | 'conflict';
 
@@ -28,6 +31,8 @@ export function useProjectDoc(projectId: string) {
   const modelRef = useRef<BuildingProject | null>(null);
   const timerRef = useRef<number>();
   const savingRef = useRef(false);
+  const coverAtRef = useRef(0);
+  const coverTimer = useRef<number>();
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +48,10 @@ export function useProjectDoc(projectId: string) {
         modelRef.current = model;
         setProject(project);
         setModel(model);
+        coverAtRef.current = project.coverAt ?? 0;
+        // Make or refresh the card render if there is none, or it predates the last edit.
+        if (!project.coverAt || project.coverAt < project.updatedAt)
+          window.setTimeout(() => updateCover(projectId, model).then((t) => t && setProject((p) => (p ? { ...p, coverAt: t } : p))).catch(() => {}), 1500);
         pastRef.current = [];
         futureRef.current = [];
         setSaveState('saved');
@@ -51,6 +60,20 @@ export function useProjectDoc(projectId: string) {
     return () => {
       cancelled = true;
     };
+  }, [projectId]);
+
+  /** Refresh the card render after edits, at most every 45 s, when the browser is idle. */
+  const scheduleCover = useCallback(() => {
+    window.clearTimeout(coverTimer.current);
+    const wait = Math.max(3_000, coverAtRef.current + COVER_EVERY_MS - Date.now());
+    coverTimer.current = window.setTimeout(() => {
+      const m = modelRef.current;
+      if (!m) return;
+      coverAtRef.current = Date.now();
+      updateCover(projectId, m)
+        .then((t) => t && setProject((p) => (p ? { ...p, coverAt: t } : p)))
+        .catch(() => {});
+    }, wait);
   }, [projectId]);
 
   const save = useCallback(async () => {
@@ -64,6 +87,7 @@ export function useProjectDoc(projectId: string) {
       versionRef.current = r.version;
       setProject((p) => (p ? { ...p, version: r.version, updatedAt: r.updatedAt, summary: summarize(snapshot) } : p));
       setSaveState(dirtyRef.current ? 'unsaved' : 'saved');
+      scheduleCover();
     } catch (e) {
       // A deleted or inaccessible project will never accept the save: stop retrying.
       const gone = e instanceof ApiError && (e.status === 404 || e.status === 401);
@@ -139,6 +163,7 @@ export function useProjectDoc(projectId: string) {
       window.removeEventListener('beforeunload', onBefore);
       document.removeEventListener('visibilitychange', onHide);
       window.clearTimeout(timerRef.current);
+      window.clearTimeout(coverTimer.current);
       save();
     };
   }, [save]);

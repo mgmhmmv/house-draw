@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import type { BuildingProject } from '../../model/types';
 import { calculateBOQ } from '../../engine/boqCalculator';
-import { ApiError } from '../lib/api';
+import { ApiError, STAGES, type ProjectStatus } from '../lib/api';
 import { billing, islepos, mvr, type Connection, type IsleCustomer, type IsleDoc, type IsleLine, type IsleProduct, type ProjectBilling } from '../lib/islepos';
 import { Link } from '../lib/router';
 import { NewClientDialog } from '../screens/IsleposPages';
-import { Avatar, Button, cx, Input, Spinner, toast } from '../ui';
+import { Avatar, Button, cx, Input, Spinner, STATUS_META, toast } from '../ui';
 import { Card, SheetPage } from './kit';
 
 /** Suggested drawing packages; prices are starting points the studio edits per quote. */
@@ -36,7 +36,9 @@ function Pill({ status }: { status: string }) {
   return <span className={cx('rounded-full px-2.5 py-0.5 text-2xs font-medium capitalize', STATUS_STYLE[status] ?? 'bg-sunken text-ink-2')}>{STATUS_LABEL[status] ?? status}</span>;
 }
 
-export function BillingSheet({ projectId, model }: { projectId: string; model: BuildingProject }) {
+export function BillingSheet({ projectId, model, stage, onStage }: { projectId: string; model: BuildingProject; stage: ProjectStatus; onStage: (s: ProjectStatus) => void }) {
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
   const [conn, setConn] = useState<Connection | null>(null);
   const [state, setState] = useState<ProjectBilling | null>(null);
   const [customer, setCustomer] = useState<IsleCustomer | null>(null);
@@ -55,6 +57,11 @@ export function BillingSheet({ projectId, model }: { projectId: string; model: B
       for (const d of fresh) if (d) map[d.id] = d;
       setDocs(map);
       await Promise.all(fresh.filter((d): d is IsleDoc => !!d).map((d) => billing.record(projectId, d)));
+      // Handed over and fully paid: the job is done.
+      const inv = fresh.filter((d): d is IsleDoc => !!d && d.kind === 'invoice' && d.status !== 'cancelled' && d.status !== 'draft');
+      if (stageRef.current === 'handover' && inv.length && inv.every((d) => d.balance_due <= 0) && inv.some((d) => d.amount_paid > 0)) {
+        onStage('done');
+      }
     } finally {
       setRefreshing(false);
     }
@@ -114,6 +121,8 @@ export function BillingSheet({ projectId, model }: { projectId: string; model: B
         <Stat label="Paid" value={mvr(paid)} />
         <Stat label="Outstanding" value={mvr(owed)} />
       </div>
+
+      <StageCard stage={stage} onStage={onStage} />
 
       <ClientCard customer={customer} onLink={linkCustomer} />
 
@@ -403,5 +412,48 @@ function DocRow({ record, doc, onChange, onRefresh }: { record: ProjectBilling['
         )}
       </div>
     </div>
+  );
+}
+
+/** Where the job stands. Handing over is the studio's call; "done" follows once it's paid. */
+function StageCard({ stage, onStage }: { stage: ProjectStatus; onStage: (s: ProjectStatus) => void }) {
+  const i = STAGES.indexOf(stage);
+  return (
+    <Card title="Stage">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {STAGES.map((s, k) => (
+          <span
+            key={s}
+            title={STATUS_META[s].hint}
+            className={cx(
+              'inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-2xs font-medium',
+              s === stage ? 'bg-ink text-page' : k < i ? 'bg-sunken text-ink-2' : 'text-ink-3'
+            )}
+          >
+            <span className={cx('h-1.5 w-1.5 rounded-full', STATUS_META[s].dot)} />
+            {STATUS_META[s].label}
+          </span>
+        ))}
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-[13px] text-ink-3">
+          {stage === 'handover'
+            ? 'Handed over. It moves to Done by itself once the invoice is paid in full.'
+            : stage === 'done'
+              ? 'Handed over and paid.'
+              : 'Mark the project handed over when the drawings are delivered.'}
+        </p>
+        {i >= 0 && i < STAGES.indexOf('handover') && (
+          <Button size="sm" variant="primary" onClick={() => onStage('handover')}>
+            Mark handed over
+          </Button>
+        )}
+        {stage === 'handover' && (
+          <Button size="sm" onClick={() => onStage('done')}>
+            Mark done
+          </Button>
+        )}
+      </div>
+    </Card>
   );
 }

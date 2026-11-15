@@ -9,11 +9,14 @@ import { PlumbingSheet } from '../sheets/PlumbingSheet';
 import { BoqSheet } from '../sheets/BoqSheet';
 import { BillingSheet } from '../sheets/BillingSheet';
 import type { SheetId } from './sheets';
+import type { ProjectStatus } from '../lib/api';
 
 interface Props {
   model: BuildingProject;
   sheet: SheetId;
   projectId: string;
+  stage: ProjectStatus;
+  onStage: (s: ProjectStatus) => void;
   levelIndex: number;
   tool: CADTool;
   selectedId: string | null;
@@ -50,7 +53,7 @@ export function SheetView(p: Props) {
       view = <HvacSheet model={p.model} />;
       break;
     case 'BILL':
-      view = <BillingSheet projectId={p.projectId} model={p.model} />;
+      view = <BillingSheet projectId={p.projectId} model={p.model} stage={p.stage} onStage={p.onStage} />;
       break;
     case 'Q-101':
       view = <BoqSheet model={p.model} onCommit={p.onCommit} />;

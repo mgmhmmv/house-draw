@@ -2,7 +2,8 @@ import type { User } from './auth';
 import { Env, HttpError, json, newId, now, readJson, str } from './http';
 import { handleProjectBilling } from './islepos';
 
-const STATUSES = ['concept', 'design', 'documentation', 'construction', 'complete', 'archived'] as const;
+/** Design-studio stages; a project is finished ('done') once handed over and paid. */
+const STATUSES = ['brief', 'concept', 'design', 'drawings', 'review', 'handover', 'done', 'archived'] as const;
 const MODEL_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_MAX_BYTES = 25 * 1024 * 1024;
 const FILE_KINDS = ['attachment', 'trace', 'export', 'cover'] as const;
@@ -18,6 +19,7 @@ interface ProjectRow {
   version: number;
   created_at: number;
   updated_at: number;
+  cover_at: number | null;
 }
 
 const modelKey = (id: string) => `projects/${id}/model.json`;
@@ -38,6 +40,7 @@ function toProject(row: ProjectRow) {
     template: row.template,
     summary,
     version: row.version,
+    coverAt: row.cover_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -89,7 +92,7 @@ export async function handleProjects(env: Env, req: Request, user: User, path: s
     });
     await env.DB.prepare(
       `INSERT INTO projects (id, owner_id, name, client, location, status, template, summary, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'concept', ?, ?, 1, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 'brief', ?, ?, 1, ?, ?)`
     )
       .bind(pid, user.id, name, str(body.client, 120), str(body.location, 120), str(body.template, 40) || 'blank', cleanSummary(body.summary), t, t)
       .run();
@@ -118,9 +121,32 @@ export async function handleProjects(env: Env, req: Request, user: User, path: s
     }
     if (req.method === 'DELETE') {
       const files = await env.DB.prepare('SELECT r2_key FROM project_files WHERE project_id = ?').bind(id).all<{ r2_key: string }>();
-      await env.FILES.delete([modelKey(id), ...files.results.map((f) => f.r2_key)]);
+      await env.FILES.delete([modelKey(id), `projects/${id}/cover.webp`, ...files.results.map((f) => f.r2_key)]);
       await env.DB.prepare('DELETE FROM projects WHERE id = ?').bind(id).run();
       return json({ ok: true });
+    }
+    throw new HttpError(405, 'method_not_allowed');
+  }
+
+  // GET/PUT /api/projects/:id/cover — a small render of the building for project cards
+  if (sub === 'cover') {
+    const key = `projects/${id}/cover.webp`;
+    if (req.method === 'GET') {
+      const obj = await env.FILES.get(key);
+      if (!obj) throw new HttpError(404, 'no_cover');
+      return new Response(obj.body, {
+        headers: { 'content-type': obj.httpMetadata?.contentType || 'image/webp', 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' },
+      });
+    }
+    if (req.method === 'PUT') {
+      const type = req.headers.get('content-type') || '';
+      if (!/^image\/(webp|png|jpeg)$/.test(type)) throw new HttpError(415, 'unsupported_type');
+      const size = Number(req.headers.get('content-length') || 0);
+      if (!size || size > 1_500_000) throw new HttpError(413, 'too_large');
+      await env.FILES.put(key, req.body, { httpMetadata: { contentType: type } });
+      const t = now();
+      await env.DB.prepare('UPDATE projects SET cover_at = ? WHERE id = ?').bind(t, id).run();
+      return json({ coverAt: t });
     }
     throw new HttpError(405, 'method_not_allowed');
   }

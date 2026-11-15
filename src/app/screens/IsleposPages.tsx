@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Search, Users } from 'lucide-react';
 import { ApiError } from '../lib/api';
 import { islepos, type Connection, type IsleCustomer } from '../lib/islepos';
-import { Link } from '../lib/router';
+import { Link, useRouter } from '../lib/router';
 import { ATOLL_NAMES, getAllIslandsByAtoll } from '../lib/maldivesLocations';
 import { Avatar, Button, Dialog, Field, Input, Segmented, Spinner, toast } from '../ui';
 
@@ -97,6 +97,7 @@ const label = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpper
 
 /** Clients: the customers in the studio's IslePOS books, with their full details. */
 export function ClientsPage() {
+  const { navigate } = useRouter();
   const [conn, setConn] = useState<Connection | null>(null);
   const [list, setList] = useState<IsleCustomer[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -204,7 +205,7 @@ export function ClientsPage() {
                   </thead>
                   <tbody>
                     {list.map((c) => (
-                      <tr key={c.id} onClick={() => setEditing(c)} className="cursor-pointer border-b border-line/70 last:border-b-0 hover:bg-raised">
+                      <tr key={c.id} onClick={() => navigate(`/clients/${c.id}`)} className="cursor-pointer border-b border-line/70 last:border-b-0 hover:bg-raised">
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
                             <Avatar name={c.name} size={30} />

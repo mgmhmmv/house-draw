@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Archive, Building2, LayoutGrid, List, MapPin, MoreHorizontal, Plus, Search, Trash2, User as UserIcon } from 'lucide-react';
-import { api, type Project, type ProjectStatus } from '../lib/api';
+import { api, STAGES, type Project, type ProjectStatus } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { timeAgo } from '../lib/hooks';
 import { Link } from '../lib/router';
@@ -10,11 +10,13 @@ import { PlanGlyph } from './PlanGlyph';
 type Filter = 'active' | ProjectStatus | 'all';
 const FILTERS: { id: Filter; label: string }[] = [
   { id: 'active', label: 'Active' },
+  { id: 'brief', label: 'Brief' },
   { id: 'concept', label: 'Concept' },
   { id: 'design', label: 'Design' },
-  { id: 'documentation', label: 'Documentation' },
-  { id: 'construction', label: 'Construction' },
-  { id: 'complete', label: 'Complete' },
+  { id: 'drawings', label: 'Drawings' },
+  { id: 'review', label: 'Client review' },
+  { id: 'handover', label: 'Handed over' },
+  { id: 'done', label: 'Done' },
   { id: 'archived', label: 'Archived' },
 ];
 
@@ -46,7 +48,7 @@ export function ProjectsPage({ onNewProject }: { onNewProject: () => void }) {
     const c: Record<string, number> = { active: 0 };
     for (const p of projects ?? []) {
       c[p.status] = (c[p.status] ?? 0) + 1;
-      if (p.status !== 'archived' && p.status !== 'complete') c.active++;
+      if (p.status !== 'archived' && p.status !== 'done') c.active++;
     }
     return c;
   }, [projects]);
@@ -54,7 +56,7 @@ export function ProjectsPage({ onNewProject }: { onNewProject: () => void }) {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (projects ?? []).filter((p) => {
-      if (filter === 'active' && (p.status === 'archived' || p.status === 'complete')) return false;
+      if (filter === 'active' && (p.status === 'archived' || p.status === 'done')) return false;
       if (filter !== 'active' && filter !== 'all' && p.status !== filter) return false;
       return !q || `${p.name} ${p.client} ${p.location}`.toLowerCase().includes(q);
     });
@@ -93,7 +95,7 @@ export function ProjectsPage({ onNewProject }: { onNewProject: () => void }) {
       {projects && projects.length > 0 && (
         <div className="mt-6 grid grid-cols-3 gap-3 sm:max-w-xl">
           <Stat label="Active" value={String(counts.active)} />
-          <Stat label="On site"value={String(counts.construction ?? 0)} />
+          <Stat label="Awaiting payment" value={String(counts.handover ?? 0)} />
           <Stat label="Floor area" value={`${Math.round(totalArea).toLocaleString()} m²`} />
         </div>
       )}
@@ -220,7 +222,7 @@ function ProjectMenu({ p, onStatus, onDelete }: RowProps) {
       {(close) => (
         <div onClick={(e) => e.stopPropagation()}>
           <p className="px-2.5 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ink-3">Stage</p>
-          {(['concept', 'design', 'documentation', 'construction', 'complete'] as ProjectStatus[]).map((s) => (
+          {STAGES.map((s) => (
             <MenuItem
               key={s}
               icon={<span className={cx('ml-1 block h-2 w-2 rounded-full', STATUS_META[s].dot)} />}
@@ -237,7 +239,7 @@ function ProjectMenu({ p, onStatus, onDelete }: RowProps) {
             icon={<Archive />}
             onClick={() => {
               close();
-              onStatus(p, p.status === 'archived' ? 'concept' : 'archived');
+              onStatus(p, p.status === 'archived' ? 'brief' : 'archived');
             }}
           >
             {p.status === 'archived' ? 'Restore' : 'Archive'}
@@ -265,8 +267,12 @@ function ProjectCard(props: RowProps) {
       to={`/p/${p.id}`}
       className="group flex flex-col overflow-hidden rounded-card border border-line bg-surface transition-all hover:-translate-y-0.5 hover:border-line-strong hover:shadow-float"
     >
-      <div className="relative h-44 bg-raised bg-blueprint px-10 py-6">
-        <PlanGlyph seed={p.id} rooms={p.summary.rooms} levels={p.summary.levels} />
+      <div className={cx('relative h-44 bg-raised', p.coverAt ? '' : 'bg-blueprint px-10 py-6')}>
+        {p.coverAt ? (
+          <img src={`/api/projects/${p.id}/cover?v=${p.coverAt}`} alt="" loading="lazy" className="h-full w-full object-cover" />
+        ) : (
+          <PlanGlyph seed={p.id} rooms={p.summary.rooms} levels={p.summary.levels} />
+        )}
         <div className="absolute left-3 top-3">
           <StatusPill status={p.status} />
         </div>
@@ -303,8 +309,8 @@ function ProjectRow(props: RowProps) {
   const { p } = props;
   return (
     <Link to={`/p/${p.id}`} className="flex items-center gap-4 border-b border-line px-4 py-3 last:border-b-0 hover:bg-raised">
-      <div className="h-11 w-14 shrink-0 rounded-[8px] bg-raised p-1">
-        <PlanGlyph seed={p.id} rooms={p.summary.rooms} levels={p.summary.levels} />
+      <div className={cx('h-11 w-14 shrink-0 overflow-hidden rounded-[8px] bg-raised', !p.coverAt && 'p-1')}>
+        {p.coverAt ? <img src={`/api/projects/${p.id}/cover?v=${p.coverAt}`} alt="" loading="lazy" className="h-full w-full object-cover" /> : <PlanGlyph seed={p.id} rooms={p.summary.rooms} levels={p.summary.levels} />}
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium">{p.name}</div>

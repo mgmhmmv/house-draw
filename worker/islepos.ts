@@ -146,3 +146,42 @@ export async function handleProjectBilling(env: Env, req: Request, projectId: st
   }
   throw new HttpError(405, 'method_not_allowed');
 }
+
+/**
+ * GET /api/clients/:customerId — what ArchStudio itself holds for one IslePOS customer:
+ * this user's projects linked to them, and the quotes/invoices raised from those projects.
+ * Nothing else from the merchant's books is included.
+ */
+export async function handleClient(env: Env, user: User, customerId: string): Promise<Response> {
+  const { results: projects } = await env.DB.prepare(
+    `SELECT id, name, location, status, summary, cover_at, updated_at FROM projects
+     WHERE owner_id = ? AND islepos_customer_id = ? ORDER BY updated_at DESC`
+  )
+    .bind(user.id, customerId)
+    .all<Record<string, unknown>>();
+  const ids = projects.map((p) => p.id as string);
+  let documents: Record<string, unknown>[] = [];
+  if (ids.length) {
+    const marks = ids.map(() => '?').join(',');
+    documents = (
+      await env.DB.prepare(
+        `SELECT d.*, p.name AS project_name FROM project_documents d JOIN projects p ON p.id = d.project_id
+         WHERE d.project_id IN (${marks}) ORDER BY d.created_at DESC`
+      )
+        .bind(...ids)
+        .all<Record<string, unknown>>()
+    ).results;
+  }
+  return json({
+    projects: projects.map((p) => ({ ...p, summary: safeJson(p.summary as string) })),
+    documents,
+  });
+}
+
+const safeJson = (s: string) => {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return {};
+  }
+};

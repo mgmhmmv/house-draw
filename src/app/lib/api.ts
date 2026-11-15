@@ -6,7 +6,11 @@ export interface User {
   name: string;
 }
 
-export type ProjectStatus = 'concept' | 'design' | 'documentation' | 'construction' | 'complete' | 'archived';
+/** Design-studio stages. 'done' = handed over and paid. */
+export type ProjectStatus = 'brief' | 'concept' | 'design' | 'drawings' | 'review' | 'handover' | 'done' | 'archived';
+
+/** The working stages, in order (archived sits outside the flow). */
+export const STAGES: ProjectStatus[] = ['brief', 'concept', 'design', 'drawings', 'review', 'handover', 'done'];
 
 export interface ProjectSummary {
   area?: number;
@@ -29,6 +33,8 @@ export interface Project {
   version: number;
   createdAt: number;
   updatedAt: number;
+  /** When the 3D cover render was last updated, or null if there is none yet. */
+  coverAt: number | null;
 }
 
 export class ApiError extends Error {
