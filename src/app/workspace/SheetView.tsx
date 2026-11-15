@@ -3,9 +3,10 @@ import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, Sk
 import { PlanCanvas } from '../drawing/plan/PlanCanvas';
 import { ModelView } from '../drawing/three/ModelView';
 import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
-import { SchematicsView } from '../../components/SchematicsView';
-import { BOQView } from '../../components/BOQView';
-import '../../app-legacy.css';
+import { ElectricalSheet } from '../sheets/ElectricalSheet';
+import { HvacSheet } from '../sheets/HvacSheet';
+import { PlumbingSheet } from '../sheets/PlumbingSheet';
+import { BoqSheet } from '../sheets/BoqSheet';
 
 interface Props {
   model: BuildingProject;
@@ -37,12 +38,16 @@ export function SheetView(p: Props) {
       view = <ElevationSheet model={p.model} mode={p.sheet === 'A-201' ? 'elevations' : 'sections'} svgRef={p.svgRef} />;
       break;
     case 'E-101':
+      view = <ElectricalSheet model={p.model} />;
+      break;
     case 'P-101':
+      view = <PlumbingSheet model={p.model} />;
+      break;
     case 'H-101':
-      view = <SchematicsView project={p.model} mode={p.sheet} onUpdateProject={p.onCommit} isLight />;
+      view = <HvacSheet model={p.model} />;
       break;
     case 'Q-101':
-      view = <BOQView project={p.model} onUpdateProject={p.onCommit} isLight />;
+      view = <BoqSheet model={p.model} onCommit={p.onCommit} />;
       break;
     default:
       view = (
@@ -62,5 +67,5 @@ export function SheetView(p: Props) {
         />
       );
   }
-  return <div className="theme-light h-full w-full">{view}</div>;
+  return <div className="h-full w-full">{view}</div>;
 }

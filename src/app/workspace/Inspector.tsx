@@ -2,6 +2,11 @@ import { useState, type ReactNode } from 'react';
 import { ChevronDown, FlipHorizontal, Trash2 } from 'lucide-react';
 import {
   getDesignConfig,
+  getRoofDrainageConfig,
+  GUTTER_PROFILE_META,
+  WATER_COLLECTION_META,
+  type GutterProfile,
+  type WaterCollectionMode,
   getHVACConfig,
   getSolarConfig,
   type BuildingProject,
@@ -380,6 +385,8 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
         </Row>
       </Section>
 
+      <RainwaterSection model={model} edit={edit} />
+
       <Section title="Materials">
         <Row label="Facade">
           <Choice value={design.exteriorFacade} options={FACADE_MATERIAL_OPTIONS.map((o) => ({ value: o.id, label: o.label }))} onChange={(v) => edit((m) => (m.design = { ...design, exteriorFacade: v }))} />
@@ -449,6 +456,47 @@ function SolarSection({ model, edit, solar, collapsed }: { model: BuildingProjec
           </Row>
           <Row label="Battery">
             <Num value={solar.batteryKWh} unit="kWh" step={2.5} min={0} max={200} onChange={(v) => edit((m) => (m.solar = { ...solar, batteryKWh: v }))} />
+          </Row>
+        </>
+      )}
+    </Section>
+  );
+}
+
+function RainwaterSection({ model, edit }: { model: BuildingProject; edit: (fn: (m: BuildingProject) => void) => void }) {
+  const d = getRoofDrainageConfig(model.roof);
+  if (model.roof.type === 'flat') return null;
+  return (
+    <Section title="Rainwater" defaultOpen={false}>
+      <Row label="Gutters">
+        <Toggle label="Gutters" checked={d.gutterEnabled} onChange={(v) => edit((m) => (m.roof.gutterEnabled = v))} />
+      </Row>
+      {d.gutterEnabled && (
+        <>
+          <Row label="Profile">
+            <Choice
+              value={d.gutterProfile}
+              options={(Object.keys(GUTTER_PROFILE_META) as GutterProfile[]).map((k) => ({ value: k, label: GUTTER_PROFILE_META[k].shortLabel }))}
+              onChange={(v) => edit((m) => (m.roof.gutterProfile = v))}
+            />
+          </Row>
+          <Row label="Downpipes">
+            <Num value={d.downpipeCount} step={1} min={1} max={8} onChange={(v) => edit((m) => (m.roof.downpipeCount = Math.round(v)))} />
+          </Row>
+          <Row label="Collection">
+            <Choice
+              value={d.waterCollectionMode}
+              options={(Object.keys(WATER_COLLECTION_META) as WaterCollectionMode[]).map((k) => ({ value: k, label: WATER_COLLECTION_META[k].shortLabel }))}
+              onChange={(v) => edit((m) => (m.roof.waterCollectionMode = v))}
+            />
+          </Row>
+          {d.waterCollectionMode === 'harvesting_tank' && (
+            <Row label="Tank size">
+              <Num value={d.harvestingTankLiters} unit="L" step={500} min={500} max={20000} onChange={(v) => edit((m) => (m.roof.harvestingTankLiters = v))} />
+            </Row>
+          )}
+          <Row label="First-flush diverter">
+            <Toggle label="First-flush diverter" checked={d.firstFlushDiverter} onChange={(v) => edit((m) => (m.roof.firstFlushDiverter = v))} />
           </Row>
         </>
       )}
