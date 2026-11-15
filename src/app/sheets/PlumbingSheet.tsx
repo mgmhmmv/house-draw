@@ -1,10 +1,26 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { WATER_COLLECTION_META, type BuildingProject } from '../../model/types';
 import { computePlumbingRiser, type PlumbingRiserReport } from '../../engine/mepEngine';
 import { INK, INK_2, INK_3, MEP_COLOR } from '../drawing/style';
 import { Card, DataTable, fmt, Kpis, SheetPage, Specs } from './kit';
+import type { SheetInfo } from '../../export/sheet';
+import { PaperPages } from './drawn/PaperPages';
+import { plumbingPages } from './drawn/plumbing';
+import { PaperToggle } from './drawn/PaperToggle';
 
-export function PlumbingSheet({ model }: { model: BuildingProject }) {
+/** On paper (as printed) when the title block is known; the report view keeps the working figures. */
+export function PlumbingSheet({ model, paperInfo }: { model: BuildingProject; paperInfo?: SheetInfo | null }) {
+  const [paper, setPaper] = useState(true);
+  const pages = useMemo(() => (paperInfo && paper ? plumbingPages(model) : null), [model, paperInfo, paper]);
+  return (
+    <div className="relative h-full w-full">
+      {pages && paperInfo ? <PaperPages pages={pages} info={paperInfo} /> : <PlumbingSheetReport model={model} />}
+      {paperInfo && <PaperToggle paper={paper} setPaper={setPaper} />}
+    </div>
+  );
+}
+
+function PlumbingSheetReport({ model }: { model: BuildingProject }) {
   const r = useMemo(() => computePlumbingRiser(model), [model]);
   return (
     <SheetPage code="P-101" title="Plumbing and drainage" lede="Water supply, drainage and rainwater, sized from the fixtures in the plan.">

@@ -17,6 +17,7 @@ const INK2 = '#4A4F57';
 const INK3 = '#8B9098';
 const RULE = '#C9CDD3';
 const FONT = 'Inter, Helvetica, Arial, sans-serif';
+const MEPW = '#2F6FD4';
 
 export type Stage = 'concept' | 'approval' | 'construction' | 'asbuilt';
 export const STAGES: { id: Stage; label: string }[] = [
@@ -30,7 +31,9 @@ export const STAGES: { id: Stage; label: string }[] = [
 export type LegendSym =
   | 'wall' | 'wallGrey' | 'door' | 'window' | 'room' | 'mark' | 'dim' | 'section' | 'bubble' | 'dashed' | 'column' | 'footing'
   | 'line' | 'chip' | 'ring' | 'light' | 'outlet' | 'chamber' | 'septic' | 'soak' | 'tank' | 'arrow' | 'ridge' | 'solar'
-  | 'datum' | 'note' | 'block' | 'conc' | 'hardcore' | 'earth' | 'truss' | 'text';
+  | 'datum' | 'note' | 'block' | 'conc' | 'hardcore' | 'earth' | 'truss' | 'text'
+  | 'breaker' | 'rcd' | 'isolator' | 'fuse' | 'meter' | 'spd' | 'ground' | 'busbar' | 'inverter' | 'battery' | 'pvarray'
+  | 'valve' | 'float' | 'pump' | 'vessel' | 'cowl';
 
 /** One line of a sheet's legend: the symbol as drawn, and what it means. */
 export interface LegendEntry {
@@ -82,7 +85,7 @@ export interface SheetContent {
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Rough line wrap by character count (sidebar text is small and short). */
-function wrap(text: string, chars: number): string[] {
+export function wrap(text: string, chars: number): string[] {
   const out: string[] = [];
   for (const para of text.split('\n')) {
     let line = '';
@@ -481,6 +484,42 @@ function legendSymbol(e: LegendEntry, x: number, y: number) {
       return `<line x1="${x + 1}" y1="${y - 1.5}" x2="${x + 11}" y2="${y - 1.5}" stroke="${INK}" stroke-width="0.3"/>${[0, 2, 4, 6, 8].map((d) => `<line x1="${x + 1 + d}" y1="${y + 1.5}" x2="${x + 3 + d}" y2="${y - 1.4}" stroke="${INK3}" stroke-width="0.15"/>`).join('')}`;
     case 'truss':
       return `<path d="M${x} ${y + 1.4} L${mid} ${y - 1.6} L${x + 12} ${y + 1.4} Z M${mid} ${y - 1.6} L${mid} ${y + 1.4} M${x + 3} ${y + 1.4} L${mid} ${y - 0.4} M${x + 9} ${y + 1.4} L${mid} ${y - 0.4}" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
+    case 'breaker':
+    case 'rcd':
+    case 'isolator': {
+      // Drawn on its side: supply from the left, blade lifting at the fixed contact.
+      const a = x + 2;
+      const b = x + 10;
+      const fixed = e.sym === 'isolator' ? `<line x1="${b - 3.4}" y1="${y - 1}" x2="${b - 3.4}" y2="${y + 1}" stroke="${INK}" stroke-width="0.3"/>` : `<path d="M${b - 3.9} ${y - 0.5} l1 1 M${b - 3.9} ${y + 0.5} l1 -1" stroke="${INK}" stroke-width="0.25"/>`;
+      const ring = e.sym === 'rcd' ? `<ellipse cx="${x + 6}" cy="${y - 0.8}" rx="2.6" ry="1.6" fill="none" stroke="${INK}" stroke-width="0.2"/>` : '';
+      return `<line x1="${x}" y1="${y}" x2="${a + 1}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${a + 1}" y1="${y}" x2="${b - 3}" y2="${y - 1.8}" stroke="${INK}" stroke-width="0.3"/><line x1="${b - 3.4}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>${fixed}${ring}`;
+    }
+    case 'fuse':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><rect x="${x + 4}" y="${y - 0.9}" width="4" height="1.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 4}" y1="${y}" x2="${x + 8}" y2="${y}" stroke="${INK}" stroke-width="0.2"/>`;
+    case 'meter':
+      return `<circle cx="${mid}" cy="${y}" r="2.1" fill="#fff" stroke="${INK}" stroke-width="0.3"/>${t(mid, y + 0.5, e.tag ?? 'kWh', 1.15, { w: 700, a: 'middle' })}`;
+    case 'spd':
+      return `<rect x="${mid - 1.6}" y="${y - 2}" width="3.2" height="4" fill="#fff" stroke="${INK}" stroke-width="0.3"/><path d="M${mid + 0.6} ${y - 1.4} l-1 1.3 h1.1 l-1 1.4" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
+    case 'ground':
+      return `<line x1="${mid}" y1="${y - 2}" x2="${mid}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 2}" y1="${y}" x2="${mid + 2}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 1.3}" y1="${y + 0.8}" x2="${mid + 1.3}" y2="${y + 0.8}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.6}" y1="${y + 1.6}" x2="${mid + 0.6}" y2="${y + 1.6}" stroke="${INK}" stroke-width="0.3"/>`;
+    case 'busbar':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="1"/>`;
+    case 'inverter':
+      return `<rect x="${mid - 3.5}" y="${y - 2.4}" width="7" height="4.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 3.5}" y1="${y + 2.4}" x2="${mid + 3.5}" y2="${y - 2.4}" stroke="${INK}" stroke-width="0.2"/><path d="M${mid - 2.8} ${y - 1.4} h1.8 M${mid - 2.8} ${y - 0.8} h1.8" stroke="${INK}" stroke-width="0.2"/><path d="M${mid + 0.9} ${y + 1.2} q0.5 -0.8 1 0 t1 0" fill="none" stroke="${INK}" stroke-width="0.2"/>`;
+    case 'battery':
+      return `<line x1="${mid - 4}" y1="${y}" x2="${mid - 0.8}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.8}" y1="${y - 2}" x2="${mid - 0.8}" y2="${y + 2}" stroke="${INK}" stroke-width="0.35"/><line x1="${mid + 0.6}" y1="${y - 1}" x2="${mid + 0.6}" y2="${y + 1}" stroke="${INK}" stroke-width="0.6"/><line x1="${mid + 0.6}" y1="${y}" x2="${mid + 4}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>`;
+    case 'pvarray':
+      return `<rect x="${x + 1}" y="${y - 1.8}" width="10" height="3.6" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.3"/><line x1="${x + 6}" y1="${y - 1.8}" x2="${x + 6}" y2="${y + 1.8}" stroke="#3D5A80" stroke-width="0.15"/><line x1="${x + 1}" y1="${y}" x2="${x + 11}" y2="${y}" stroke="#3D5A80" stroke-width="0.15"/>`;
+    case 'valve':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${c}" stroke-width="0.35"/><path d="M${mid - 1.6} ${y - 1.2} L${mid + 1.6} ${y + 1.2} L${mid + 1.6} ${y - 1.2} L${mid - 1.6} ${y + 1.2} Z" fill="#fff" stroke="${INK}" stroke-width="0.25"/>`;
+    case 'float':
+      return `<line x1="${x}" y1="${y}" x2="${x + 7}" y2="${y}" stroke="${c}" stroke-width="0.35"/><path d="M${x + 7} ${y - 1} v2" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 7}" y1="${y}" x2="${x + 10}" y2="${y + 1.6}" stroke="${INK}" stroke-width="0.2"/><circle cx="${x + 10.8}" cy="${y + 2}" r="0.9" fill="#fff" stroke="${INK}" stroke-width="0.25"/>`;
+    case 'pump':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${c}" stroke-width="0.35"/><circle cx="${mid}" cy="${y}" r="2" fill="#fff" stroke="${INK}" stroke-width="0.3"/><path d="M${mid - 1.1} ${y - 1.4} L${mid + 1.7} ${y} L${mid - 1.1} ${y + 1.4} Z" fill="${INK}"/>`;
+    case 'vessel':
+      return `<rect x="${x + 2}" y="${y - 2}" width="8" height="4" fill="#EAF1FB" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 2}" y1="${y - 0.6}" x2="${x + 10}" y2="${y - 0.6}" stroke="${MEPW}" stroke-width="0.2" stroke-dasharray="0.6 0.4"/>`;
+    case 'cowl':
+      return `<line x1="${mid}" y1="${y + 2}" x2="${mid}" y2="${y - 1}" stroke="${c}" stroke-width="0.35"/><path d="M${mid - 1.4} ${y - 1} h2.8 l-1.4 -1.2 Z" fill="none" stroke="${INK}" stroke-width="0.25"/>`;
     case 'text':
     default:
       return t(mid, y + 0.6, e.tag ?? '', 1.7, { w: 700, a: 'middle' });

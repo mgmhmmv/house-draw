@@ -167,7 +167,7 @@ const INK_HEX = '#1A1917';
 /** Sheets that have a drawing worth printing, in set order. */
 export const PRINTABLE = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301', 'E-101', 'P-101', '3D-VIEW'];
 /** Sheets drawn on paper in the app (plans at true scale, elevations and sections). */
-export const PAPER_SHEETS = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301'];
+export const PAPER_SHEETS = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301', 'E-101', 'P-101'];
 /** Plans with one sheet per level. */
 export const PER_LEVEL = ['A-101', 'S-101', 'M-101', 'D-101'];
 

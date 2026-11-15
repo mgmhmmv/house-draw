@@ -1,10 +1,26 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { BuildingProject } from '../../model/types';
 import { computeElectricalSLD, type ElectricalCircuitScheduleRow, type ElectricalSLDReport } from '../../engine/mepEngine';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR } from '../drawing/style';
 import { BarList, Card, DataTable, fmt, Kpis, SheetPage, Specs } from './kit';
+import type { SheetInfo } from '../../export/sheet';
+import { PaperPages } from './drawn/PaperPages';
+import { electricalPages } from './drawn/electrical';
+import { PaperToggle } from './drawn/PaperToggle';
 
-export function ElectricalSheet({ model }: { model: BuildingProject }) {
+/** On paper (as printed) when the title block is known; the report view keeps the working figures. */
+export function ElectricalSheet({ model, paperInfo }: { model: BuildingProject; paperInfo?: SheetInfo | null }) {
+  const [paper, setPaper] = useState(true);
+  const pages = useMemo(() => (paperInfo && paper ? electricalPages(model) : null), [model, paperInfo, paper]);
+  return (
+    <div className="relative h-full w-full">
+      {pages && paperInfo ? <PaperPages pages={pages} info={paperInfo} /> : <ElectricalSheetReport model={model} />}
+      {paperInfo && <PaperToggle paper={paper} setPaper={setPaper} />}
+    </div>
+  );
+}
+
+function ElectricalSheetReport({ model }: { model: BuildingProject }) {
   const r = useMemo(() => computeElectricalSLD(model), [model]);
   const pv = r.solarPV;
   return (

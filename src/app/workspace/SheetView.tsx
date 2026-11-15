@@ -50,10 +50,10 @@ export function SheetView(p: Props) {
       view = <ElevationSheet model={p.model} mode={p.sheet === 'A-201' ? 'elevations' : 'sections'} svgRef={p.svgRef} paperInfo={p.paperInfo} />;
       break;
     case 'E-101':
-      view = <ElectricalSheet model={p.model} />;
+      view = <ElectricalSheet model={p.model} paperInfo={p.paperInfo} />;
       break;
     case 'P-101':
-      view = <PlumbingSheet model={p.model} />;
+      view = <PlumbingSheet model={p.model} paperInfo={p.paperInfo} />;
       break;
     case 'H-101':
       view = <HvacSheet model={p.model} />;
