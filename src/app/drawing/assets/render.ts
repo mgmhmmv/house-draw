@@ -2,15 +2,17 @@
 import * as THREE from 'three';
 import type { FloorLevel, FurnitureItem, MEPNode } from '../../../model/types';
 import { ASSET_BY_ID, assetFor, MEP_DEFAULT_ASSET, type AssetDef } from './catalog';
-import { AssetMaterials, buildParts, partsToPlan, renderThumb, type Prim } from './kit';
+import { AssetMaterials, buildParts, partsToPlan, primaryMat, renderThumb, type Prim } from './kit';
 
 export const WALL_SIDE_ROT: Record<string, number> = { north: 0, east: 90, south: 180, west: 270 };
 
 /** True for things seen from below in plan (drawn dashed): ceiling items and high wall units. */
 export const isOverhead = (def: AssetDef, elevation = def.elevation ?? 0) => def.mount === 'ceiling' || (def.mount === 'wall' && elevation >= 1.2);
 
-export function assetModel(def: AssetDef, w: number, d: number, h: number, mats: AssetMaterials, shadows = true) {
-  return buildParts(def.parts ? def.parts(w, d, h) : [], mats, shadows);
+export function assetModel(def: AssetDef, w: number, d: number, h: number, mats: AssetMaterials, shadows = true, color?: string) {
+  const parts = def.parts ? def.parts(w, d, h) : [];
+  const from = color ? primaryMat(parts) : null;
+  return buildParts(parts, mats, shadows, from && color ? { from, color } : undefined);
 }
 
 /** Plan symbol in item-local metres (origin at the centre, back edge at -d/2). */
@@ -32,7 +34,7 @@ export function furnitureObject(f: FurnitureItem, levelElevation: number, mats: 
   if (groundY !== null && (OUTSIDE.has(def?.category ?? '') || f.type === 'car')) levelElevation = groundY;
   const h = f.height ?? def?.h ?? 0.75;
   let obj: THREE.Object3D;
-  if (def?.parts) obj = assetModel(def, f.width, f.depth, h, mats);
+  if (def?.parts) obj = assetModel(def, f.width, f.depth, h, mats, true, f.color);
   else {
     obj = new THREE.Mesh(new THREE.BoxGeometry(f.width, h, f.depth), mats.get('offwhite'));
     obj.position.y = h / 2;

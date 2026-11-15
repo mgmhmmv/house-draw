@@ -234,6 +234,8 @@ export interface Wall {
   isExterior: boolean;
   isLoadBearing: boolean;
   material: WallMaterial;
+  /** Paint / render colour, #rrggbb; the project's facade or interior finish otherwise. */
+  color?: string;
 }
 
 export interface Opening {
@@ -306,6 +308,8 @@ export interface FurnitureItem {
   height?: number;
   /** Underside above the floor, for wall-mounted items; the library default when absent. */
   elevation?: number;
+  /** Colour of the item's main material (upholstery, timber, paint), #rrggbb. */
+  color?: string;
 }
 
 export type MEPNodeKind =

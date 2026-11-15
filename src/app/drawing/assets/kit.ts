@@ -185,6 +185,17 @@ export class AssetMaterials {
     }
     return m;
   }
+  /** A material in a chosen colour (e.g. a sofa in a client's fabric colour). */
+  tinted(k: MatKey, color: string) {
+    const key = `${k}:${color}${this.clay ? ':clay' : ''}`;
+    let m = this.cache.get(key);
+    if (!m) {
+      m = this.get(k).clone();
+      if (!this.clay) m.color = new THREE.Color(color);
+      this.cache.set(key, m);
+    }
+    return m;
+  }
   all() {
     return [...this.cache.values()];
   }
@@ -214,10 +225,24 @@ function geometry(part: Part): THREE.BufferGeometry {
 }
 
 /** Build the 3D model: a group with its origin at the centre of the footprint, on the floor. */
-export function buildParts(parts: Part[], mats: AssetMaterials, shadows = true): THREE.Group {
+/** The material that most of an item is made of (what a colour choice changes). */
+export function primaryMat(parts: Part[]): MatKey | null {
+  const skip = new Set<MatKey>(['chrome', 'glass', 'black', 'rubber', 'lamp', 'water', 'screen', 'steel', 'metal', 'soil']);
+  const vol = new Map<MatKey, number>();
+  for (const p of parts) {
+    if (skip.has(p.m)) continue;
+    const v = p.g === 'box' || p.g === 'rbox' ? p.s[0] * p.s[1] * p.s[2] : p.g === 'cyl' ? Math.PI * Math.max(p.s[0], p.s[2]) ** 2 * p.s[1] : p.g === 'sph' ? p.s[0] ** 3 * 4 : 0.01;
+    vol.set(p.m, (vol.get(p.m) ?? 0) + v);
+  }
+  let best: MatKey | null = null;
+  for (const [k, v] of vol) if (!best || v > vol.get(best)!) best = k;
+  return best;
+}
+
+export function buildParts(parts: Part[], mats: AssetMaterials, shadows = true, recolor?: { from: MatKey; color: string }): THREE.Group {
   const g = new THREE.Group();
   for (const part of parts) {
-    const mesh = new THREE.Mesh(geometry(part), mats.get(part.m));
+    const mesh = new THREE.Mesh(geometry(part), recolor && part.m === recolor.from ? mats.tinted(part.m, recolor.color) : mats.get(part.m));
     mesh.position.set(...part.p);
     if (part.rot) mesh.rotation.set(...part.rot);
     if (part.sc) mesh.scale.set(...part.sc);

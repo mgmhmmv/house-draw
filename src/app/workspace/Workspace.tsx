@@ -367,7 +367,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const project = doc.project;
 
   const inspector = (
-    <Inspector model={model} levelIndex={safeLevel} selection={selection} onCommit={edit} onDelete={preview ? () => {} : deleteSelection} />
+    <Inspector model={model} levelIndex={safeLevel} selection={selection} onCommit={edit} onDelete={preview ? () => {} : deleteSelection} onSelect={onSelect} />
   );
   const assistant = (
     <Assistant

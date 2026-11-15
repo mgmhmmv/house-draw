@@ -134,6 +134,8 @@ function wallRect(P: (s: number, off: number, z: number) => V3, s0: number, s1: 
 }
 
 function openingFaces(level: FloorLevel, o: Opening, pal: Palette, exterior: boolean, center: { x: number; y: number }): Face[] {
+  // A colour chosen for this opening overrides the project's frame / door finish.
+  if (o.frameColor) pal = { ...pal, frame: o.frameColor, door: o.kind === 'door' ? o.frameColor : pal.door };
   const w = level.walls.find((x) => x.id === o.wallId);
   if (!w) return [];
   const f = wallFrame(w);
@@ -255,7 +257,7 @@ function wallFaces(level: FloorLevel, pal: Palette): Face[] {
     const z1 = z0 + w.height;
     const P = (s: number, off: number, z: number) => v(w.start.x + f.dir.x * s + f.n.x * off, w.start.y + f.dir.y * s + f.n.y * off, z);
     const openings = level.openings.filter((o) => o.wallId === w.id);
-    const fill = w.isExterior ? pal.wall : '#F2F0EB';
+    const fill = w.color ? tint(w.color, 0.15) : w.isExterior ? pal.wall : '#F2F0EB';
     for (const side of [1, -1]) {
       const off = side * t;
       const n = v(f.n.x * side, f.n.y * side, 0);

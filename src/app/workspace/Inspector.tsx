@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { assetFor, CATEGORIES } from '../drawing/assets/catalog';
 
-import { ChevronDown, FlipHorizontal, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, ChevronRight, FlipHorizontal, RotateCcw, Scissors, Trash2 } from 'lucide-react';
 import {
   getDesignConfig,
   getRoofDrainageConfig,
@@ -18,10 +18,12 @@ import {
   type RoofType,
   type RoomCategory,
   type SelectableElementKind,
+  type FloorLevel,
   type WallMaterial,
   type WindowFrameFinish,
 } from '../../model/types';
-import { computeTotalFloorArea, polygonArea, wallLength } from '../../engine/geometry';
+import { computeTotalFloorArea, polygonArea, uid, wallLength } from '../../engine/geometry';
+import { mepAsset } from '../drawing/assets/render';
 import { FACADE_MATERIAL_OPTIONS, FLOOR_FINISH_OPTIONS, INTERIOR_WALL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../components/Viewport3D';
 import { Button, cx, Select, Toggle } from '../ui';
 
@@ -36,6 +38,8 @@ interface Props {
   selection: Selection | null;
   onCommit: (next: BuildingProject) => void;
   onDelete: () => void;
+  /** Select another element (from a room's object list). */
+  onSelect?: (id: string, kind: SelectableElementKind) => void;
 }
 
 const title = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -130,9 +134,73 @@ function Readout({ children }: { children: ReactNode }) {
   return <span className="font-mono text-[13px] tabular-nums text-ink">{children}</span>;
 }
 
+/** A row of colour swatches plus a custom picker; '' clears back to the project default. */
+function Swatches({ value, onChange, presets }: { value?: string; onChange: (v: string | undefined) => void; presets: string[] }) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
+      <button
+        onClick={() => onChange(undefined)}
+        title="Project default"
+        className={cx('flex h-6 items-center rounded-full border px-2 text-[10.5px] font-medium', !value ? 'border-accent text-accent' : 'border-line text-ink-3 hover:text-ink')}
+      >
+        Default
+      </button>
+      {presets.map((c) => (
+        <button
+          key={c}
+          onClick={() => onChange(c)}
+          title={c}
+          className={cx('h-6 w-6 rounded-full border transition-transform hover:scale-110', value?.toLowerCase() === c.toLowerCase() ? 'border-accent ring-2 ring-accent/40' : 'border-black/10')}
+          style={{ background: c }}
+        />
+      ))}
+      <label title="Custom colour" className="relative h-6 w-6 cursor-pointer overflow-hidden rounded-full border border-dashed border-line-strong" style={value && !presets.includes(value) ? { background: value } : undefined}>
+        <input type="color" value={value ?? '#ffffff'} onChange={(e) => onChange(e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
+      </label>
+    </div>
+  );
+}
+
+const WALL_COLORS = ['#F4F1EA', '#E9E2D4', '#D8CDB9', '#C9D3CF', '#B8C7D6', '#9DAF9A', '#D9B99B', '#8C8A85'];
+const FRAME_COLORS = ['#F5F5F2', '#3A3F44', '#1E1E1E', '#9EA2A6', '#7A5A3A', '#B8925E', '#4B5D52', '#2F4A6B'];
+const ITEM_COLORS = ['#B7AFA2', '#E7E1D6', '#6E6A64', '#2F3B4C', '#7E8F7A', '#A86F4C', '#C9A75B', '#8C4B3F', '#B88A5E', '#3A3A3A'];
+
+/** Move buttons: nudge by a step in plan directions. */
+function Nudge({ onMove, step = 0.1 }: { onMove: (dx: number, dy: number) => void; step?: number }) {
+  const b = (dx: number, dy: number, icon: ReactNode, label: string) => (
+    <button onClick={() => onMove(dx * step, dy * step)} title={label} aria-label={label} className="flex h-8 w-8 items-center justify-center rounded-ctl border border-line text-ink-2 hover:border-line-strong hover:text-ink">
+      {icon}
+    </button>
+  );
+  return (
+    <div className="flex gap-1">
+      {b(-1, 0, <ArrowLeft className="h-3.5 w-3.5" />, 'West')}
+      {b(0, -1, <ArrowUp className="h-3.5 w-3.5" />, 'North')}
+      {b(0, 1, <ArrowDown className="h-3.5 w-3.5" />, 'South')}
+      {b(1, 0, <ArrowRight className="h-3.5 w-3.5" />, 'East')}
+    </div>
+  );
+}
+
+const inPoly = (pts: { x: number; y: number }[], x: number, y: number) => {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+    if (pts[i].y > y !== pts[j].y > y && x < ((pts[j].x - pts[i].x) * (y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
+  return inside;
+};
+const nearEdge = (pts: { x: number; y: number }[], x: number, y: number, tol: number) =>
+  pts.some((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const L = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / L));
+    return Math.hypot(a.x + dx * t - x, a.y + dy * t - y) <= tol;
+  });
+
 /* ── Inspector ─────────────────────────────────────────────────────── */
 
-export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: Props) {
+export function Inspector({ model, levelIndex, selection, onCommit, onDelete, onSelect }: Props) {
   const level = model.levels[levelIndex] ?? model.levels[0];
 
   /** Clone, let the caller mutate the clone, commit. */
@@ -185,6 +253,12 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
               <Toggle label="Load bearing" checked={w.isLoadBearing} onChange={(v) => set((x) => (x.isLoadBearing = v))} />
             </Row>
           </Section>
+          <Section title="Finish">
+            <Row label="Colour">
+              <Swatches value={w.color} presets={WALL_COLORS} onChange={(v) => set((x) => (v ? (x.color = v) : delete x.color))} />
+            </Row>
+          </Section>
+          <WallSplit length={wallLength(w)} onSplit={(at) => edit((m) => splitWall(lvl(m), w.id, at))} />
         </>
       );
     }
@@ -226,6 +300,11 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
               <Text value={o.label ?? ''} onChange={(v) => set((x) => (x.label = v))} />
             </Row>
           </Section>
+          <Section title="Finish">
+            <Row label={o.kind === 'door' ? 'Door colour' : 'Frame colour'}>
+              <Swatches value={o.frameColor} presets={FRAME_COLORS} onChange={(v) => set((x) => (v ? (x.frameColor = v) : delete x.frameColor))} />
+            </Row>
+          </Section>
         </>
       );
     }
@@ -261,6 +340,7 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
               />
             </Row>
           </Section>
+          <RoomObjects level={level} polygon={r.polygon} onSelect={onSelect} />
         </>
       );
     }
@@ -317,6 +397,14 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
                 <Num value={f.elevation ?? assetFor(f.type)?.elevation ?? 0} unit="m" min={0} max={4} onChange={(v) => set((x) => (x.elevation = v))} />
               </Row>
             )}
+            <Row label="Move">
+              <Nudge onMove={(dx, dy) => set((x) => (x.position = { x: Math.round((x.position.x + dx) * 100) / 100, y: Math.round((x.position.y + dy) * 100) / 100 }))} />
+            </Row>
+          </Section>
+          <Section title="Finish">
+            <Row label="Colour">
+              <Swatches value={f.color} presets={ITEM_COLORS} onChange={(v) => set((x) => (v ? (x.color = v) : delete x.color))} />
+            </Row>
           </Section>
         </>
       );
@@ -350,7 +438,17 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
     }
   }
 
-  return <BuildingPanel model={model} edit={edit} focusSolar={selection?.kind === 'solar_array' || selection?.kind === 'solar_panel'} />;
+  if (selection?.kind === 'solar_panel' || selection?.kind === 'solar_array') {
+    const idx = selection.kind === 'solar_panel' ? Number(selection.id.replace('solar_panel_', '')) : null;
+    return (
+      <>
+        <SolarSelection model={model} index={idx} edit={edit} onSelect={onSelect} />
+        <BuildingPanel model={model} edit={edit} focusSolar />
+      </>
+    );
+  }
+
+  return <BuildingPanel model={model} edit={edit} focusSolar={false} />;
 }
 
 /* ── Nothing selected: the building as a whole ─────────────────────── */
@@ -512,5 +610,160 @@ function RainwaterSection({ model, edit }: { model: BuildingProject; edit: (fn: 
         </>
       )}
     </Section>
+  );
+}
+
+/* ── Type-specific pieces ──────────────────────────────────────────── */
+
+/** Split a wall in two at a distance from its start; openings go with the part they sit on. */
+function splitWall(level: FloorLevel, id: string, at: number) {
+  const i = level.walls.findIndex((w) => w.id === id);
+  if (i < 0) return;
+  const w = level.walls[i];
+  const len = wallLength(w);
+  if (at <= 0.1 || at >= len - 0.1) return;
+  const t = at / len;
+  const mid = { x: w.start.x + (w.end.x - w.start.x) * t, y: w.start.y + (w.end.y - w.start.y) * t };
+  const b = { ...w, id: uid('w'), start: mid, end: { ...w.end } };
+  level.walls[i] = { ...w, end: mid };
+  level.walls.splice(i + 1, 0, b);
+  for (const o of level.openings) {
+    if (o.wallId !== id) continue;
+    const s = o.offset * len;
+    if (s < at) o.offset = s / at;
+    else {
+      o.wallId = b.id;
+      o.offset = (s - at) / (len - at);
+    }
+  }
+}
+
+function WallSplit({ length, onSplit }: { length: number; onSplit: (at: number) => void }) {
+  const [at, setAt] = useState(Math.round((length / 2) * 100) / 100);
+  return (
+    <Section title="Wall sections" defaultOpen={false}>
+      <p className="text-2xs leading-relaxed text-ink-3">Split this wall into two sections, each with its own height, thickness, material and colour.</p>
+      <Row label="Split at">
+        <Num value={at} unit="m" min={0.15} max={Math.max(0.15, length - 0.15)} onChange={setAt} />
+      </Row>
+      <div className="flex justify-end">
+        <Button size="sm" variant="secondary" icon={<Scissors className="h-3.5 w-3.5" />} onClick={() => onSplit(at)}>
+          Split wall
+        </Button>
+      </div>
+    </Section>
+  );
+}
+
+/** Everything in a room, so a crowded room's items are easy to pick. */
+function RoomObjects({ level, polygon, onSelect }: { level: FloorLevel; polygon: { x: number; y: number }[]; onSelect?: (id: string, kind: SelectableElementKind) => void }) {
+  const items = [
+    ...level.furniture.filter((f) => inPoly(polygon, f.position.x, f.position.y)).map((f) => ({ id: f.id, kind: 'furniture' as const, name: assetFor(f.type)?.name ?? title(f.type), group: 'Furniture' })),
+    ...level.mepNodes
+      .filter((n) => inPoly(polygon, n.position.x, n.position.y))
+      .map((n) => ({ id: n.id, kind: 'mep_node' as const, name: n.label || mepAsset(n)?.name || title(n.kind), group: n.system === 'plumbing' ? 'Plumbing' : 'Services' })),
+    ...level.openings
+      .filter((o) => {
+        const w = level.walls.find((x) => x.id === o.wallId);
+        if (!w) return false;
+        const c = { x: w.start.x + (w.end.x - w.start.x) * o.offset, y: w.start.y + (w.end.y - w.start.y) * o.offset };
+        return nearEdge(polygon, c.x, c.y, w.thickness / 2 + 0.15);
+      })
+      .map((o) => ({ id: o.id, kind: 'opening' as const, name: `${o.kind === 'door' ? 'Door' : 'Window'} ${o.label ?? ''}`.trim(), group: 'Doors & windows' })),
+  ];
+  const groups = [...new Set(items.map((i) => i.group))];
+  return (
+    <Section title={`Objects (${items.length})`} defaultOpen={false}>
+      {items.length === 0 ? (
+        <p className="text-[13px] text-ink-3">Nothing placed in this room yet.</p>
+      ) : (
+        groups.map((g) => (
+          <div key={g}>
+            <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-3">{g}</p>
+            <div className="-mx-2 space-y-0.5">
+              {items
+                .filter((i) => i.group === g)
+                .map((i) => (
+                  <button key={i.id} onClick={() => onSelect?.(i.id, i.kind)} className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-[13px] text-ink-2 hover:bg-sunken hover:text-ink">
+                    <span className="min-w-0 flex-1 truncate">{i.name}</span>
+                    <ChevronRight className="h-3.5 w-3.5 text-ink-3" />
+                  </button>
+                ))}
+            </div>
+          </div>
+        ))
+      )}
+    </Section>
+  );
+}
+
+/** A selected solar panel (or the whole array): move one panel, or the array as a whole. */
+function SolarSelection({
+  model,
+  index,
+  edit,
+  onSelect,
+}: {
+  model: BuildingProject;
+  index: number | null;
+  edit: (fn: (m: BuildingProject) => void) => void;
+  onSelect?: (id: string, kind: SelectableElementKind) => void;
+}) {
+  const solar = getSolarConfig(model);
+  const panelMode = index !== null;
+  const off = panelMode ? solar.panelOffsets?.[index] ?? { x: 0, y: 0 } : { x: solar.offsetX ?? 0, y: solar.offsetY ?? 0 };
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const setOff = (x: number, y: number) =>
+    edit((m) => {
+      const s = getSolarConfig(m);
+      m.solar = panelMode ? { ...s, panelOffsets: { ...(s.panelOffsets ?? {}), [index!]: { x: r2(x), y: r2(y) } } } : { ...s, offsetX: r2(x), offsetY: r2(y) };
+    });
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
+        <div className="min-w-0">
+          <div className="text-2xs font-medium uppercase tracking-wide text-ink-3">Solar PV</div>
+          <div className="mt-0.5 truncate text-[15px] font-semibold">{panelMode ? `Panel ${index! + 1} of ${solar.panelCount}` : `Array · ${solar.panelCount} panels`}</div>
+        </div>
+      </div>
+      <Section title="Position">
+        <Row label="Moving">
+          <div className="flex rounded-ctl border border-line p-0.5">
+            {[
+              { on: panelMode, label: 'This panel', go: () => onSelect?.(`solar_panel_${index ?? 0}`, 'solar_panel') },
+              { on: !panelMode, label: 'Whole array', go: () => onSelect?.('solar_array', 'solar_array') },
+            ].map((b) => (
+              <button key={b.label} onClick={b.go} className={cx('h-7 rounded-[7px] px-2.5 text-2xs font-medium', b.on ? 'bg-ink text-page' : 'text-ink-2 hover:text-ink')}>
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </Row>
+        <Row label="East / west">
+          <Num value={off.x} unit="m" step={0.05} min={-30} max={30} onChange={(v) => setOff(v, off.y)} />
+        </Row>
+        <Row label="North / south">
+          <Num value={off.y} unit="m" step={0.05} min={-30} max={30} onChange={(v) => setOff(off.x, v)} />
+        </Row>
+        <Row label="Nudge">
+          <Nudge onMove={(dx, dy) => setOff(off.x + dx, off.y + dy)} />
+        </Row>
+        {panelMode ? (
+          <div className="flex justify-end">
+            <Button size="sm" variant="ghost" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => setOff(0, 0)}>
+              Back in line
+            </Button>
+          </div>
+        ) : (
+          <Row label="Turn array">
+            <Choice
+              value={String(solar.rotationDeg ?? 0) as '0'}
+              options={['0', '90', '180', '270'].map((v) => ({ value: v as '0', label: `${v}°` }))}
+              onChange={(v) => edit((m) => (m.solar = { ...getSolarConfig(m), rotationDeg: Number(v) }))}
+            />
+          </Row>
+        )}
+      </Section>
+    </>
   );
 }
