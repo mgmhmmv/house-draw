@@ -24,7 +24,13 @@ const K_MAX = 600;
  * - Touch: one finger is left to the active tool; two fingers pan and pinch.
  * - Middle button or space+drag pans with any tool.
  */
-export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bounds | null, padding = 72) {
+/**
+ * `limits`: zoom range in screen px per world unit. The defaults suit metres; a sheet of paper
+ * in millimetres needs a much smaller minimum.
+ */
+export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bounds | null, padding = 72, limits: { kMin?: number; kMax?: number } = {}) {
+  const kMinL = limits.kMin ?? K_MIN;
+  const kMaxL = limits.kMax ?? K_MAX;
   const [view, setView] = useState<View>({ k: 40, tx: 0, ty: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -45,7 +51,7 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
     const px = cx === undefined ? r.width / 2 : cx - r.left;
     const py = cy === undefined ? r.height / 2 : cy - r.top;
     setView((v) => {
-      const k = Math.min(K_MAX, Math.max(K_MIN, v.k * factor));
+      const k = Math.min(kMaxL, Math.max(kMinL, v.k * factor));
       const f = k / v.k;
       return { k, tx: px - (px - v.tx) * f, ty: py - (py - v.ty) * f };
     });
@@ -116,7 +122,7 @@ export function useViewport(ref: RefObject<HTMLElement | null>, fitBounds: Bound
         fitted.current = true;
         setView((v) => {
           const r = el.getBoundingClientRect();
-          const k = Math.min(K_MAX, Math.max(K_MIN, v.k * (g.d / last!.d)));
+          const k = Math.min(kMaxL, Math.max(kMinL, v.k * (g.d / last!.d)));
           const f = k / v.k;
           const px = g.cx - r.left;
           const py = g.cy - r.top;

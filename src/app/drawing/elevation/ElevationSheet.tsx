@@ -80,10 +80,13 @@ export function ElevationSheet({ model, mode, svgRef, paperInfo }: Props) {
   const [paperOn, setPaperOn] = useState(true);
   const frame = useMemo(() => buildFrame(model), [model]);
   const sections = useMemo(() => defaultSections(model), [model]);
-  const options = mode === 'elevations' ? [{ id: 'all', label: 'All' }, ...ELEVATIONS.map((e) => ({ id: e.id, label: e.name.split(' ')[0] }))] : [{ id: 'all', label: 'All' }, ...sections.map((s) => ({ id: s.id, label: s.label }))];
-  // Phones show one drawing at a time; the two-column sheet is for wider screens.
+  // One drawing at a time (one sheet each); South first.
+  const options = mode === 'elevations' ? ELEVATIONS.map((e) => ({ id: e.id, label: e.name.split(' ')[0] })) : sections.map((s) => ({ id: s.id, label: s.label }));
   const wide = useMediaQuery('(min-width: 768px)');
-  const [choice, setChoice] = useState(() => (wide ? 'all' : options[1]?.id ?? 'all'));
+  const [picked, setChoice] = useState(() => options[0]?.id ?? '');
+  // When printing, every view goes out (one sheet each); on screen, the one picked.
+  const printing = usePrintMode();
+  const choice = printing ? 'all' : options.some((o) => o.id === picked) ? picked : options[0]?.id ?? '';
 
   const drawings = useMemo(() => {
     const out: ({ key: string; title: string; drawing: Drawing; section: boolean; vector?: VectorDrawing | null; cutWalls?: Placed['cutWalls']; roofLine?: Placed['roofLine']; plate?: number; plateSpan?: [number, number] } & Annot)[] = [];
@@ -297,7 +300,7 @@ function Surface({
     return { scale, m, pages };
   }, [paper, placed]);
   const sheetBounds = { minX: 0, minY: 0, maxX: SHEET.w, maxY: Math.max(1, placed.length) * (SHEET.h + PAGE_GAP) - PAGE_GAP };
-  const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48);
+  const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48, paper ? { kMin: 0.25, kMax: 80 } : {});
   const { k, tx, ty } = vp.view;
 
   return (
@@ -374,7 +377,7 @@ function Surface({
           ))}
         </div>
       )}
-      {options.length > 2 && (
+      {options.length > 1 && (
         <div className="absolute left-3 top-3 flex max-w-[calc(100%-24px)] gap-1 overflow-x-auto rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur no-scrollbar">
           {options.map((o) => (
             <button

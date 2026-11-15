@@ -147,8 +147,16 @@ export function paperSheets(): string[] {
 /** All sheets for the current view: the paper view's pages, or one composed sheet. */
 export async function composePages(c: SheetContext): Promise<string[]> {
   if (c.sheetId === 'A-201' || c.sheetId === 'A-301') {
-    const shown = paperSheets();
-    if (shown.length) return shown;
+    // Print mode lays out every elevation/section as its own sheet; read them, then go back.
+    setPrintMode(true);
+    await nextPaint();
+    await nextPaint();
+    try {
+      const shown = paperSheets();
+      if (shown.length) return shown;
+    } finally {
+      setPrintMode(false);
+    }
   }
   return [await composeCurrent(c)];
 }
