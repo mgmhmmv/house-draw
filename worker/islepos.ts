@@ -72,7 +72,7 @@ export async function handleIslepos(env: Env, req: Request, user: User, path: st
       const body = await readJson<{ key?: string; env?: string; businessId?: string }>(req, 8 * 1024);
       const key = str(body.key, 300);
       const ienv: IsleEnv = body.env === 'staging' ? 'staging' : 'production';
-      if (!/^isle_mcp_[\w-]{8,}$/.test(key)) throw new HttpError(400, 'invalid_key', 'Paste an IslePOS key (it starts with isle_mcp_).');
+      if (!/^isle_mcp_[\w.-]{8,}$/.test(key)) throw new HttpError(400, 'invalid_key', 'Paste an IslePOS key (it starts with isle_mcp_).');
       // Check the key works before storing it.
       const probe = await call({ key, env: ienv, businessId: str(body.businessId, 64) || null }, 'GET', '/');
       const info = (await probe.json().catch(() => ({}))) as { business_id?: string; permissions?: string[]; error?: string };
