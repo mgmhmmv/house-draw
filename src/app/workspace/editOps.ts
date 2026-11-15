@@ -6,9 +6,10 @@
 import type { BuildingProject, FloorLevel, Point2D } from '../../model/types';
 import { getSolarConfig } from '../../model/types';
 import { uid } from '../../engine/geometry';
-import { ASSET_BY_ID, ASSETS } from '../drawing/assets/catalog';
+import { ASSET_BY_ID, ASSETS, cleanSpec, registerCustomAssets } from '../drawing/assets/catalog';
 
 export type EditOp =
+  | { op: 'create_asset'; spec: unknown }
   | { op: 'add_item'; asset: string; x: number; y: number; rotation?: number; width?: number; depth?: number; height?: number; level?: number }
   | { op: 'add_opening'; asset: string; wall_id: string; at?: number; width?: number; height?: number; sill?: number }
   | { op: 'add_wall'; x1: number; y1: number; x2: number; y2: number; thickness?: number; height?: number; exterior?: boolean; material?: string; level?: number }
@@ -82,6 +83,8 @@ const SETTABLE: Record<string, Record<string, (v: unknown) => unknown>> = {
     label: (v) => (typeof v === 'string' ? v.slice(0, 40) : undefined),
     wattage: (v) => num(v, 0, 20000),
     model: (v) => (typeof v === 'string' && ASSET_BY_ID.has(v) ? v : undefined),
+    elevation: (v) => num(v, 0, 6),
+    rotation: (v) => (typeof v === 'number' ? ((v % 360) + 360) % 360 : undefined),
   },
 };
 
@@ -104,9 +107,24 @@ export function applyEdits(model: BuildingProject, ops: EditOp[]): EditResult {
     return f.kind;
   };
 
-  for (const e of ops.slice(0, 60)) {
+  const aliases = new Map<string, string>();
+  for (const raw of ops.slice(0, 60)) {
+    const e = raw.op === 'add_item' && aliases.has(raw.asset) ? { ...raw, asset: aliases.get(raw.asset)! } : raw;
     try {
       switch (e.op) {
+        case 'create_asset': {
+          // A new object, made for this design: kept in the project and added to the library.
+          const spec = cleanSpec(e.spec);
+          if (!spec) throw new Error('the new object was incomplete');
+          if (ASSET_BY_ID.get(spec.id) && !ASSET_BY_ID.get(spec.id)!.custom) spec.id = `${spec.id}_${Math.random().toString(36).slice(2, 5)}`;
+          next.customAssets = { ...(next.customAssets ?? {}), [spec.id]: spec as never };
+          registerCustomAssets([spec]);
+          // Later edits in this batch may refer to it by the id the AI chose.
+          const asked = (e.spec as { id?: string })?.id;
+          if (asked && asked !== spec.id) aliases.set(asked, spec.id);
+          applied.push(`Made a new object: ${spec.name}`);
+          break;
+        }
         case 'add_item': {
           const def = ASSET_BY_ID.get(e.asset);
           if (!def || def.opening) throw new Error(`unknown library item "${e.asset}"`);
@@ -196,6 +214,11 @@ export function applyEdits(model: BuildingProject, ops: EditOp[]): EditResult {
             const o = f.lvl.openings[f.i];
             o.width = num(e.width, 0.3, 6) ?? o.width;
             o.height = num(e.height, 0.3, 3.5) ?? o.height;
+          } else if (f.kind === 'mep') {
+            const n = f.lvl.mepNodes[f.i];
+            const def = ASSET_BY_ID.get(n.model ?? '') ?? (n.kind === 'ac_condenser' ? ASSET_BY_ID.get('ac_condenser') : undefined);
+            const cur = n.size ?? { w: def?.w ?? 0.5, d: def?.d ?? 0.3, h: def?.h ?? 0.5 };
+            n.size = { w: num(e.width, 0.05, 10) ?? cur.w, d: num(e.depth, 0.02, 10) ?? cur.d, h: num(e.height, 0.02, 10) ?? cur.h };
           } else if (f.kind === 'column') {
             const c = f.lvl.columns[f.i];
             c.width = num(e.width, 0.15, 1.2) ?? c.width;

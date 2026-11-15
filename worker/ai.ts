@@ -58,6 +58,24 @@ export async function handleAi(env: Env, req: Request): Promise<Response> {
   return json({ ok: false, error: lastError }, { status: lastStatus >= 500 ? 502 : lastStatus });
 }
 
+
+/** How objects are built in ArchStudio: shared by the object maker and the chat. */
+const KIT_GUIDE = `MODELLING KIT (for create_asset / make_asset)
+An object is a list of simple parts, built in three.js and also drawn from above as its plan symbol.
+Axes, metres: x = width (left -, right +), y = up from the floor (0 = underside of the object), z = depth with the BACK at z = -d/2 (against the wall for wall items) and the FRONT at +d/2. The object's origin is the centre of its footprint at y = 0.
+Part fields:
+- g: "box" | "rbox" (rounded box, r = corner radius) | "cyl" | "sph" | "tor" | "lathe"
+- p: [x, y, z] CENTRE of the part (for lathe: the base point; the profile goes up from there)
+- s: box/rbox [width, height, depth]; cyl [radiusTop, height, radiusBottom] (vertical by default); sph [radius, 0, 0]; tor [ringRadius, tubeRadius, 0] (lies in the x-y plane; rot [1.5708,0,0] lays it flat)
+- pts (lathe only): [[radius, y], ...] profile from the bottom up, e.g. bowls, lamp shades, vases
+- rot: [x, y, z] radians (a cylinder along x: rot [0,0,1.5708]; along z: rot [1.5708,0,0])
+- sc: [x, y, z] stretch (e.g. squash a sphere into a cushion)
+- m: material: fabric, cushion, accent, wood, woodDark, white, offwhite, metal, chrome, black, glass, ceramic, stone, leaf, soil, terracotta, linen, duvet, mattress, screen, lamp (glows), paint, rubber, steel, water, trunk, book1, book2, book3
+- c: optional colour "#rrggbb" over the material
+- plan: false for parts hidden under others in plan (legs, rails, small hardware); "line" for outline only; omit for normal
+- seg: round detail (default 24; use 8–12 for small parts)
+Guidance: real-world sizes; 6–80 parts; stand things on y = 0 (wall-mounted: mount "wall" with elevation = height of its underside above the floor, and its back at z = -d/2 touching the wall); hardware (brackets, legs, handles) as thin boxes or cylinders; no floating parts; keep inside the w × d × h box.`;
+
 const ASSIST_SYSTEM = `You are the AI Architect inside ArchStudio, a design tool for houses and small buildings (often in the Maldives and other tropical islands).
 You are talking with the architect or designer working on the project described in the PROJECT BRIEF. Use the brief's real numbers (areas, wall materials and thicknesses, quantities, rates, loads) and say so when you are estimating.
 
@@ -91,7 +109,11 @@ Precise edits (preferred whenever possible):
   · set_roof {props: type, pitchDeg, overhang, material, parapetHeight}
   · set_solar {props: enabled, panelCount, panelWattage, inverterKW, batteryKWh, offsetX, offsetY, rotationDeg, roofFace}
 - Keep things outside the building footprint (gardens, gates, boundary) clear of the walls; keep furniture inside its room's extents and clear of doors.
-- When the user refers to a SELECTED element, it is the one they mean.`;
+- When the user refers to a SELECTED element, it is the one they mean.
+- Fixtures (AC units, fans, lights): change the model with set {model} (e.g. ac_condenser_wall = outdoor unit on L brackets fixed to the wall; its depth = 0.30 m unit + the gap to the wall, so use resize {depth} for the gap), set {elevation, rotation}; rotation 0 = the unit's back to the north.
+- If nothing in LIBRARY fits (a particular bracket, fitting, appliance or decoration), make it: create_asset {spec: {id: "ai_<short_name>", name, w, d, h, mount?, elevation?, keywords?, parts: [...]}} then place it with add_item {asset: that id, ...}. It is saved to the user's library as "AI created". Follow the MODELLING KIT.
+
+${KIT_GUIDE}`;
 
 const ASSIST_TOOLS = [
   {
@@ -117,7 +139,8 @@ const ASSIST_TOOLS = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['add_item', 'add_opening', 'add_wall', 'move', 'resize', 'set', 'delete', 'set_roof', 'set_solar'] },
+              op: { type: 'string', enum: ['create_asset', 'add_item', 'add_opening', 'add_wall', 'move', 'resize', 'set', 'delete', 'set_roof', 'set_solar'] },
+              spec: { type: 'object', description: 'create_asset only: the new object (see MODELLING KIT).' },
               id: { type: 'string' },
               asset: { type: 'string' },
               wall_id: { type: 'string' },
@@ -191,7 +214,7 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 4000, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
+      body: JSON.stringify({ model, max_tokens: 12000, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
     });
     if (resp.ok) {
       const data = (await resp.json()) as { content?: { type: string; name?: string; input?: Record<string, string>; text?: string }[] };
@@ -208,6 +231,68 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
         });
       const text = call?.input?.text ?? (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
       return json({ ok: true, kind: 'answer', text: text || 'I could not work that out. Could you rephrase it?', modelUsed: model });
+    }
+    lastStatus = resp.status;
+    lastError = await resp.text();
+    if (resp.status !== 404 && !lastError.includes('not_found_error')) break;
+  }
+  return json({ ok: false, error: lastError }, { status: lastStatus >= 500 ? 502 : lastStatus });
+}
+
+const ASSET_SYSTEM = `You design 3D objects for ArchStudio's library: furniture, fittings, fixtures, equipment, hardware, landscape and decoration for houses (often tropical / Maldives).
+Reply by calling make_asset once. Make it recognisable and well proportioned at real size, with the details that make it read (legs, handles, rails, panels, brackets) but no more parts than needed.
+
+${KIT_GUIDE}`;
+
+const ASSET_TOOL = {
+  name: 'make_asset',
+  description: 'The designed object.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Short library name, e.g. "Wall-mounted shoe rack".' },
+      w: { type: 'number' },
+      d: { type: 'number' },
+      h: { type: 'number' },
+      mount: { type: 'string', enum: ['floor', 'wall', 'ceiling'] },
+      elevation: { type: 'number', description: 'Wall items: height of the underside above the floor.' },
+      keywords: { type: 'string' },
+      parts: { type: 'array', items: { type: 'object' } },
+      note: { type: 'string', description: 'One sentence on the design, shown to the user.' },
+    },
+    required: ['name', 'w', 'd', 'h', 'parts'],
+  },
+};
+
+/** POST /api/ai/asset { prompt, base? } → { ok, spec, note }. Designs (or revises) one object. */
+export async function handleAsset(env: Env, req: Request): Promise<Response> {
+  if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+  if (!env.ANTHROPIC_API_KEY) return json({ ok: false, error: 'NO_CLAUDE_KEY' }, { status: 503 });
+  const body = await readJson<{ prompt?: string; base?: unknown }>(req, 256 * 1024);
+  const prompt = typeof body.prompt === 'string' ? body.prompt.slice(0, 2000).trim() : '';
+  if (!prompt) throw new HttpError(400, 'empty_prompt');
+  const base = body.base ? `\n\nREVISE THIS EXISTING OBJECT (keep what isn't mentioned):\n${JSON.stringify(body.base).slice(0, 60000)}` : '';
+  let lastStatus = 502;
+  let lastError = 'Claude request failed';
+  for (const model of MODELS) {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        max_tokens: 12000,
+        system: ASSET_SYSTEM,
+        tools: [ASSET_TOOL],
+        tool_choice: { type: 'auto' },
+        messages: [{ role: 'user', content: `${prompt}${base}` }],
+      }),
+    });
+    if (resp.ok) {
+      const data = (await resp.json()) as { content?: { type: string; input?: Record<string, unknown> }[] };
+      const call = (data.content ?? []).find((c) => c.type === 'tool_use');
+      if (!call?.input) return json({ ok: false, error: 'The AI did not return an object.' }, { status: 502 });
+      const { note, ...spec } = call.input;
+      return json({ ok: true, spec: { ...spec, prompt }, note: typeof note === 'string' ? note : '', modelUsed: model });
     }
     lastStatus = resp.status;
     lastError = await resp.text();

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BuildingProject } from '../../model/types';
 import { api, ApiError, type Project, type VersionSource } from '../lib/api';
 import { describeChange } from './describeChange';
+import { cleanSpec, registerCustomAssets } from '../drawing/assets/catalog';
+
+/** Objects a project carries (AI-made) join the library before it is drawn. */
+export const registerProjectAssets = (m: BuildingProject | null) => m?.customAssets && registerCustomAssets(Object.values(m.customAssets).flatMap((a) => cleanSpec(a) ?? []));
 import { summarize } from '../lib/templates';
 import { updateCover } from '../drawing/three/cover';
 
@@ -63,6 +67,7 @@ export function useProjectDoc(projectId: string) {
       .then(({ project, model }) => {
         if (cancelled) return;
         if (!model) throw new ApiError(404, 'model_missing', 'This project’s drawing could not be found.');
+        registerProjectAssets(model);
         versionRef.current = project.version;
         modelRef.current = model;
         savedRef.current = model;
@@ -187,6 +192,7 @@ export function useProjectDoc(projectId: string) {
   const restore = useCallback(
     async (version: number) => {
       const m = await api.versionModel(projectId, version);
+      registerProjectAssets(m);
       const ok = await commit(m, { label: `Restored version ${version}`, source: 'restore', saveNow: true });
       if (!ok) throw new Error('not_saved');
     },

@@ -16,7 +16,7 @@ import { cx } from '../../ui';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
 import { assetFor, type AssetDef } from '../assets/catalog';
-import { assetPlan, isOverhead, mepAsset, WALL_SIDE_ROT } from '../assets/render';
+import { assetPlan, isOverhead, mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
 import { PlanPrims } from '../assets/PlanSymbol';
 import { buildPlanGeometry, dimensionChains, fmtMM, nearestWall, openingSymbol, roomTag, wallFrame, along, type Vec } from './kernel';
 
@@ -233,6 +233,10 @@ export function PlanCanvas(p: Props) {
     const at = placementAt(raw);
     if (!pl || !at) return;
     const def = pl.def;
+    // A user-made object travels with the project.
+    const keep = (m: BuildingProject) => {
+      if (def.custom) m.customAssets = { ...(m.customAssets ?? {}), [def.id]: def.custom as never };
+    };
     if (at.kind === 'opening' && def.opening) {
       const o = def.opening;
       edit((lvl) =>
@@ -253,11 +257,17 @@ export function PlanCanvas(p: Props) {
     } else if (at.kind === 'item' && def.mep) {
       const m = def.mep;
       const id = uid('mep');
-      edit((lvl) => lvl.mepNodes.push({ id, kind: m.kind, system: m.system, position: at.pos, wattage: m.wattage, model: def.id, rotation: at.rot, label: def.name }));
+      edit((lvl, mm) => {
+        lvl.mepNodes.push({ id, kind: m.kind, system: m.system, position: at.pos, wattage: m.wattage, model: def.id, rotation: at.rot, label: def.name });
+        keep(mm);
+      });
       p.onPlaced?.(id, 'mep_node');
     } else if (at.kind === 'item') {
       const id = uid('f');
-      edit((lvl) => lvl.furniture.push({ id, type: def.id, position: at.pos, rotation: at.rot, width: def.w, depth: def.d }));
+      edit((lvl, mm) => {
+        lvl.furniture.push({ id, type: def.id, position: at.pos, rotation: at.rot, width: def.w, depth: def.d });
+        keep(mm);
+      });
       p.onPlaced?.(id, 'furniture');
     }
   };
@@ -1052,8 +1062,8 @@ function RotateHandle({ level, id, k, rotating }: { level: FloorLevel; id: strin
   const def = f ? assetFor(f.type) : mepAsset(n!);
   const pos = (f ?? n)!.position;
   const rot = (f ? f.rotation : n!.rotation ?? (n!.wallSide ? WALL_SIDE_ROT[n!.wallSide] : 0)) ?? 0;
-  const d = f ? f.depth : def?.d ?? 0.4;
-  const w = f ? f.width : def?.w ?? 0.4;
+  const d = f ? f.depth : n?.size?.d ?? def?.d ?? 0.4;
+  const w = f ? f.width : n?.size?.w ?? def?.w ?? 0.4;
   const reach = Math.max(d, w * 0.3) / 2 + 26 / k;
   const r = 7 / k;
   return (
@@ -1075,7 +1085,8 @@ function RotateHandle({ level, id, k, rotating }: { level: FloorLevel; id: strin
 
 function Fixture({ n, selected }: { n: MEPNode; selected: boolean }) {
   const def = mepAsset(n);
-  const prims = useMemo(() => (def ? assetPlan(def, def.w, def.d, def.h, true) : []), [def]);
+  const sz = def ? mepSize(n, def) : null;
+  const prims = useMemo(() => (def && sz ? assetPlan(def, sz.w, sz.d, sz.h, isOverhead(def, n.elevation ?? def.elevation)) : []), [def, sz?.w, sz?.d, sz?.h, n.elevation]);
   if (!def) return null;
   const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
   return (

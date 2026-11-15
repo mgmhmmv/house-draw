@@ -348,6 +348,10 @@ export interface MEPNode {
   model?: string;
   /** Plan rotation in degrees, for wall units. */
   rotation?: number;
+  /** Size override for the fixture's model (e.g. bracket depth = unit + gap to the wall). */
+  size?: { w: number; d: number; h: number };
+  /** Underside above the floor for wall-mounted fixtures; the model's default otherwise. */
+  elevation?: number;
 }
 
 export interface MEPCircuit {
@@ -472,6 +476,11 @@ export interface BuildingProject {
   solar?: SolarPVConfig;
   design?: MaterialDesignConfig;
   hvac?: HVACConfig;
+  /**
+   * Objects made for this project (AI-made library items), stored with it so the project
+   * always opens with them, even if they are removed from the library.
+   */
+  customAssets?: Record<string, { id: string; name: string; w: number; d: number; h: number; parts: unknown[]; [k: string]: unknown }>;
 }
 
 export const DEFAULT_SOLAR_CONFIG: SolarPVConfig = {

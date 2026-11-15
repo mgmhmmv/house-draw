@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { assetFor, CATEGORIES } from '../drawing/assets/catalog';
+import { ASSETS, assetFor, CATEGORIES } from '../drawing/assets/catalog';
 
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, ChevronRight, FlipHorizontal, RotateCcw, Scissors, Trash2 } from 'lucide-react';
 import {
@@ -433,6 +433,45 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete, on
               </Row>
             )}
           </Section>
+          {(() => {
+            const def = mepAsset(n);
+            if (!def) return null;
+            const models = ASSETS.filter((a) => a.mep?.kind === n.kind);
+            const sz = n.size ?? { w: def.w, d: def.d, h: def.h };
+            const bracketed = def.id === 'ac_condenser_wall';
+            return (
+              <Section title="Model & mounting">
+                {models.length > 1 && (
+                  <Row label="Model">
+                    <Choice
+                      value={def.id}
+                      options={models.map((a) => ({ value: a.id, label: a.name }))}
+                      onChange={(v) =>
+                        set((x) => {
+                          x.model = v;
+                          delete x.size;
+                          delete x.elevation;
+                        })
+                      }
+                    />
+                  </Row>
+                )}
+                {bracketed && (
+                  <Row label="Gap to wall">
+                    <Num value={Math.round((sz.d - 0.3) * 1000) / 1000} unit="m" step={0.01} min={0.03} max={1} onChange={(v) => set((x) => (x.size = { ...sz, d: Math.round((0.3 + v) * 1000) / 1000 }))} />
+                  </Row>
+                )}
+                {def.mount !== 'ceiling' && (
+                  <Row label={def.mount === 'wall' ? 'Mounted at' : 'Raised by'}>
+                    <Num value={n.elevation ?? def.elevation ?? 0} unit="m" min={0} max={6} onChange={(v) => set((x) => (x.elevation = v))} />
+                  </Row>
+                )}
+                <Row label="Rotation">
+                  <Num value={n.rotation ?? 0} unit="°" step={15} onChange={(v) => set((x) => (x.rotation = ((v % 360) + 360) % 360))} />
+                </Row>
+              </Section>
+            );
+          })()}
         </>
       );
     }

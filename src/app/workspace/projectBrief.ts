@@ -60,7 +60,10 @@ export function projectBrief(model: BuildingProject) {
         furniture: l.furniture.map((f) => `${f.id} ${f.type} at (${r2(f.position.x)},${r2(f.position.y)}) rot ${f.rotation} ${r2(f.width)}×${r2(f.depth)}`),
         fixtures: l.mepNodes
           .filter((n) => n.model || ['ac_split', 'ac_condenser', 'ceiling_fan', 'light_ceiling'].includes(n.kind))
-          .map((n) => `${n.id} ${n.model ?? n.kind} at (${r2(n.position.x)},${r2(n.position.y)})`),
+          .map(
+            (n) =>
+              `${n.id} ${n.model ?? n.kind} at (${r2(n.position.x)},${r2(n.position.y)})${n.rotation !== undefined ? ` rot ${n.rotation}` : ''}${n.size ? ` size ${r2(n.size.w)}×${r2(n.size.d)}×${r2(n.size.h)}` : ''}${n.elevation !== undefined ? ` mounted at ${r2(n.elevation)}m` : ''}`
+          ),
       },
     };
   });

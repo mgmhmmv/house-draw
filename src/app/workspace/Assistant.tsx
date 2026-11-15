@@ -5,6 +5,8 @@ import { runPromptArchitect } from '../../ai/promptEngine';
 import { projectBrief } from './projectBrief';
 import { describeChange } from './describeChange';
 import { applyEdits, libraryForAI, type EditOp } from './editOps';
+import { cleanSpec } from '../drawing/assets/catalog';
+import { saveCustomAsset } from '../lib/customAssets';
 import type { CommitOptions } from './useProjectDoc';
 import { cx, Spinner } from '../ui';
 
@@ -190,7 +192,16 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
     proposals.current.delete(e.id);
     // Only say "Applied" once the change is actually saved.
     Promise.resolve(onCommit(p.next, { label: `AI: ${e.summary || e.prompt}`.slice(0, 200), source: 'ai', saveNow: true }))
-      .then((ok) => setStatus(e.id, ok === false ? 'unsaved' : 'applied'))
+      .then((ok) => {
+        setStatus(e.id, ok === false ? 'unsaved' : 'applied');
+        // New objects the AI made also go into the user's library.
+        if (ok !== false)
+          for (const a of Object.values(p.next.customAssets ?? {})) {
+            if (p.base.customAssets?.[a.id]) continue;
+            const spec = cleanSpec(a);
+            if (spec) void saveCustomAsset(spec).catch(() => {});
+          }
+      })
       .catch(() => setStatus(e.id, 'unsaved'));
   };
   const discard = (e: Entry) => {

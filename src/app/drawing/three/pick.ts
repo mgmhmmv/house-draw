@@ -8,7 +8,7 @@ import type { BuildingProject, FloorLevel, SelectableElementKind } from '../../.
 import { computeSolarArrayLayout } from '../../../engine/geometry';
 import { wallFrame } from '../plan/kernel';
 import { assetFor } from '../assets/catalog';
-import { mepAsset, WALL_SIDE_ROT } from '../assets/render';
+import { mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
 
 export interface Picked {
   id: string;
@@ -146,9 +146,10 @@ export function selectionOutline(model: BuildingProject, id: string, kind: Selec
       const n = lvl.mepNodes.find((x) => x.id === id);
       const def = n && mepAsset(n);
       if (n && def) {
-        const y = def.mount === 'ceiling' ? lvl.elevation + top - def.h / 2 : def.mount === 'wall' ? lvl.elevation + (def.elevation ?? 2) + def.h / 2 : lvl.elevation + def.h / 2;
+        const sz = mepSize(n, def);
+        const y = def.mount === 'ceiling' ? lvl.elevation + top - sz.h / 2 : def.mount === 'wall' ? lvl.elevation + (n.elevation ?? def.elevation ?? 2) + sz.h / 2 : lvl.elevation + (n.elevation ?? 0) + sz.h / 2;
         const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
-        return boxAt(n.position.x, y, n.position.y, def.w + 0.04, def.h + 0.04, def.d + 0.04, (-rot * Math.PI) / 180);
+        return boxAt(n.position.x, y, n.position.y, sz.w + 0.04, sz.h + 0.04, sz.d + 0.04, (-rot * Math.PI) / 180);
       }
     }
   }

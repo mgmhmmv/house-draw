@@ -289,7 +289,15 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   const assetMats = new AssetMaterials(clay);
   model.levels.forEach((lvl, i) => {
     const wallTop = Math.max(...lvl.walls.map((w) => w.height), 2.4);
-    for (const f of lvl.furniture) levels[i].add(furnitureObject(f, lvl.elevation, assetMats, i === 0 ? 0 : null));
+    // On the ground floor, anything placed outside the building stands on the site.
+    const xs = lvl.walls.flatMap((w) => [w.start.x, w.end.x]);
+    const ys = lvl.walls.flatMap((w) => [w.start.y, w.end.y]);
+    const fp = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+    const exterior = lvl.walls.filter((w) => w.isExterior);
+    const ex = exterior.length ? { x0: Math.min(...exterior.flatMap((w) => [w.start.x, w.end.x])), x1: Math.max(...exterior.flatMap((w) => [w.start.x, w.end.x])), y0: Math.min(...exterior.flatMap((w) => [w.start.y, w.end.y])), y1: Math.max(...exterior.flatMap((w) => [w.start.y, w.end.y])) } : fp;
+    const inRooms = (x: number, y: number) => lvl.rooms.some((r) => inPolygon(r.polygon, x, y));
+    const outside = (x: number, y: number) => !inRooms(x, y) && (x < ex.x0 || x > ex.x1 || y < ex.y0 || y > ex.y1 || lvl.rooms.length > 0);
+    for (const f of lvl.furniture) levels[i].add(furnitureObject(f, lvl.elevation, assetMats, i === 0 ? 0 : null, outside));
     for (const n of lvl.mepNodes) {
       const o = mepObject(n, lvl, lvl.elevation + wallTop, assetMats);
       if (o) levels[i].add(o);
@@ -348,4 +356,11 @@ function mergeGeos(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   out.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
   return out;
+}
+
+function inPolygon(pts: { x: number; y: number }[], x: number, y: number) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+    if (pts[i].y > y !== pts[j].y > y && x < ((pts[j].x - pts[i].x) * (y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
+  return inside;
 }

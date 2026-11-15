@@ -4,7 +4,7 @@
  * rebuilt at whatever size it is placed at) and gives both a 3D model and a plan symbol.
  */
 import type { DoorStyle, MEPNodeKind, WindowStyle } from '../../../model/types';
-import { B, C, H, L, R, S, T, legs, vessel, type Part, type Prim } from './kit';
+import { B, C, H, L, R, S, T, forgetThumb, legs, sanitizeParts, scaleParts, vessel, type Part, type Prim } from './kit';
 
 export type Category =
   | 'living'
@@ -19,7 +19,8 @@ export type Category =
   | 'outdoor'
   | 'trees'
   | 'boundary'
-  | 'people';
+  | 'people'
+  | 'ai';
 
 export const CATEGORIES: { id: Category; name: string }[] = [
   { id: 'living', name: 'Living' },
@@ -35,6 +36,7 @@ export const CATEGORIES: { id: Category; name: string }[] = [
   { id: 'trees', name: 'Trees & plants' },
   { id: 'boundary', name: 'Gates & boundary' },
   { id: 'people', name: 'People' },
+  { id: 'ai', name: 'AI created' },
 ];
 
 export interface AssetDef {
@@ -57,6 +59,24 @@ export interface AssetDef {
   /** Placed into a wall as a door or window. */
   opening?: { kind: 'door' | 'window'; style: DoorStyle | WindowStyle; height: number; sill: number };
   keywords?: string;
+  /** Made by the AI (or imported): stored with the user's library and inside projects. */
+  custom?: CustomAssetSpec;
+}
+
+/** A user-made object as stored: plain data, the parts at its own default size. */
+export interface CustomAssetSpec {
+  id: string;
+  name: string;
+  w: number;
+  d: number;
+  h: number;
+  mount?: 'floor' | 'wall' | 'ceiling';
+  elevation?: number;
+  keywords?: string;
+  parts: Part[];
+  /** What it was made from, for reference. */
+  prompt?: string;
+  updatedAt?: number;
 }
 
 const line = (x1: number, y1: number, x2: number, y2: number, style: Prim['style'] = 'line'): Prim => ({ k: 'line', x1, y1, x2, y2, style });
@@ -188,6 +208,27 @@ function person(h: number, kind: 'man' | 'woman' | 'child'): Part[] {
   out.push(S(0, h - head / 2, 0, head / 2, 'offwhite', { seg: 18, sc: [0.86, 1, 0.95] }));
   out.push(S(0, h - head * 0.42, -head * 0.06, head / 2 + 0.006, 'woodDark', { seg: 18, sc: [0.88, kind === 'man' ? 0.62 : 0.8, 0.98], plan: false }));
   if (kind === 'woman') out.push(R(0, -head * 0.32, h - head * 1.6, head * 0.7, head * 0.25, head * 1.0, 'woodDark', 0.06, { plan: false }));
+  return out;
+}
+
+/** Move parts by (dx, dy, dz). */
+const shift = (parts: Part[], dx: number, dy: number, dz: number): Part[] => parts.map((p) => ({ ...p, p: [p.p[0] + dx, p.p[1] + dy, p.p[2] + dz] as [number, number, number] }));
+
+/**
+ * A pair of galvanised L brackets fixed to a wall at the back (z = -d/2): a vertical leg
+ * against the wall, a horizontal arm d deep, and a diagonal brace. Arms are at height `arm`.
+ */
+function lBrackets(xs: number[], d: number, arm: number, m: Part['m'] = 'steel'): Part[] {
+  const out: Part[] = [];
+  const brace = Math.hypot(d - 0.08, arm - 0.06);
+  const ang = Math.atan2(arm - 0.06, d - 0.08);
+  for (const x of xs) {
+    out.push(B(x, -d / 2 + 0.02, 0, 0.04, 0.04, arm + 0.04, m)); // leg on the wall
+    out.push(B(x, 0, arm, 0.04, d, 0.04, m, { plan: false })); // arm
+    out.push({ g: 'box', p: [x, 0.03 + (arm - 0.06) / 2 + 0.02, -d / 2 + 0.04 + (d - 0.08) / 2], s: [0.03, 0.03, brace], m, rot: [-ang, 0, 0], plan: false });
+    out.push(B(x, -d / 2 + 0.001, 0.02, 0.06, 0.004, 0.06, m, { plan: false })); // fixing plates
+    out.push(B(x, -d / 2 + 0.001, arm - 0.04, 0.06, 0.004, 0.06, m, { plan: false }));
+  }
   return out;
 }
 
@@ -937,6 +978,40 @@ export const ASSETS: AssetDef[] = [
     ],
   },
   {
+    id: 'ac_condenser_wall',
+    name: 'AC outdoor unit on wall brackets',
+    category: 'climate',
+    w: 0.8,
+    d: 0.55,
+    h: 1.0,
+    mount: 'wall',
+    elevation: 1.0,
+    keywords: 'condenser bracket wall mounted L bracket',
+    mep: { kind: 'ac_condenser', system: 'electrical' },
+    // Depth = unit (0.30 m) + the gap to the wall; the brackets span the whole depth.
+    parts: (w, d, h) => {
+      const arm = 0.36;
+      const unitD = 0.3;
+      const gap = Math.max(0.03, d - unitD);
+      const unitH = Math.max(0.3, h - arm - 0.04);
+      const unit = ASSETS.find((a) => a.id === 'ac_condenser')!.parts!(w, unitD, unitH);
+      return [...lBrackets([-w / 2 + 0.12, w / 2 - 0.12], d, arm), ...shift(unit, 0, arm + 0.04, -d / 2 + gap + unitD / 2)];
+    },
+    symbol: (w, d) => [line(-w / 2, -d / 2, w / 2, -d / 2, 'thin')],
+  },
+  {
+    id: 'wall_bracket_l',
+    name: 'L wall brackets (pair)',
+    category: 'outdoor',
+    w: 0.7,
+    d: 0.45,
+    h: 0.4,
+    mount: 'wall',
+    elevation: 1.0,
+    keywords: 'bracket shelf support mount',
+    parts: (w, d, h) => lBrackets([-w / 2 + 0.02, w / 2 - 0.02], d, h - 0.04),
+  },
+  {
     id: 'ceiling_fan',
     name: 'Ceiling fan',
     category: 'climate',
@@ -1468,6 +1543,86 @@ function frameWithPanes(w: number, d: number, h: number, cols: number, rows: num
 }
 
 export const ASSET_BY_ID = new Map(ASSETS.map((a) => [a.id, a]));
+
+/* ── User-made objects ─────────────────────────────────────────────────────── */
+
+const listeners = new Set<() => void>();
+/** Re-render when user-made objects are added (library panel). */
+export function onAssetsChanged(fn: () => void) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+export const CUSTOM_ID = /^ai_[a-z0-9_]{3,48}$/;
+
+/** Check a spec from outside (the AI, the server); null if it isn't usable. */
+export function cleanSpec(raw: unknown): CustomAssetSpec | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const q = raw as Record<string, unknown>;
+  const n = (v: unknown, lo: number, hi: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null);
+  const w = n(q.w, 0.02, 40);
+  const d = n(q.d, 0.01, 40);
+  const h = n(q.h, 0.01, 30);
+  const parts = sanitizeParts(q.parts);
+  if (!w || !d || !h || !parts.length || typeof q.name !== 'string' || !q.name.trim()) return null;
+  const id = typeof q.id === 'string' && CUSTOM_ID.test(q.id) ? q.id : `ai_${q.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30) || 'item'}_${Math.random().toString(36).slice(2, 7)}`;
+  return {
+    id,
+    name: q.name.trim().slice(0, 60),
+    w,
+    d,
+    h,
+    mount: q.mount === 'wall' || q.mount === 'ceiling' ? q.mount : 'floor',
+    elevation: n(q.elevation, 0, 10) ?? undefined,
+    keywords: typeof q.keywords === 'string' ? q.keywords.slice(0, 120) : undefined,
+    parts,
+    prompt: typeof q.prompt === 'string' ? q.prompt.slice(0, 500) : undefined,
+    updatedAt: typeof q.updatedAt === 'number' ? q.updatedAt : Date.now(),
+  };
+}
+
+export function defFromSpec(spec: CustomAssetSpec): AssetDef {
+  return {
+    id: spec.id,
+    name: spec.name,
+    category: 'ai',
+    w: spec.w,
+    d: spec.d,
+    h: spec.h,
+    mount: spec.mount,
+    elevation: spec.elevation,
+    keywords: `${spec.keywords ?? ''} ai custom`,
+    parts: (w, d, h) => scaleParts(spec.parts, w / spec.w, h / spec.h, d / spec.d),
+    custom: spec,
+  };
+}
+
+/** Add or update user-made objects (from the library, a project, or the AI). */
+export function registerCustomAssets(specs: CustomAssetSpec[]) {
+  let changed = false;
+  for (const spec of specs) {
+    const prev = ASSET_BY_ID.get(spec.id);
+    if (prev && !prev.custom) continue; // never shadow a built-in item
+    if (prev?.custom && prev.custom.updatedAt === spec.updatedAt && prev.custom.parts.length === spec.parts.length) continue;
+    const def = defFromSpec(spec);
+    const i = ASSETS.findIndex((a) => a.id === spec.id);
+    if (i >= 0) ASSETS[i] = def;
+    else ASSETS.push(def);
+    ASSET_BY_ID.set(spec.id, def);
+    forgetThumb(spec.id);
+    changed = true;
+  }
+  if (changed) listeners.forEach((fn) => fn());
+}
+
+export function unregisterCustomAsset(id: string) {
+  const def = ASSET_BY_ID.get(id);
+  if (!def?.custom) return;
+  ASSET_BY_ID.delete(id);
+  const i = ASSETS.findIndex((a) => a.id === id);
+  if (i >= 0) ASSETS.splice(i, 1);
+  listeners.forEach((fn) => fn());
+}
 
 /** Older projects used a few fixed furniture types; they map onto library items. */
 const LEGACY: Record<string, string> = { kitchen_counter: 'kitchen_counter', sink: 'sink', shower: 'shower', wc: 'wc', car: 'car', desk: 'desk', sofa: 'sofa', dining_table: 'dining_table', bed_double: 'bed_double', bed_single: 'bed_single' };

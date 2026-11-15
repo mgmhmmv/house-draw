@@ -29,9 +29,9 @@ const OUTSIDE = new Set(['outdoor', 'trees', 'boundary']);
  * `groundY` is where outdoor things (trees, gates, cars) stand when placed on the ground floor:
  * the site, not the raised floor slab.
  */
-export function furnitureObject(f: FurnitureItem, levelElevation: number, mats: AssetMaterials, groundY: number | null = null): THREE.Object3D {
+export function furnitureObject(f: FurnitureItem, levelElevation: number, mats: AssetMaterials, groundY: number | null = null, outside?: (x: number, y: number) => boolean): THREE.Object3D {
   const def = assetFor(f.type);
-  if (groundY !== null && (OUTSIDE.has(def?.category ?? '') || f.type === 'car')) levelElevation = groundY;
+  if (groundY !== null && (OUTSIDE.has(def?.category ?? '') || f.type === 'car' || outside?.(f.position.x, f.position.y))) levelElevation = groundY;
   const h = f.height ?? def?.h ?? 0.75;
   let obj: THREE.Object3D;
   if (def?.parts) obj = assetModel(def, f.width, f.depth, h, mats, true, f.color);
@@ -59,11 +59,15 @@ export function mepAsset(n: MEPNode): AssetDef | undefined {
   return id ? ASSET_BY_ID.get(id) : undefined;
 }
 
+/** A fixture's size: its own override, or the model's default. */
+export const mepSize = (n: MEPNode, def: AssetDef) => n.size ?? { w: def.w, d: def.d, h: def.h };
+
 export function mepObject(n: MEPNode, lvl: FloorLevel, ceilingY: number, mats: AssetMaterials): THREE.Object3D | null {
   const def = mepAsset(n);
   if (!def?.parts) return null;
-  const obj = assetModel(def, def.w, def.d, def.h, mats, def.mount !== 'ceiling');
-  const y = def.mount === 'ceiling' ? ceilingY - def.h : def.mount === 'wall' ? lvl.elevation + (def.elevation ?? 2) : lvl.elevation;
+  const { w, d, h } = mepSize(n, def);
+  const obj = assetModel(def, w, d, h, mats, def.mount !== 'ceiling');
+  const y = def.mount === 'ceiling' ? ceilingY - h : def.mount === 'wall' ? lvl.elevation + (n.elevation ?? def.elevation ?? 2) : lvl.elevation + (n.elevation ?? 0);
   obj.position.set(n.position.x, y, n.position.y);
   const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
   obj.rotation.y = (-rot * Math.PI) / 180;

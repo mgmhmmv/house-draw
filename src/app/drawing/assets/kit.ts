@@ -61,6 +61,8 @@ export interface Part {
   seg?: number;
   /** How the part shows in plan: outline and fill (default), outline only, dashed, or hidden. */
   plan?: 'fill' | 'line' | 'dash' | false;
+  /** Colour override for this part (#rrggbb), keeping the material's surface. */
+  c?: string;
 }
 
 /* ── Part helpers (bottom-based, which is how furniture is measured) ───────────── */
@@ -242,7 +244,8 @@ export function primaryMat(parts: Part[]): MatKey | null {
 export function buildParts(parts: Part[], mats: AssetMaterials, shadows = true, recolor?: { from: MatKey; color: string }): THREE.Group {
   const g = new THREE.Group();
   for (const part of parts) {
-    const mesh = new THREE.Mesh(geometry(part), recolor && part.m === recolor.from ? mats.tinted(part.m, recolor.color) : mats.get(part.m));
+    const mat = recolor && part.m === recolor.from ? mats.tinted(part.m, recolor.color) : part.c ? mats.tinted(part.m, part.c) : mats.get(part.m);
+    const mesh = new THREE.Mesh(geometry(part), mat);
     mesh.position.set(...part.p);
     if (part.rot) mesh.rotation.set(...part.rot);
     if (part.sc) mesh.scale.set(...part.sc);
@@ -357,3 +360,54 @@ export function renderThumb(key: string, build: (mats: AssetMaterials) => THREE.
   thumbCache.set(key, url);
   return url;
 }
+
+/* ── Parts from outside (AI-made objects): checked and clamped ───────────────── */
+
+export const MAT_KEYS = Object.keys(MAT) as MatKey[];
+const G = new Set(['box', 'rbox', 'cyl', 'sph', 'tor', 'lathe']);
+const fin = (v: unknown, lo: number, hi: number, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+const v3 = (v: unknown, lo: number, hi: number, d: number): V3 => (Array.isArray(v) ? [fin(v[0], lo, hi, d), fin(v[1], lo, hi, d), fin(v[2], lo, hi, d)] : [d, d, d]);
+
+/** Keep only well-formed parts, with sizes clamped to something sane (max 30 m, 400 parts). */
+export function sanitizeParts(raw: unknown): Part[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Part[] = [];
+  for (const r of raw.slice(0, 400)) {
+    if (!r || typeof r !== 'object') continue;
+    const q = r as Record<string, unknown>;
+    if (!G.has(q.g as string)) continue;
+    const part: Part = {
+      g: q.g as Part['g'],
+      p: v3(q.p, -30, 30, 0),
+      s: v3(q.s, 0, 30, 0.1),
+      m: MAT_KEYS.includes(q.m as MatKey) ? (q.m as MatKey) : 'offwhite',
+    };
+    if (q.rot) part.rot = v3(q.rot, -7, 7, 0);
+    if (q.sc) part.sc = v3(q.sc, 0.01, 50, 1);
+    if (typeof q.r === 'number') part.r = fin(q.r, 0, 2);
+    if (typeof q.seg === 'number') part.seg = Math.round(fin(q.seg, 3, 64, 24));
+    if (q.plan === false || q.plan === 'fill' || q.plan === 'line' || q.plan === 'dash') part.plan = q.plan;
+    if (typeof q.c === 'string' && /^#[0-9a-f]{6}$/i.test(q.c)) part.c = q.c;
+    if (part.g === 'lathe') {
+      if (!Array.isArray(q.pts)) continue;
+      part.pts = (q.pts as unknown[]).slice(0, 64).flatMap((pt) => (Array.isArray(pt) ? [[fin(pt[0], 0, 30), fin(pt[1], -30, 30)] as [number, number]] : []));
+      if (part.pts.length < 2) continue;
+    }
+    if (part.g === 'rbox') part.r = Math.min(part.r ?? 0.02, part.s[0] / 2 - 0.001, part.s[1] / 2 - 0.001, part.s[2] / 2 - 0.001);
+    out.push(part);
+  }
+  return out;
+}
+
+/** Stretch parts made at one size to another (a new object placed larger or smaller). */
+export function scaleParts(parts: Part[], sx: number, sy: number, sz: number): Part[] {
+  if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6 && Math.abs(sz - 1) < 1e-6) return parts;
+  return parts.map((p) => ({
+    ...p,
+    p: [p.p[0] * sx, p.p[1] * sy, p.p[2] * sz] as V3,
+    sc: [(p.sc?.[0] ?? 1) * sx, (p.sc?.[1] ?? 1) * sy, (p.sc?.[2] ?? 1) * sz] as V3,
+  }));
+}
+
+/** Drop a cached thumbnail (an object that was changed). */
+export const forgetThumb = (key: string) => thumbCache.delete(key);

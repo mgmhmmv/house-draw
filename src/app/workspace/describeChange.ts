@@ -84,6 +84,8 @@ export function describeChange(prev: BuildingProject | null, next: BuildingProje
   if (!same(prev.grid, next.grid)) out.push('Updated grid');
   if (!same(prev.meta, next.meta)) out.push('Updated project details');
   if (!same(prev.sections, next.sections)) out.push('Edited sections');
+  const made = Object.values(next.customAssets ?? {}).filter((a) => !prev.customAssets?.[a.id]);
+  if (made.length) out.unshift(`Made ${made.map((a) => a.name).slice(0, 2).join(' and ')}`);
 
   if (!out.length) return 'Edited';
   return out.length > max ? `${out.slice(0, max).join(' · ')} · +${out.length - max} more` : out.join(' · ');

@@ -66,7 +66,8 @@ import { assetFor, type AssetDef } from '../drawing/assets/catalog';
 import { Inspector, type Selection } from './Inspector';
 import { SheetView } from './SheetView';
 import { SHEET_GROUPS, SHEETS, sheetBySlug, type SheetDef } from './sheets';
-import { useProjectDoc, type SaveState } from './useProjectDoc';
+import { registerProjectAssets, useProjectDoc, type SaveState } from './useProjectDoc';
+import { loadCustomAssets } from '../lib/customAssets';
 
 const TOOLS: { id: CADTool; label: string; key: string; icon: typeof PenTool }[] = [
   { id: 'select', label: 'Select', key: 'V', icon: MousePointer2 },
@@ -160,6 +161,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       if (preview?.version.version === v.version) return setPreview(null);
       try {
         const m = await api.versionModel(projectId, v.version);
+        registerProjectAssets(m);
         setPreview({ version: v, model: m });
         setRestoreArmed(false);
         setSelection(null);
@@ -171,6 +173,11 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     },
     [projectId, preview]
   );
+  // The user's own (AI-made) objects join the library.
+  useEffect(() => {
+    void loadCustomAssets();
+  }, []);
+
   // Choosing a drawing tool ends placing.
   useEffect(() => {
     if (tool !== 'select') setPlacing(null);
