@@ -7,10 +7,13 @@ import { ElectricalSheet } from '../sheets/ElectricalSheet';
 import { HvacSheet } from '../sheets/HvacSheet';
 import { PlumbingSheet } from '../sheets/PlumbingSheet';
 import { BoqSheet } from '../sheets/BoqSheet';
+import { BillingSheet } from '../sheets/BillingSheet';
+import type { SheetId } from './sheets';
 
 interface Props {
   model: BuildingProject;
-  sheet: ActiveSheetId;
+  sheet: SheetId;
+  projectId: string;
   levelIndex: number;
   tool: CADTool;
   selectedId: string | null;
@@ -46,6 +49,9 @@ export function SheetView(p: Props) {
     case 'H-101':
       view = <HvacSheet model={p.model} />;
       break;
+    case 'BILL':
+      view = <BillingSheet projectId={p.projectId} model={p.model} />;
+      break;
     case 'Q-101':
       view = <BoqSheet model={p.model} onCommit={p.onCommit} />;
       break;
@@ -53,7 +59,7 @@ export function SheetView(p: Props) {
       view = (
         <PlanCanvas
           model={p.model}
-          sheet={p.sheet}
+          sheet={p.sheet as ActiveSheetId}
           levelIndex={p.levelIndex}
           tool={p.tool}
           selectedId={p.selectedId}

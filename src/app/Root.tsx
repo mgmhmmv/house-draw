@@ -6,7 +6,8 @@ import { AppShell } from './screens/AppShell';
 import { AuthScreen } from './screens/AuthScreen';
 import { NewProjectDialog } from './screens/NewProjectDialog';
 import { ProjectsPage } from './screens/ProjectsPage';
-import { ClientsPage, SettingsPage, TemplatesPage } from './screens/SimplePages';
+import { SettingsPage, TemplatesPage } from './screens/SimplePages';
+import { ClientsPage } from './screens/IsleposPages';
 
 // The workspace carries three.js and the drawing engines; the dashboard should not wait for them.
 const Workspace = lazy(() => import('./workspace/Workspace'));

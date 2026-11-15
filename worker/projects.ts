@@ -1,5 +1,6 @@
 import type { User } from './auth';
 import { Env, HttpError, json, newId, now, readJson, str } from './http';
+import { handleProjectBilling } from './islepos';
 
 const STATUSES = ['concept', 'design', 'documentation', 'construction', 'complete', 'archived'] as const;
 const MODEL_MAX_BYTES = 8 * 1024 * 1024;
@@ -123,6 +124,9 @@ export async function handleProjects(env: Env, req: Request, user: User, path: s
     }
     throw new HttpError(405, 'method_not_allowed');
   }
+
+  // GET/PUT /api/projects/:id/billing — the IslePOS client and documents for this project
+  if (sub === 'billing') return handleProjectBilling(env, req, id);
 
   // PUT /api/projects/:id/model  { model, summary, baseVersion }
   if (sub === 'model' && req.method === 'PUT') {

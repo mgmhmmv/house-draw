@@ -2,6 +2,7 @@ import { handleAi, handleAssist } from './ai';
 import { handleAuth, requireUser } from './auth';
 import { Env, HttpError, json } from './http';
 import { handleProjects } from './projects';
+import { handleIslepos } from './islepos';
 
 /**
  * Requests that change state must come from this site. With SameSite=Lax cookies this
@@ -23,6 +24,7 @@ export default {
       if (path.startsWith('/api/auth/')) return await handleAuth(env, req, path);
       const user = await requireUser(env, req);
       if (path === '/api/projects' || path.startsWith('/api/projects/')) return await handleProjects(env, req, user, path);
+      if (path === '/api/integrations/islepos' || path.startsWith('/api/islepos/')) return await handleIslepos(env, req, user, path);
       if (path === '/api/ai/claude') return await handleAi(env, req);
       if (path === '/api/ai/assist') return await handleAssist(env, req);
       throw new HttpError(404, 'not_found');

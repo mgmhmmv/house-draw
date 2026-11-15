@@ -1,4 +1,5 @@
-import { ArrowRight, Moon, Sun, Users } from 'lucide-react';
+import { ArrowRight, Moon, Sun } from 'lucide-react';
+import { IsleposSettings } from './IsleposPages';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/hooks';
 import { TEMPLATES } from '../lib/templates';
@@ -45,22 +46,6 @@ export function TemplatesPage({ onUse }: { onUse: (templateId: string) => void }
   );
 }
 
-export function ClientsPage() {
-  return (
-    <Page title="Clients">
-      <div className="flex flex-col items-center rounded-card border border-dashed border-line-strong bg-surface/50 px-6 py-20 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-accent">
-          <Users className="h-6 w-6" />
-        </div>
-        <h2 className="mt-5 text-lg font-semibold tracking-tight">Clients come from IslePOS</h2>
-        <p className="mt-2 max-w-md text-sm text-ink-2">
-          Once your IslePOS account is connected, your customers appear here, and a project’s BOQ can become a quotation or invoice in one step.
-        </p>
-      </div>
-    </Page>
-  );
-}
-
 export function SettingsPage() {
   const { user } = useAuth();
   const [theme, setTheme] = useTheme();
@@ -89,13 +74,7 @@ export function SettingsPage() {
             ]}
           />
         </div>
-        <div className="flex items-center justify-between gap-4 p-5">
-          <div>
-            <div className="text-sm font-medium">IslePOS</div>
-            <div className="text-[13px] text-ink-3">Sign in with IslePOS, clients, quotations and billing.</div>
-          </div>
-          <span className="rounded-full bg-sunken px-2.5 py-1 text-2xs font-medium text-ink-3">Coming soon</span>
-        </div>
+        <IsleposSettings />
       </div>
     </Page>
   );

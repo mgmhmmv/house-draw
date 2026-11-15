@@ -8,7 +8,7 @@ import { Avatar, cx, Logo, Menu, MenuItem } from '../ui';
 const NAV = [
   { to: '/', label: 'Projects', icon: FolderKanban },
   { to: '/templates', label: 'Templates', icon: LayoutTemplate },
-  { to: '/clients', label: 'Clients', icon: Users, soon: true },
+  { to: '/clients', label: 'Clients', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -43,7 +43,6 @@ export function AppShell({ children, onNewProject }: { children: ReactNode; onNe
               >
                 <n.icon className="h-[18px] w-[18px]" strokeWidth={1.75} />
                 {n.label}
-                {n.soon && <span className="ml-auto rounded-full bg-sunken px-2 py-px text-2xs text-ink-3">Soon</span>}
               </Link>
             );
           })}
@@ -65,7 +64,7 @@ export function AppShell({ children, onNewProject }: { children: ReactNode; onNe
       {/* Mobile tab bar */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 pb-safe backdrop-blur lg:hidden">
         <div className="mx-auto flex h-16 max-w-md items-center justify-around px-2">
-          {NAV.filter((n) => !n.soon).slice(0, 2).map((n) => (
+          {NAV.slice(0, 2).map((n) => (
             <TabLink key={n.to} to={n.to} label={n.label} icon={n.icon} active={n.to === '/' ? path === '/' : path.startsWith(n.to)} />
           ))}
           <button onClick={onNewProject} aria-label="New project" className="flex h-12 w-12 items-center justify-center rounded-full bg-ink text-page shadow-float">

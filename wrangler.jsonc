@@ -27,5 +27,5 @@
     }
   ],
   "observability": { "enabled": true }
-  // Secrets (set with `wrangler secret put`, or .dev.vars locally): ANTHROPIC_API_KEY
+  // Secrets (set with `wrangler secret put`, or .dev.vars locally): ANTHROPIC_API_KEY, ISLEPOS_KEY_SECRET
 }

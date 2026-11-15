@@ -3,6 +3,8 @@ export interface Env {
   FILES: R2Bucket;
   ASSETS: Fetcher;
   ANTHROPIC_API_KEY?: string;
+  /** Encrypts merchants' IslePOS keys at rest. */
+  ISLEPOS_KEY_SECRET?: string;
 }
 
 export class HttpError extends Error {

@@ -325,6 +325,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[#f8fafc]">
       <SheetView
         model={model}
+        projectId={projectId}
         sheet={sheet.id}
         levelIndex={safeLevel}
         tool={tool}

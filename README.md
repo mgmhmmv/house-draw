@@ -31,7 +31,7 @@ An interactive, web-deployable architectural & structural engineering CAD/BIM st
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars        # add ANTHROPIC_API_KEY
+cp .dev.vars.example .dev.vars        # add ANTHROPIC_API_KEY and ISLEPOS_KEY_SECRET
 npm run db:migrate                    # local D1 (stored in .wrangler/)
 npm run dev:api                       # Worker on :8787 (uses local D1 + R2)
 npm run dev                           # Vite on :5173, proxies /api to the Worker
@@ -46,5 +46,6 @@ wrangler d1 create archstudio          # put the id in wrangler.jsonc
 wrangler r2 bucket create archstudio-files
 wrangler d1 migrations apply archstudio --remote
 wrangler secret put ANTHROPIC_API_KEY
+wrangler secret put ISLEPOS_KEY_SECRET      # any long random string; encrypts merchants' IslePOS keys
 npm run deploy
 ```

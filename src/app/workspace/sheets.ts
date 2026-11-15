@@ -1,8 +1,11 @@
-import { Box, Building, Calculator, Droplets, Fan, Grid3x3, LayoutDashboard, Layers, PlugZap, Scissors, type LucideIcon } from 'lucide-react';
+import { Box, Building, Calculator, Receipt, Droplets, Fan, Grid3x3, LayoutDashboard, Layers, PlugZap, Scissors, type LucideIcon } from 'lucide-react';
 import type { ActiveSheetId } from '../../model/types';
 
+/** Drawing sheets come from the model; Billing is the one sheet that is not a drawing. */
+export type SheetId = ActiveSheetId | 'BILL';
+
 export interface SheetDef {
-  id: ActiveSheetId;
+  id: SheetId;
   /** URL segment. */
   slug: string;
   name: string;
@@ -34,11 +37,14 @@ export const SHEET_GROUPS: { label: string; sheets: SheetDef[] }[] = [
     ],
   },
   {
-    label: 'Cost',
-    sheets: [{ id: 'Q-101', slug: 'boq', name: 'Bill of quantities', short: 'BOQ', code: 'Q-101', icon: Calculator }],
+    label: 'Cost & billing',
+    sheets: [
+      { id: 'Q-101', slug: 'boq', name: 'Bill of quantities', short: 'BOQ', code: 'Q-101', icon: Calculator },
+      { id: 'BILL', slug: 'billing', name: 'Billing', short: 'Billing', code: 'MVR', icon: Receipt },
+    ],
   },
 ];
 
 export const SHEETS = SHEET_GROUPS.flatMap((g) => g.sheets);
 export const sheetBySlug = (slug?: string) => SHEETS.find((s) => s.slug === slug) ?? SHEETS[0];
-export const sheetById = (id: ActiveSheetId) => SHEETS.find((s) => s.id === id) ?? SHEETS[0];
+export const sheetById = (id: SheetId) => SHEETS.find((s) => s.id === id) ?? SHEETS[0];
