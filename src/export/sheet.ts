@@ -33,6 +33,7 @@ export type LegendSym =
   | 'line' | 'chip' | 'ring' | 'light' | 'outlet' | 'chamber' | 'septic' | 'soak' | 'tank' | 'arrow' | 'ridge' | 'solar'
   | 'datum' | 'note' | 'block' | 'conc' | 'hardcore' | 'earth' | 'truss' | 'text'
   | 'breaker' | 'rcd' | 'isolator' | 'fuse' | 'meter' | 'spd' | 'ground' | 'busbar' | 'inverter' | 'battery' | 'pvarray'
+  | 'kwh' | 'rccb' | 'ticks' | 'switchIEC' | 'fanM' | 'socketIEC' | 'equip' | 'heater'
   | 'valve' | 'float' | 'pump' | 'vessel' | 'cowl';
 
 /** One line of a sheet's legend: the symbol as drawn, and what it means. */
@@ -486,22 +487,41 @@ function legendSymbol(e: LegendEntry, x: number, y: number) {
       return `<path d="M${x} ${y + 1.4} L${mid} ${y - 1.6} L${x + 12} ${y + 1.4} Z M${mid} ${y - 1.6} L${mid} ${y + 1.4} M${x + 3} ${y + 1.4} L${mid} ${y - 0.4} M${x + 9} ${y + 1.4} L${mid} ${y - 0.4}" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
     case 'breaker':
     case 'rcd':
+    case 'rccb':
     case 'isolator': {
-      // Drawn on its side: supply from the left, blade lifting at the fixed contact.
+      // IEC 60617, on its side: supply from the left, blade lifting off the fixed contact.
       const a = x + 2;
       const b = x + 10;
-      const fixed = e.sym === 'isolator' ? `<line x1="${b - 3.4}" y1="${y - 1}" x2="${b - 3.4}" y2="${y + 1}" stroke="${INK}" stroke-width="0.3"/>` : `<path d="M${b - 3.9} ${y - 0.5} l1 1 M${b - 3.9} ${y + 0.5} l1 -1" stroke="${INK}" stroke-width="0.25"/>`;
-      const ring = e.sym === 'rcd' ? `<ellipse cx="${x + 6}" cy="${y - 0.8}" rx="2.6" ry="1.6" fill="none" stroke="${INK}" stroke-width="0.2"/>` : '';
-      return `<line x1="${x}" y1="${y}" x2="${a + 1}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${a + 1}" y1="${y}" x2="${b - 3}" y2="${y - 1.8}" stroke="${INK}" stroke-width="0.3"/><line x1="${b - 3.4}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>${fixed}${ring}`;
+      const fc = b - 3.4; // fixed contact
+      let fixed = '';
+      if (e.sym === 'isolator') fixed = `<line x1="${fc}" y1="${y - 1}" x2="${fc}" y2="${y + 1}" stroke="${INK}" stroke-width="0.3"/><circle cx="${fc + 0.5}" cy="${y}" r="0.45" fill="#fff" stroke="${INK}" stroke-width="0.2"/>`;
+      else if (e.sym !== 'rccb') fixed = `<path d="M${fc - 0.5} ${y - 0.5} l1 1 M${fc - 0.5} ${y + 0.5} l1 -1" stroke="${INK}" stroke-width="0.25"/>`;
+      // Residual-current element: core round the conductor with its mechanical link to the blade.
+      const core = e.sym === 'rcd' || e.sym === 'rccb' ? `<ellipse cx="${x + 10.6}" cy="${y}" rx="0.45" ry="1.1" fill="none" stroke="${INK}" stroke-width="0.22"/><polyline points="${x + 10.6},${y - 1.1} ${x + 10.6},${y - 2.3} ${x + 5.2},${y - 2.3} ${x + 5.2},${y - 1.1}" fill="none" stroke="${INK}" stroke-width="0.18" stroke-dasharray="0.5 0.35"/>` : '';
+      return `<line x1="${x}" y1="${y}" x2="${a + 1}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${a + 1}" y1="${y}" x2="${b - 3}" y2="${y - 1.8}" stroke="${INK}" stroke-width="0.3"/><line x1="${fc}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>${fixed}${core}`;
     }
     case 'fuse':
       return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><rect x="${x + 4}" y="${y - 0.9}" width="4" height="1.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 4}" y1="${y}" x2="${x + 8}" y2="${y}" stroke="${INK}" stroke-width="0.2"/>`;
     case 'meter':
       return `<circle cx="${mid}" cy="${y}" r="2.1" fill="#fff" stroke="${INK}" stroke-width="0.3"/>${t(mid, y + 0.5, e.tag ?? 'kWh', 1.15, { w: 700, a: 'middle' })}`;
+    case 'kwh':
+      return `<rect x="${mid - 3}" y="${y - 2}" width="6" height="4" fill="#fff" stroke="${INK}" stroke-width="0.3"/>${t(mid, y + 0.5, 'kWh', 1.3, { w: 700, a: 'middle' })}`;
     case 'spd':
-      return `<rect x="${mid - 1.6}" y="${y - 2}" width="3.2" height="4" fill="#fff" stroke="${INK}" stroke-width="0.3"/><path d="M${mid + 0.6} ${y - 1.4} l-1 1.3 h1.1 l-1 1.4" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
+      return `<rect x="${mid - 1.6}" y="${y - 2.1}" width="3.2" height="4.2" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${mid}" y1="${y - 1.4}" x2="${mid}" y2="${y + 0.9}" stroke="${INK}" stroke-width="0.3"/><path d="M${mid - 0.7} ${y + 0.5} L${mid} ${y + 1.5} L${mid + 0.7} ${y + 0.5} Z" fill="${INK}"/>`;
     case 'ground':
-      return `<line x1="${mid}" y1="${y - 2}" x2="${mid}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 2}" y1="${y}" x2="${mid + 2}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 1.3}" y1="${y + 0.8}" x2="${mid + 1.3}" y2="${y + 0.8}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.6}" y1="${y + 1.6}" x2="${mid + 0.6}" y2="${y + 1.6}" stroke="${INK}" stroke-width="0.3"/>`;
+      return `<circle cx="${mid}" cy="${y + 0.2}" r="2" fill="none" stroke="${INK}" stroke-width="0.25"/><line x1="${mid}" y1="${y - 1.2}" x2="${mid}" y2="${y - 0.2}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 1.3}" y1="${y - 0.2}" x2="${mid + 1.3}" y2="${y - 0.2}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.85}" y1="${y + 0.5}" x2="${mid + 0.85}" y2="${y + 0.5}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.4}" y1="${y + 1.2}" x2="${mid + 0.4}" y2="${y + 1.2}" stroke="${INK}" stroke-width="0.3"/>`;
+    case 'ticks':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>${[0, 1, 2, 3, 4].map((i) => `<line x1="${x + 3.2 + i * 0.8}" y1="${y + 0.9}" x2="${x + 4.2 + i * 0.8}" y2="${y - 0.9}" stroke="${INK}" stroke-width="0.2"/>`).join('')}`;
+    case 'switchIEC':
+      return `<line x1="${x}" y1="${y}" x2="${mid - 0.55}" y2="${y}" stroke="${c}" stroke-width="0.25"/><circle cx="${mid}" cy="${y}" r="0.55" fill="#fff" stroke="${c}" stroke-width="0.25"/><line x1="${mid + 0.4}" y1="${y - 0.4}" x2="${mid + 1.6}" y2="${y - 1.6}" stroke="${c}" stroke-width="0.25"/><line x1="${mid + 1.6}" y1="${y - 1.6}" x2="${mid + 2.05}" y2="${y - 1.15}" stroke="${c}" stroke-width="0.25"/>`;
+    case 'fanM':
+      return `<circle cx="${mid}" cy="${y}" r="1.4" fill="#fff" stroke="${c}" stroke-width="0.25"/>${t(mid, y + 0.5, 'M', 1.4, { w: 700, a: 'middle', c })}`;
+    case 'socketIEC':
+      return `<line x1="${mid}" y1="${y - 2}" x2="${mid}" y2="${y - 0.3}" stroke="${c}" stroke-width="0.25"/><path d="M${mid - 1.4} ${y + 0.5} A1.4 1.4 0 0 1 ${mid + 1.4} ${y + 0.5}" fill="none" stroke="${c}" stroke-width="0.28"/><line x1="${mid - 1.4}" y1="${y + 0.5}" x2="${mid + 1.4}" y2="${y + 0.5}" stroke="${c}" stroke-width="0.28"/><line x1="${mid - 0.8}" y1="${y + 1.1}" x2="${mid + 0.8}" y2="${y + 1.1}" stroke="${c}" stroke-width="0.22"/>`;
+    case 'equip':
+      return `<rect x="${mid - 2}" y="${y - 1.2}" width="4" height="2.4" fill="#fff" stroke="${c}" stroke-width="0.28"/>${t(mid, y + 0.5, e.tag ?? '', 1.25, { w: 700, a: 'middle', c })}`;
+    case 'heater':
+      return `<rect x="${mid - 2}" y="${y - 1.2}" width="4" height="2.4" fill="#fff" stroke="${c}" stroke-width="0.28"/><polyline points="${mid - 1.4},${y + 0.6} ${mid - 0.7},${y - 0.6} ${mid},${y + 0.6} ${mid + 0.7},${y - 0.6} ${mid + 1.4},${y + 0.6}" fill="none" stroke="${c}" stroke-width="0.22"/>`;
     case 'busbar':
       return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${INK}" stroke-width="1"/>`;
     case 'inverter':
@@ -509,7 +529,7 @@ function legendSymbol(e: LegendEntry, x: number, y: number) {
     case 'battery':
       return `<line x1="${mid - 4}" y1="${y}" x2="${mid - 0.8}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 0.8}" y1="${y - 2}" x2="${mid - 0.8}" y2="${y + 2}" stroke="${INK}" stroke-width="0.35"/><line x1="${mid + 0.6}" y1="${y - 1}" x2="${mid + 0.6}" y2="${y + 1}" stroke="${INK}" stroke-width="0.6"/><line x1="${mid + 0.6}" y1="${y}" x2="${mid + 4}" y2="${y}" stroke="${INK}" stroke-width="0.3"/>`;
     case 'pvarray':
-      return `<rect x="${x + 1}" y="${y - 1.8}" width="10" height="3.6" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.3"/><line x1="${x + 6}" y1="${y - 1.8}" x2="${x + 6}" y2="${y + 1.8}" stroke="#3D5A80" stroke-width="0.15"/><line x1="${x + 1}" y1="${y}" x2="${x + 11}" y2="${y}" stroke="#3D5A80" stroke-width="0.15"/>`;
+      return `<rect x="${x + 3}" y="${y - 1.4}" width="8" height="3.2" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.3"/><line x1="${x + 7}" y1="${y - 1.4}" x2="${x + 7}" y2="${y + 1.8}" stroke="#3D5A80" stroke-width="0.15"/><line x1="${x}" y1="${y - 2.6}" x2="${x + 2.4}" y2="${y - 1}" stroke="${INK}" stroke-width="0.2"/><path d="M${x + 2.8} ${y - 0.7} l-1.2 -0.2 l0.6 -0.9 Z" fill="${INK}"/>`;
     case 'valve':
       return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${c}" stroke-width="0.35"/><path d="M${mid - 1.6} ${y - 1.2} L${mid + 1.6} ${y + 1.2} L${mid + 1.6} ${y - 1.2} L${mid - 1.6} ${y + 1.2} Z" fill="#fff" stroke="${INK}" stroke-width="0.25"/>`;
     case 'float':

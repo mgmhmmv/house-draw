@@ -8,7 +8,7 @@
 import type { BuildingProject, FloorLevel, MEPNode, Room } from '../../../model/types';
 import { computeElectricalSLD, type ElectricalSLDReport } from '../../../engine/mepEngine';
 import { DRAWING_AREA, keySize, type LegendEntry } from '../../../export/sheet';
-import { battery, breaker, chip, CIRC, COOL, dataBox, earth, fuse, HOT, INK, INK2, INK3, inverter, L, LIGHT, lightPt, meter, POWER, pvArray, RECT, socketPt, spd, T, table, TW } from './svg';
+import { battery, breaker, CIRC, COOL, dataBox, earth, equipPt, fanPt, fuse, heaterPt, HOT, INK, INK2, INK3, inverter, L, LIGHT, lightPt, meter, POWER, pvArray, RECT, socketPt, spd, switchPt, T, table, ticks, TW } from './svg';
 
 export interface DrawnPage {
   title: string;
@@ -67,12 +67,36 @@ function roomOf(n: MEPNode, lvl: FloorLevel): Room | undefined {
   return lvl.rooms.find((r) => inside(r.polygon));
 }
 
-const short = (s: string) =>
-  s
-    .replace(/Type ([BC]) /, '$1 ')
-    .replace(/\s*\(30mA\)/, ' 30mA')
-    .replace(/ \+ 30mA RCD/, ' + RCD')
-    .replace(/mm² \+ E (PVC|XLPE)/, 'mm²+E');
+/**
+ * IEC naming for the engine's device and cable descriptions:
+ * "20A Type B RCBO (30mA)" -> "RCBO B20 30 mA Type A"; "10A Type B MCB" -> "MCB B10 1P+N 6 kA";
+ * "3×4.0mm² + E XLPE" -> "3G4 mm² Cu XLPE" (single-phase: L, N, PE).
+ */
+export function iecDevice(spec: string): string {
+  const amps = /(\d+)\s*A\b/.exec(spec)?.[1] ?? '';
+  const curve = /Type ([BCD])\b/.exec(spec)?.[1] ?? 'B';
+  const poles = /\b(\d)P\b/.exec(spec)?.[1];
+  const ma = /(\d+)\s*mA/.exec(spec)?.[1] ?? '30';
+  if (/RCBO|RCD|mA/.test(spec)) return `RCBO ${curve}${amps}${poles ? ` ${poles}P` : ''} ${ma} mA Type A`;
+  return `MCB ${curve}${amps} 1P+N 6 kA`;
+}
+export function iecCable(spec: string, cores = 3): string {
+  const size = /(\d+(?:\.\d+)?)\s*mm/.exec(spec)?.[1];
+  const mm = size ? String(Number(size)) : '?';
+  const ins = /XLPE/i.test(spec) ? 'XLPE' : 'PVC';
+  const armour = /SWA|Armou?red/i.test(spec) ? '/SWA' : '';
+  return `${cores}G${mm} mm² Cu ${ins}${armour}`;
+}
+/** "63A 4P MCCB (10kA) + 100mA Type-S RCCB (3-Ph 400V)" -> the MCCB and the RCCB, IEC style. */
+function iecMain(spec: string) {
+  const [a, b] = spec.split('+').map((x) => x.trim());
+  const amps = /(\d+)\s*A\b/.exec(a)?.[1] ?? '63';
+  const poles = /(\d)P/.exec(a)?.[1] ?? '4';
+  const ka = /(\d+)\s*kA/i.exec(a)?.[1] ?? '10';
+  const ma = /(\d+)\s*mA/.exec(b ?? '')?.[1] ?? '100';
+  const type = /Type-?([A-Z])/.exec(b ?? '')?.[1] ?? 'S';
+  return { mccb: `MCCB ${amps} A ${poles}P ${ka} kA`, rccb: `RCCB ${poles}P ${amps} A ${ma} mA Type ${type}` };
+}
 
 /** Rooms, their boards and final circuits, from the fixtures in the model. */
 export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): Board[] {
@@ -106,18 +130,18 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
       ];
       if (lp.some((p) => p.watts > 0)) {
         const w = lp.reduce((s, p) => s + p.watts, 0);
-        circuits.push({ id: `${cc}-L1`, kind: 'L', desc: 'Lighting & fans', points: lp, watts: w, device: '10A B MCB', deviceKind: 'mcb', cable: '2×1.5mm²+E' });
+        circuits.push({ id: `${cc}-L1`, kind: 'L', desc: 'Lighting & fans', points: lp, watts: w, device: 'MCB B10 1P+N 6 kA', deviceKind: 'mcb', cable: '3G1.5 mm² Cu PVC' });
       }
       // Socket outlets, split every 8.
       const sockets = pts('outlet_duplex');
       for (let i = 0; i < sockets.length; i += 8) {
         const part = sockets.slice(i, i + 8).map((n) => ({ kind: 'socket' as const, label: `${n.wattage ?? 350} W`, watts: n.wattage ?? 350 }));
         const w = part.reduce((s, p) => s + p.watts, 0);
-        circuits.push({ id: `${cc}-P${i / 8 + 1}`, kind: 'P', desc: 'Socket outlets 13A twin', points: part, watts: w, device: '20A B RCBO 30mA', deviceKind: 'rcd', cable: '2×2.5mm²+E' });
+        circuits.push({ id: `${cc}-P${i / 8 + 1}`, kind: 'P', desc: 'Socket outlets 13A twin', points: part, watts: w, device: 'RCBO B20 30 mA Type A', deviceKind: 'rcd', cable: '3G2.5 mm² Cu PVC' });
       }
       if (g.room?.category === 'kitchen') {
-        circuits.push({ id: `${cc}-K1`, kind: 'K', desc: 'Cooker / oven outlet', points: [{ kind: 'appliance', label: 'Cooker 3.0 kW', watts: 3000 }], watts: 3000, device: '32A B RCBO 30mA', deviceKind: 'rcd', cable: '2×6.0mm²+E' });
-        circuits.push({ id: `${cc}-K2`, kind: 'K', desc: 'Fridge / microwave / dishwasher', points: [{ kind: 'appliance', label: 'Fridge 0.3 kW', watts: 300 }, { kind: 'appliance', label: 'Microwave 1.2 kW', watts: 1200 }, { kind: 'appliance', label: 'Dishwasher 1.8 kW', watts: 1800 }], watts: 3300, device: '20A B RCBO 30mA', deviceKind: 'rcd', cable: '2×4.0mm²+E' });
+        circuits.push({ id: `${cc}-K1`, kind: 'K', desc: 'Cooker / oven outlet', points: [{ kind: 'appliance', label: 'Cooker 3.0 kW', watts: 3000 }], watts: 3000, device: 'RCBO B32 30 mA Type A', deviceKind: 'rcd', cable: '3G6 mm² Cu PVC' });
+        circuits.push({ id: `${cc}-K2`, kind: 'K', desc: 'Fridge / microwave / dishwasher', points: [{ kind: 'appliance', label: 'Fridge 0.3 kW', watts: 300 }, { kind: 'appliance', label: 'Microwave 1.2 kW', watts: 1200 }, { kind: 'appliance', label: 'Dishwasher 1.8 kW', watts: 1800 }], watts: 3300, device: 'RCBO B20 30 mA Type A', deviceKind: 'rcd', cable: '3G4 mm² Cu PVC' });
       }
       // Each air-conditioner on its own circuit, with its outdoor unit.
       pts('ac_split')
@@ -134,14 +158,14 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
               { kind: 'cu', label: 'outdoor', watts: 0 },
             ],
             watts: w,
-            device: big ? '20A C RCBO 30mA' : '16A C RCBO 30mA',
+            device: big ? 'RCBO C20 30 mA Type A' : 'RCBO C16 30 mA Type A',
             deviceKind: 'rcd',
-            cable: big ? '2×4.0mm²+E' : '2×2.5mm²+E',
+            cable: big ? '3G4 mm² Cu PVC' : '3G2.5 mm² Cu PVC',
           });
         });
       pts('water_heater').forEach((n, i) => {
         const w = n.wattage ?? 2000;
-        circuits.push({ id: `${cc}-WH${i + 1}`, kind: 'WH', desc: `Water heater ${(w / 1000).toFixed(1)} kW, DP switch`, points: [{ kind: 'wh', label: `${(w / 1000).toFixed(1)} kW`, watts: w }], watts: w, device: '20A B RCBO 30mA', deviceKind: 'rcd', cable: '2×4.0mm²+E' });
+        circuits.push({ id: `${cc}-WH${i + 1}`, kind: 'WH', desc: `Water heater ${(w / 1000).toFixed(1)} kW, DP switch`, points: [{ kind: 'wh', label: `${(w / 1000).toFixed(1)} kW`, watts: w }], watts: w, device: 'RCBO B20 30 mA Type A', deviceKind: 'rcd', cable: '3G4 mm² Cu PVC' });
       });
       if (!circuits.length) continue;
       const row = g.sdb?.label ? rows.get(g.sdb.label) : undefined;
@@ -152,8 +176,8 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
         level: lvl.name.replace(/\s*\(.*\)/, ''),
         phase: row?.phase ?? phases[boards.length % 3],
         sub: !!g.sdb,
-        feedDevice: row ? short(row.breakerRating) : '',
-        feedCable: row ? short(row.cableSpec) : '',
+        feedDevice: row ? iecDevice(row.breakerRating) : '',
+        feedCable: row ? iecCable(row.cableSpec) : '',
         runM: row?.cableLengthM ?? 0,
         vdPct: row?.voltageDropPct ?? 0,
         circuits,
@@ -168,24 +192,26 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
 /* ── Sheet 1: the diagram ─────────────────────────────────────────── */
 
 const SLD_LEGEND: LegendEntry[] = [
-  { sym: 'fuse', label: 'Service cut-out (utility fuse)' },
-  { sym: 'meter', tag: 'kWh', label: 'Energy meter' },
-  { sym: 'isolator', label: 'Isolator / switch-disconnector' },
-  { sym: 'breaker', label: 'Circuit breaker (MCCB / MCB), rating shown' },
-  { sym: 'rcd', label: 'Residual current device: RCCB / RCBO, 30 mA unless noted' },
-  { sym: 'spd', label: 'Surge protection device (SPD)' },
-  { sym: 'busbar', label: 'Busbar' },
-  { sym: 'ground', label: 'Earth electrode / main earthing terminal' },
-  { sym: 'pvarray', label: 'Solar PV array' },
-  { sym: 'inverter', label: 'Hybrid inverter (DC/AC)' },
-  { sym: 'battery', label: 'Battery storage' },
-  { sym: 'light', color: LIGHT, label: 'Light point (W)' },
-  { sym: 'chip', tag: 'S', color: LIGHT, label: 'Light switch' },
-  { sym: 'chip', tag: 'F', color: COOL, label: 'Ceiling / exhaust fan' },
-  { sym: 'outlet', color: POWER, label: 'Socket outlet 13A twin (allowance W)' },
-  { sym: 'chip', tag: 'AC', color: COOL, label: 'Air-conditioner indoor unit; CU = outdoor unit' },
-  { sym: 'chip', tag: 'WH', color: HOT, label: 'Water heater with DP switch' },
-  { sym: 'chip', tag: 'AP', color: POWER, label: 'Fixed appliance outlet' },
+  { sym: 'fuse', label: 'Fuse: service cut-out (utility)' },
+  { sym: 'kwh', label: 'Active-energy meter (kWh)' },
+  { sym: 'isolator', label: 'Switch-disconnector' },
+  { sym: 'breaker', label: 'Circuit-breaker: MCCB / MCB, curve and rating shown' },
+  { sym: 'rcd', label: 'RCBO: circuit-breaker with residual-current element' },
+  { sym: 'rccb', label: 'RCCB: residual-current switch (no overcurrent trip)' },
+  { sym: 'spd', label: 'Surge protective device (SPD) to PE' },
+  { sym: 'busbar', label: 'Busbar L1 / L2 / L3' },
+  { sym: 'line', color: '#14161A', weight: 0.35, label: 'Neutral bar N / protective conductor bar PE' },
+  { sym: 'ground', label: 'Protective earth: main earthing terminal and electrode' },
+  { sym: 'ticks', tag: '3/N/PE', label: 'Conductors on a single line: phases / N / PE' },
+  { sym: 'pvarray', label: 'Photovoltaic generator (PV array)' },
+  { sym: 'inverter', label: 'Inverter DC / AC' },
+  { sym: 'battery', label: 'Battery (secondary cells)' },
+  { sym: 'light', color: LIGHT, label: 'Luminaire (W)' },
+  { sym: 'switchIEC', color: LIGHT, label: 'Switch, one-way' },
+  { sym: 'fanM', color: COOL, label: 'Fan (motor): ceiling / exhaust' },
+  { sym: 'socketIEC', color: POWER, label: 'Socket outlet with protective contact' },
+  { sym: 'equip', tag: 'AC', color: COOL, label: 'Air-conditioner: AC indoor, CU outdoor unit' },
+  { sym: 'heater', color: HOT, label: 'Water heater (heating element)' },
 ];
 
 function point(p: Pt, x: number, y: number) {
@@ -193,20 +219,21 @@ function point(p: Pt, x: number, y: number) {
     case 'light':
       return lightPt(x, y, 0.95);
     case 'socket':
-      return socketPt(x, y, 1.05);
+    case 'appliance':
+      return socketPt(x, y, 1.0);
     case 'switch':
-      return chip(x, y, 'S', LIGHT, 2.4, 1.7);
+      return switchPt(x - 0.4, y + 0.4);
     case 'fan':
     case 'exhaust':
-      return chip(x, y, p.kind === 'fan' ? 'F' : 'EF', COOL, 2.6, 1.7);
+      return fanPt(x, y);
     case 'ac':
-      return chip(x, y, 'AC', COOL, 3, 1.7);
+      return equipPt(x, y, 'AC');
     case 'cu':
-      return chip(x, y, 'CU', COOL, 3, 1.7);
+      return equipPt(x, y, 'CU');
     case 'wh':
-      return chip(x, y, 'WH', HOT, 3, 1.7);
+      return heaterPt(x, y);
     default:
-      return chip(x, y, 'AP', POWER, 3, 1.7);
+      return socketPt(x, y, 1.0);
   }
 }
 
@@ -226,52 +253,62 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   p.push(RECT(A.x + 2, mdbTop, A.w - 4, mdbBottom - mdbTop, { fill: 'none', dash: '1.6 0.8', sw: 0.25 }));
   p.push(T(right - 4, mdbTop + 3, 'MAIN DISTRIBUTION BOARD (MDB)', 1.8, { w: 700, c: INK2, ls: 0.15, a: 'end' }));
 
-  // Supply chain.
+  // Supply chain (IEC 60617 symbols, IEC 60364 designations).
+  const main = iecMain(r.mainBreakerSpec);
   const sx = 24;
   p.push(CIRC(sx, 31, 2.8) + `<path d="M${sx - 1.6} 31 q0.8 -1.4 1.6 0 t1.6 0" fill="none" stroke="${INK}" stroke-width="0.3"/>`);
   p.push(T(sx + 4.5, 30.2, 'UTILITY SUPPLY', 1.8, { w: 700 }));
   p.push(TW(sx + 4.5, 32.8, r.supplySystem, 1.45, 34, { c: INK2 }, 2).svg);
-  p.push(L(sx, 33.8, sx, 37));
+  p.push(L(sx, 33.8, sx, 37) + ticks(sx, 35.4, 5, ''));
   p.push(fuse(sx, 37) + T(sx + 3, 40.6, 'Service cut-out (utility)', 1.45, { c: INK2 }));
   p.push(L(sx, 43, sx, 45));
-  p.push(meter(sx, 45) + T(sx + 4.5, 48.6, 'Utility kWh meter', 1.45, { c: INK2 }));
+  p.push(meter(sx, 45) + T(sx + 4.5, 48.6, 'kWh meter (utility)', 1.45, { c: INK2 }));
   p.push(L(sx, 51, sx, 54));
-  p.push(breaker(sx, 54, 'isolator') + T(sx + 3, 57.6, 'Main isolator, 4P', 1.45, { c: INK2 }));
-  p.push(L(sx, 60, sx, 66));
-  p.push(TW(sx + 1.5, 62.4, `Incoming: ${r.supplyCableSpec}`, 1.3, 40, { c: INK3 }, 1).svg);
-  p.push(breaker(sx, 66) + TW(sx + 3, 68.6, `Main switch ${r.mainBreakerSpec.split('+')[0].trim()}`, 1.4, 30, { w: 600 }, 2).svg);
+  p.push(breaker(sx, 54, 'isolator') + T(sx + 3, 57.6, `Switch-disconnector ${main.mccb.split(' ')[1]} A 4P`, 1.45, { c: INK2 }));
+  p.push(L(sx, 60, sx, 66) + ticks(sx, 63, 5, ''));
+  p.push(T(sx + 1.8, 63.4, `3/N/PE  ${iecCable(r.supplyCableSpec, 5)}`, 1.25, { c: INK2 }));
+  p.push(breaker(sx, 66) + T(sx + 3, 69.6, main.mccb, 1.4, { w: 600 }));
   p.push(L(sx, 72, sx, 75));
-  p.push(breaker(sx, 75, 'rcd') + TW(sx + 3, 77.6, r.mainBreakerSpec.includes('+') ? r.mainBreakerSpec.split('+')[1].trim() : '100 mA RCCB (fire protection)', 1.4, 30, { w: 600 }, 2).svg);
+  p.push(breaker(sx, 75, 'rccb') + T(sx + 3, 78.6, main.rccb, 1.4, { w: 600 }));
   p.push(L(sx, 81, sx, busY));
 
-  // Busbar.
+  // Busbars: phases, neutral and protective conductor.
   const busL = A.x + 6;
   p.push(L(busL, busY, right - 4, busY, INK, 1.1));
-  p.push(T(right - 5, busY - 1.2, 'BUSBAR 3-PH + N, 100 A', 1.4, { w: 700, c: INK2, a: 'end' }));
+  p.push(T(busL + 0.4, busY - 1.2, 'L1 / L2 / L3', 1.2, { w: 700 }));
+  p.push(T(right - 5, busY - 1.2, 'BUSBAR L1 / L2 / L3  400 / 230 V 50 Hz  100 A', 1.4, { w: 700, c: INK2, a: 'end' }));
+  const nY = 89;
+  const peY = 93;
+  p.push(L(busL, nY, 34, nY, INK, 0.45) + T(busL - 0.6, nY + 0.5, 'N', 1.3, { w: 700, a: 'end' }));
+  p.push(L(busL, peY, 50, peY, INK, 0.45) + T(busL - 0.6, peY + 0.5, 'PE', 1.3, { w: 700, a: 'end' }));
+  p.push(L(sx + 2.4, 81, sx + 2.4, nY, INK, 0.2, '0.6 0.4'));
 
-  // SPD and earthing off the busbar.
-  const ex = 40;
-  p.push(L(ex, busY, ex, 89) + spd(ex, 89) + L(ex, 93.2, ex, 101) + earth(ex, 101));
-  p.push(T(ex + 3, 91.6, 'SPD Type 2', 1.4, { w: 600 }));
-  p.push(TW(ex + 3, 104, `MET: ${r.earthingSpec}`, 1.35, 30, { c: INK2 }, 3).svg);
+  // SPD to PE, and the main earthing terminal to the electrode.
+  const ex = 42;
+  p.push(L(ex, busY, ex, 85.6) + spd(ex, 85.6) + L(ex, 89.8, ex, peY));
+  p.push(T(ex + 2.6, 88.4, 'SPD Type 2', 1.35, { w: 600 }));
+  const gx = 30;
+  p.push(L(gx, peY, gx, 96) + earth(gx, 96));
+  p.push(TW(gx + 3.4, 100, `MET to earth electrode: ${r.earthingSpec}`, 1.3, 34, { c: INK2 }, 3).svg);
 
   // Solar PV feeding the busbar.
   const px = 66;
   if (pv.enabled) {
     p.push(pvArray(px - 10, 27, 20, 8));
-    p.push(T(px + 11.5, 30, `PV ARRAY ${pv.arrayKwp.toFixed(2)} kWp`, 1.5, { w: 700 }));
-    p.push(T(px + 11.5, 32.4, `${pv.panelCount} × ${pv.panelWattage} Wp, ${pv.stringsCount} string${pv.stringsCount > 1 ? 's' : ''} × ${pv.panelsPerString}`, 1.3, { c: INK2 }));
-    p.push(T(px + 11.5, 34.6, `Voc ${pv.stringVocV} V · Isc ${pv.stringIscA} A`, 1.3, { c: INK2 }));
-    p.push(L(px, 35, px, 39) + breaker(px, 39, 'isolator') + T(px + 3, 42.4, pv.dcIsolatorSpec, 1.3, { c: INK2 }));
+    p.push(T(px + 13.5, 30, `PV GENERATOR ${pv.arrayKwp.toFixed(2)} kWp`, 1.5, { w: 700 }));
+    p.push(T(px + 13.5, 32.4, `${pv.panelCount} × ${pv.panelWattage} Wp, ${pv.stringsCount} string${pv.stringsCount > 1 ? 's' : ''} × ${pv.panelsPerString}`, 1.3, { c: INK2 }));
+    p.push(T(px + 13.5, 34.6, `Voc ${pv.stringVocV} V · Isc ${pv.stringIscA} A`, 1.3, { c: INK2 }));
+    p.push(L(px, 35, px, 39) + breaker(px, 39, 'isolator') + T(px + 3, 42.4, `DC switch-disconnector ${pv.dcIsolatorSpec.replace(/^\d+A\s*/, '')}`, 1.25, { c: INK2 }));
     p.push(T(px - 2, 37.6, pv.dcCableSpec.split(' ')[0] ?? '', 1.2, { c: INK3, a: 'end' }));
     p.push(L(px, 45, px, 48) + inverter(px, 48, 13, 8));
-    p.push(T(px - 7.5, 51, 'HYBRID', 1.3, { w: 700, a: 'end' }) + T(px - 7.5, 53, `INVERTER ${pv.inverterKW.toFixed(1)} kW`, 1.3, { w: 700, a: 'end' }));
+    p.push(T(px - 7.5, 51, 'INVERTER =/~', 1.3, { w: 700, a: 'end' }) + T(px - 7.5, 53, `hybrid ${pv.inverterKW.toFixed(1)} kW`, 1.3, { w: 700, a: 'end' }));
     if (pv.batteryKWh > 0) {
       p.push(L(px + 6.5, 52, px + 11, 52) + battery(px + 12.5, 52));
       p.push(T(px + 18, 51.6, `BATTERY ${pv.batteryKWh} kWh`, 1.3, { w: 700 }) + T(px + 18, 53.6, 'LiFePO4', 1.25, { c: INK2 }));
     }
-    p.push(L(px, 56, px, 74) + breaker(px, 74, 'rcd') + L(px, 80, px, busY));
-    p.push(TW(px + 3, 76.6, `PV AC: ${short(pv.acBreakerSpec)}`, 1.35, 26, { w: 600 }, 2).svg);
+    p.push(L(px, 56, px, 74) + ticks(px, 60, 3, '') + breaker(px, 74, 'rcd') + L(px, 80, px, busY));
+    p.push(T(px + 3, 77.4, iecDevice(pv.acBreakerSpec), 1.35, { w: 600 }));
+    p.push(T(px + 1.6, 60.4, 'L/N/PE', 1.1, { c: INK2 }));
   }
 
   // Room boards and their circuits.
@@ -285,10 +322,12 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
     const cx = colX0 + colW * (i + 0.5);
     const bw = Math.min(colW - 2, 22);
     // Feeder from the MDB.
-    p.push(L(cx, feedTop, cx, 88) + breaker(cx, 88, 'rcd', 0.9));
-    p.push(T(cx + 1.3, 92.6, b.feedDevice.split(' ')[0] || '', 1.2, { w: 700 }));
+    p.push(L(cx, feedTop, cx, 88) + breaker(cx, 88, b.feedDevice.startsWith('MCB') ? 'mcb' : 'rcd', 0.9));
+    p.push(T(cx + 0.8, busY + 2.4, b.phase, 1.1, { w: 700, c: INK2 }));
+    const dev = (b.feedDevice || 'Direct').split(' ');
+    p.push(T(cx + 1.3, 91.4, dev.slice(0, 2).join(' '), 1.1, { w: 700 }) + T(cx + 1.3, 93, dev.slice(2).join(' '), 1.0, { c: INK2 }));
     p.push(L(cx, 93.4, cx, sdbTop));
-    p.push(T(cx - 0.8, sdbTop - 1.4, `${b.feedCable.replace('+E', '')}`, 1.05, { c: INK3, a: 'end', rot: -90 }));
+    p.push(T(cx - 0.8, sdbTop - 1.2, b.feedCable, 1.0, { c: INK3, a: 'end', rot: -90 }));
     // Sub-board.
     p.push(RECT(cx - bw / 2, sdbTop, bw, 7, { fill: '#F6F4EF', sw: 0.35 }));
     p.push(T(cx, sdbTop + 3, b.id, 1.6, { w: 800, a: 'middle' }));
@@ -305,7 +344,8 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
       const x = x0 + cw * j;
       p.push(L(x, subBus, x, 126) + breaker(x, 126, c.deviceKind, 0.75));
       p.push(L(x, 130.5, x, ptTop - 2.4, c.kind === 'L' ? LIGHT : c.kind === 'AC' ? COOL : c.kind === 'WH' ? HOT : POWER, 0.3));
-      p.push(T(x - 0.6, 132.4, `${c.id} · ${c.device.replace(' 30mA', '')} · ${c.cable.replace('+E', '')}`, 1.0, { c: INK, a: 'end', rot: -90 }));
+      p.push(T(x - 0.6, 132.2, `${c.id}  ${c.device}`, 0.95, { c: INK, a: 'end', rot: -90 }));
+      p.push(T(x + 1.5, 132.2, c.cable, 0.9, { c: INK2, a: 'end', rot: -90 }));
       const shown = c.points.length > maxPts ? c.points.slice(0, maxPts - 1) : c.points;
       shown.forEach((pt, k) => {
         const y = ptTop + k * 4.2;
@@ -385,8 +425,9 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   let dy = A.y;
   const supply = dataBox(dx, dy, 74, 'Supply and protection', [
     ['Supply', r.supplySystem],
-    ['Incoming cable', r.supplyCableSpec],
-    ['Main switch', r.mainBreakerSpec],
+    ['Incoming cable', `3/N/PE ${iecCable(r.supplyCableSpec, 5)}`],
+    ['Main switch', main.mccb],
+    ['Main RCD', main.rccb],
     ['Surge protection', r.spdSpec],
     ['Earthing', r.earthingSpec],
     ['Power factor', r.powerFactor.toFixed(2)],
@@ -410,7 +451,7 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
       ['DC isolator', pv.dcIsolatorSpec],
       ['Inverter', `${pv.inverterKW.toFixed(1)} kW hybrid`],
       ['Battery', pv.batteryKWh ? `${pv.batteryKWh} kWh LiFePO4` : 'None'],
-      ['AC breaker', pv.acBreakerSpec],
+      ['AC protection', iecDevice(pv.acBreakerSpec)],
       ['Est. yield', `${pv.estimatedDailyKWh} kWh/day`],
     ]);
     p2.push(sol.svg);
@@ -418,21 +459,23 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   }
   const notes = [
     'All final circuits RCD-protected at 30 mA except lighting; lighting MCBs downstream of the 100 mA main RCCB.',
-    'Cables copper, PVC/XLPE insulated in concealed uPVC conduit; sizes for 30 °C ambient, method B.',
+    'Cables copper, PVC / XLPE insulated, in concealed uPVC conduit; sized to IEC 60364-5-52 for 30 °C ambient, method B. Core colours: L brown / black / grey, N blue, PE green-yellow.',
     'Socket allowance 350 W per twin outlet; kitchen appliances as listed. Max demand uses diversity per circuit.',
     'Phases balanced across sub-boards; check on site and adjust before energising.',
-    'Installation to BS 7671 / MNBC and utility (STELCO / FENAKA) requirements; test and certify before handover.',
+    'Installation to IEC 60364 / MNBC and utility (STELCO / FENAKA) requirements; symbols to IEC 60617. Test and certify before handover.',
   ];
   const nb = dataBox(dx, dy, 74, 'Notes', notes.map((n, i) => [`${i + 1}.`, n] as [string, string]), 1.45);
   if (dy + nb.h < A.y + A.h - 40) p2.push(nb.svg);
 
   const abbr: LegendEntry[] = [
-    { sym: 'text', tag: 'MCB', label: 'Miniature circuit breaker; B / C = trip curve' },
-    { sym: 'text', tag: 'RCBO', label: 'Breaker with built-in RCD (30 mA)' },
+    { sym: 'text', tag: 'MCB', label: 'Circuit-breaker; B / C = tripping curve, then rated current (A)' },
+    { sym: 'text', tag: 'RCBO', label: 'Circuit-breaker with residual-current protection, 30 mA Type A' },
+    { sym: 'text', tag: 'RCCB', label: 'Residual-current switch; Type S = time-delayed' },
+    { sym: 'text', tag: 'MCCB', label: 'Moulded-case circuit-breaker; kA = breaking capacity' },
+    { sym: 'text', tag: '3G2.5', label: 'Cable: 3 cores incl. PE (green-yellow), 2.5 mm² Cu' },
+    { sym: 'text', tag: 'L1-3', label: 'Phase conductors; N neutral; PE protective conductor' },
     { sym: 'text', tag: 'Ib', label: 'Design current, A' },
     { sym: 'text', tag: 'VD', label: 'Voltage drop, % of 230 V' },
-    { sym: 'text', tag: 'L1-3', label: 'Phase the board is connected to' },
-    { sym: 'text', tag: 'mm²+E', label: 'Cable: cores × size, with earth' },
   ];
   const k2 = keySize(abbr)!;
 

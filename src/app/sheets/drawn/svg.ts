@@ -45,28 +45,55 @@ export const CIRC = (cx: number, cy: number, rad: number, o: { fill?: string; st
 
 /* ── Electrical symbols (vertical, top at y, 6 mm long) ─────────────── */
 
-/** Circuit breaker (MCB/MCCB/RCBO): blade lifting off a fixed contact marked ×. `rcd` adds the residual-current ring. */
-export function breaker(x: number, y: number, kind: 'mcb' | 'rcd' | 'isolator' = 'mcb', s = 1) {
+/**
+ * IEC 60617 switching devices, vertical, top at y, 6 mm long (× s):
+ * - mcb: circuit-breaker, switch with × on the fixed contact (S00287)
+ * - rcd: RCBO, circuit-breaker with residual-current element (core + mechanical link)
+ * - rccb: residual-current switch (no ×), with the residual-current element
+ * - isolator: switch-disconnector, bar and load-break circle on the fixed contact (S00288)
+ */
+export function breaker(x: number, y: number, kind: 'mcb' | 'rcd' | 'rccb' | 'isolator' = 'mcb', s = 1) {
   const p: string[] = [];
   p.push(L(x, y, x, y + 1.6 * s));
   p.push(L(x, y + 4.4 * s, x - 1.6 * s, y + 1.9 * s));
   p.push(L(x, y + 4.4 * s, x, y + 6 * s));
-  if (kind === 'isolator') p.push(L(x - 0.9 * s, y + 1.6 * s, x + 0.9 * s, y + 1.6 * s));
-  else p.push(L(x - 0.5 * s, y + 1.1 * s, x + 0.5 * s, y + 2.1 * s, INK, 0.25) + L(x - 0.5 * s, y + 2.1 * s, x + 0.5 * s, y + 1.1 * s, INK, 0.25));
-  if (kind === 'rcd') p.push(`<ellipse cx="${r(x - 0.7 * s)}" cy="${r(y + 3.1 * s)}" rx="${r(1.7 * s)}" ry="${r(2.3 * s)}" fill="none" stroke="${INK}" stroke-width="0.2"/>`);
+  if (kind === 'isolator') {
+    p.push(L(x - 0.9 * s, y + 1.6 * s, x + 0.9 * s, y + 1.6 * s));
+    p.push(CIRC(x, y + 1.6 * s - 0.5 * s, 0.45 * s, { sw: 0.2 }));
+  } else if (kind !== 'rccb') {
+    p.push(L(x - 0.5 * s, y + 1.1 * s, x + 0.5 * s, y + 2.1 * s, INK, 0.25) + L(x - 0.5 * s, y + 2.1 * s, x + 0.5 * s, y + 1.1 * s, INK, 0.25));
+  }
+  if (kind === 'rcd' || kind === 'rccb') {
+    // Residual-current element: a core round the conductor, linked to the contact.
+    p.push(`<ellipse cx="${r(x)}" cy="${r(y + 5.3 * s)}" rx="${r(1.1 * s)}" ry="${r(0.45 * s)}" fill="none" stroke="${INK}" stroke-width="0.22"/>`);
+    p.push(PL([[x - 1.1 * s, y + 5.3 * s], [x - 2.3 * s, y + 5.3 * s], [x - 2.3 * s, y + 3.2 * s], [x - 0.9 * s, y + 3.2 * s]], INK, 0.18, '0.5 0.35'));
+  }
   return p.join('');
 }
 export function fuse(x: number, y: number) {
   return L(x, y, x, y + 6) + RECT(x - 0.9, y + 1, 1.8, 4);
 }
+/** Active-energy meter (IEC 60617 S00932): a box marked kWh, 6 mm tall. */
 export function meter(x: number, y: number, tag = 'kWh') {
-  return CIRC(x, y + 3, 3) + T(x, y + 3.6, tag, 1.6, { w: 700, a: 'middle' });
+  return RECT(x - 3, y + 0.6, 6, 4.8) + T(x, y + 3.6, tag, 1.5, { w: 700, a: 'middle' });
 }
+/** Protective earth (IEC 60417-5019): earth bars in a circle; top at y. */
 export function earth(x: number, y: number) {
-  return L(x, y, x, y + 2) + L(x - 2, y + 2, x + 2, y + 2) + L(x - 1.3, y + 2.8, x + 1.3, y + 2.8) + L(x - 0.6, y + 3.6, x + 0.6, y + 3.6);
+  return L(x, y, x, y + 1.8) + CIRC(x, y + 3.4, 2, { fill: 'none', sw: 0.25 }) + L(x, y + 1.4, x, y + 3) + L(x - 1.3, y + 3, x + 1.3, y + 3) + L(x - 0.85, y + 3.7, x + 0.85, y + 3.7) + L(x - 0.4, y + 4.4, x + 0.4, y + 4.4);
 }
+/** Surge protective device: box with the discharge arrow towards earth. */
 export function spd(x: number, y: number) {
-  return RECT(x - 1.6, y, 3.2, 4.2) + `<path d="M${r(x + 0.6)} ${r(y + 0.6)} l-1 1.4 h1.1 l-1 1.5" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
+  return RECT(x - 1.6, y, 3.2, 4.2) + L(x, y + 0.7, x, y + 3) + `<path d="M${r(x - 0.7)} ${r(y + 2.6)} L${r(x)} ${r(y + 3.6)} L${r(x + 0.7)} ${r(y + 2.6)} Z" fill="${INK}"/>`;
+}
+/** Conductor count on a single line (IEC): oblique strokes and their designation. */
+export function ticks(x: number, y: number, n: number, label: string, vertical = true) {
+  const p: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const o = (i - (n - 1) / 2) * 0.7;
+    p.push(vertical ? L(x - 0.9, y + o + 0.5, x + 0.9, y + o - 0.5, INK, 0.2) : L(x + o - 0.5, y + 0.9, x + o + 0.5, y - 0.9, INK, 0.2));
+  }
+  p.push(vertical ? T(x - 1.4, y + 0.5, label, 1.1, { c: INK2, a: 'end' }) : T(x, y - 1.6, label, 1.1, { c: INK2, a: 'middle' }));
+  return p.join('');
 }
 export function inverter(x: number, y: number, w = 14, h = 9) {
   return RECT(x - w / 2, y, w, h) + L(x - w / 2, y + h, x + w / 2, y) + L(x - w / 2 + 1.2, y + 1.8, x - w / 2 + 4, y + 1.8) + L(x - w / 2 + 1.2, y + 2.6, x - w / 2 + 4, y + 2.6, INK, 0.3, '0.5 0.4') + `<path d="M${r(x + w / 2 - 4.2)} ${r(y + h - 2)} q0.7 -1 1.4 0 t1.4 0" fill="none" stroke="${INK}" stroke-width="0.3"/>`;
@@ -74,10 +101,14 @@ export function inverter(x: number, y: number, w = 14, h = 9) {
 export function battery(x: number, y: number) {
   return L(x - 1.2, y - 2.4, x - 1.2, y + 2.4, INK, 0.35) + L(x + 0.4, y - 1.2, x + 0.4, y + 1.2, INK, 0.8) + L(x + 2, y - 2.4, x + 2, y + 2.4, INK, 0.35) + L(x + 3.6, y - 1.2, x + 3.6, y + 1.2, INK, 0.8);
 }
+/** PV generator (IEC 60617): module box with the incident-light arrows and the DC sign. */
 export function pvArray(x: number, y: number, w = 20, h = 9) {
   let s = RECT(x, y, w, h, { fill: '#DCE4F0', stroke: '#3D5A80' });
   for (let i = 1; i < 4; i++) s += L(x + (w / 4) * i, y, x + (w / 4) * i, y + h, '#3D5A80', 0.15);
   s += L(x, y + h / 2, x + w, y + h / 2, '#3D5A80', 0.15);
+  // Light arrows onto the module.
+  for (const dx of [-3.2, -1.2]) s += L(x + dx - 1.6, y - 2.2, x + dx + 0.6, y - 0.2, INK, 0.22) + `<path d="M${r(x + dx + 0.9)} ${r(y + 0.1)} l-1.2 -0.4 l0.8 -0.8 Z" fill="${INK}"/>`;
+  s += T(x + w + 1, y + h - 1, '=', 2, { w: 700 });
   return s;
 }
 
@@ -85,8 +116,25 @@ export function pvArray(x: number, y: number, w = 20, h = 9) {
 export function lightPt(x: number, y: number, rad = 1.1) {
   return CIRC(x, y, rad, { stroke: LIGHT, sw: 0.25 }) + L(x - rad * 0.7, y - rad * 0.7, x + rad * 0.7, y + rad * 0.7, LIGHT, 0.2) + L(x + rad * 0.7, y - rad * 0.7, x - rad * 0.7, y + rad * 0.7, LIGHT, 0.2);
 }
-export function socketPt(x: number, y: number, rad = 1.2) {
-  return `<path d="M${r(x - rad)} ${r(y + rad * 0.4)} A${rad} ${rad} 0 0 1 ${r(x + rad)} ${r(y + rad * 0.4)} Z" fill="#fff" stroke="${POWER}" stroke-width="0.25"/>` + L(x - rad * 0.35, y - rad * 0.3, x - rad * 0.35, y + rad * 0.1, POWER, 0.2) + L(x + rad * 0.35, y - rad * 0.3, x + rad * 0.35, y + rad * 0.1, POWER, 0.2);
+/** Socket outlet with protective contact (IEC 60617 S00351): semicircle on a stem, PE bar. */
+export function socketPt(x: number, y: number, rad = 1.2, color = POWER) {
+  return L(x, y - rad - 0.7, x, y - rad * 0.2, color, 0.25) + `<path d="M${r(x - rad)} ${r(y + rad * 0.4)} A${rad} ${rad} 0 0 1 ${r(x + rad)} ${r(y + rad * 0.4)}" fill="none" stroke="${color}" stroke-width="0.28"/>` + L(x - rad, y + rad * 0.4, x + rad, y + rad * 0.4, color, 0.28) + L(x - rad * 0.55, y + rad * 0.85, x + rad * 0.55, y + rad * 0.85, color, 0.22);
+}
+/** Lighting switch, one-way (IEC 60617 S00369). */
+export function switchPt(x: number, y: number, color = LIGHT) {
+  return CIRC(x, y, 0.55, { stroke: color, sw: 0.25 }) + L(x + 0.4, y - 0.4, x + 1.5, y - 1.5, color, 0.25) + L(x + 1.5, y - 1.5, x + 1.95, y - 1.05, color, 0.25);
+}
+/** Fan: motor (IEC: circle with M). */
+export function fanPt(x: number, y: number, color = COOL) {
+  return CIRC(x, y, 1.15, { stroke: color, sw: 0.25 }) + T(x, y + 0.45, 'M', 1.25, { w: 700, a: 'middle', c: color });
+}
+/** Equipment box with its designation (AC indoor / outdoor unit). */
+export function equipPt(x: number, y: number, tag: string, color = COOL) {
+  return RECT(x - 1.6, y - 1, 3.2, 2, { stroke: color, sw: 0.28 }) + T(x, y + 0.45, tag, 1.05, { w: 700, a: 'middle', c: color });
+}
+/** Water heater: box with the heating element (IEC 60617 S00616). */
+export function heaterPt(x: number, y: number, color = HOT) {
+  return RECT(x - 1.6, y - 1, 3.2, 2, { stroke: color, sw: 0.28 }) + PL([[x - 1.1, y + 0.5], [x - 0.6, y - 0.5], [x - 0.1, y + 0.5], [x + 0.4, y - 0.5], [x + 0.9, y + 0.5]], color, 0.22);
 }
 export function chip(x: number, y: number, tag: string, color: string, w = 3.6, h = 2) {
   return RECT(x - w / 2, y - h / 2, w, h, { fill: color, stroke: color, sw: 0.1, rx: 0.4 }) + T(x, y + h * 0.28, tag, tag.length > 2 ? h * 0.55 : h * 0.7, { w: 700, c: '#fff', a: 'middle' });
