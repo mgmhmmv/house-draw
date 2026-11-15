@@ -2,189 +2,156 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  ArchStudio tokens. Warm paper neutrals, graphite ink, one blueprint-blue accent.
+  Colors are RGB triplets so Tailwind opacity modifiers work (bg-accent/10).
+*/
 @layer base {
+  :root {
+    --page: 246 245 242;
+    --surface: 255 255 255;
+    --raised: 251 250 248;
+    --sunken: 239 238 234;
+    --line: 231 229 224;
+    --line-strong: 214 211 204;
+    --ink: 26 25 23;
+    --ink-2: 87 83 78;
+    --ink-3: 138 133 125;
+    --accent: 47 85 212;
+    --accent-ink: 255 255 255;
+    --accent-soft: 234 239 253;
+    --ok: 31 138 76;
+    --warn: 183 121 31;
+    --danger: 209 67 67;
+    color-scheme: light;
+  }
+
+  :root[data-theme='dark'] {
+    --page: 17 17 16;
+    --surface: 26 26 24;
+    --raised: 32 32 30;
+    --sunken: 12 12 11;
+    --line: 44 43 40;
+    --line-strong: 62 60 56;
+    --ink: 240 238 233;
+    --ink-2: 182 178 170;
+    --ink-3: 128 124 117;
+    --accent: 120 150 255;
+    --accent-ink: 12 16 32;
+    --accent-soft: 30 38 66;
+    --ok: 74 190 120;
+    --warn: 226 170 80;
+    --danger: 240 110 110;
+    color-scheme: dark;
+  }
+
   html,
   body,
   #root {
-    width: 100%;
     height: 100%;
     margin: 0;
-    padding: 0;
-    background-color: #f8fafc;
-    color: #0f172a;
+  }
+
+  body {
+    background: rgb(var(--page));
+    color: rgb(var(--ink));
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.2);
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: #f1f5f9;
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: 3px;
+    background: rgb(var(--line-strong));
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
   }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+  ::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
 
-/* Light-mode surface & typography overrides for clean CAD workstation contrast */
-.theme-light {
-  background-color: #f8fafc;
-  color: #0f172a;
-}
-
-.theme-light .bg-slate-950,
-.theme-light .bg-slate-950\/80,
-.theme-light .bg-slate-950\/70,
-.theme-light .bg-slate-950\/60,
-.theme-light .bg-slate-950\/40,
-.theme-light .bg-\[\#070b14\],
-.theme-light .bg-\[\#050912\] {
-  background-color: #f8fafc !important;
-}
-
-.theme-light .bg-slate-900,
-.theme-light .bg-slate-900\/95,
-.theme-light .bg-slate-900\/90,
-.theme-light .bg-slate-900\/85,
-.theme-light .bg-slate-900\/70 {
-  background-color: #ffffff !important;
-}
-
-.theme-light .bg-slate-800,
-.theme-light .bg-slate-800\/80,
-.theme-light .bg-slate-800\/70,
-.theme-light .bg-slate-800\/40 {
-  background-color: #f1f5f9 !important;
-}
-
-.theme-light .hover\:bg-slate-800:hover,
-.theme-light .hover\:bg-slate-800\/70:hover,
-.theme-light .hover\:bg-slate-800\/40:hover,
-.theme-light .hover\:bg-slate-700:hover {
-  background-color: #e2e8f0 !important;
-}
-
-.theme-light .border-slate-800,
-.theme-light .border-slate-800\/80,
-.theme-light .border-slate-700,
-.theme-light .border-slate-700\/80,
-.theme-light .border-slate-700\/70,
-.theme-light .border-slate-600 {
-  border-color: #cbd5e1 !important;
-}
-
-.theme-light .divide-slate-800 > :not([hidden]) ~ :not([hidden]),
-.theme-light .divide-slate-800\/80 > :not([hidden]) ~ :not([hidden]) {
-  border-color: #e2e8f0 !important;
-}
-
-.theme-light .text-slate-100,
-.theme-light .text-slate-200 {
-  color: #0f172a !important;
-}
-
-.theme-light .text-slate-300 {
-  color: #334155 !important;
-}
-
-.theme-light .text-slate-400,
-.theme-light .text-slate-500 {
-  color: #64748b !important;
-}
-
-.theme-light .text-cyan-300,
-.theme-light .text-cyan-400 {
-  color: #0369a1 !important;
-}
-
-.theme-light .text-amber-300,
-.theme-light .text-amber-400 {
-  color: #b45309 !important;
-}
-
-.theme-light .text-emerald-300,
-.theme-light .text-emerald-400 {
-  color: #047857 !important;
-}
-
-.theme-light .text-sky-300 {
-  color: #0369a1 !important;
-}
-
-.theme-light .text-rose-400,
-.theme-light .text-rose-300 {
-  color: #be123c !important;
-}
-
-.theme-light .text-purple-300,
-.theme-light .text-purple-400 {
-  color: #7e22ce !important;
-}
-
-.theme-light .bg-emerald-950\/40 {
-  background-color: #ecfdf5 !important;
-  border-color: #6ee7b7 !important;
-}
-
-.theme-light .bg-cyan-500\/20 {
-  background-color: #e0f2fe !important;
-  border-color: #7dd3fc !important;
-}
-
-.theme-light .bg-cyan-600,
-.theme-light .bg-emerald-600,
-.theme-light .bg-purple-600,
-.theme-light .bg-amber-600,
-.theme-light .bg-sky-600 {
-  color: #ffffff !important;
-}
-
-.theme-light .bg-cyan-600 span,
-.theme-light .bg-emerald-600 span,
-.theme-light .bg-purple-600 span {
-  color: #ffffff !important;
-}
-
-.theme-light .text-white:not(.bg-cyan-600):not(.bg-emerald-600):not(.bg-purple-600):not(.bg-amber-600):not(.bg-sky-600) {
-  color: #0f172a !important;
-}
-
-.theme-light button.bg-cyan-600,
-.theme-light button.bg-cyan-600 *,
-.theme-light button.bg-emerald-600,
-.theme-light button.bg-emerald-600 *,
-.theme-light button.bg-purple-600,
-.theme-light button.bg-purple-600 *,
-.theme-light button.bg-amber-600,
-.theme-light button.bg-amber-600 *,
-.theme-light button.bg-sky-600,
-.theme-light button.bg-sky-600 *,
-.theme-light .text-white-keep {
-  color: #ffffff !important;
-}
-
-@media print {
-  body {
-    background: #ffffff !important;
-    color: #000000 !important;
-    overflow: visible !important;
+@layer components {
+  .h-screen-safe {
+    height: 100vh;
+    height: 100dvh;
   }
-  .no-print {
-    display: none !important;
+  .min-h-screen-safe {
+    min-height: 100vh;
+    min-height: 100dvh;
   }
-  .print-only {
-    display: block !important;
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
   }
-  .print-sheet {
-    page-break-after: always;
-    break-after: page;
-    background: #ffffff !important;
-    color: #000000 !important;
-    border: none !important;
-    box-shadow: none !important;
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Faint drafting grid behind empty canvases and the sign-in art. */
+  .bg-blueprint {
+    background-image: linear-gradient(rgb(var(--line) / 0.8) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--line) / 0.8) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+}
+
+@keyframes as-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes as-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes as-slide-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.animate-fade-up {
+  animation: as-fade-up 0.22s ease-out both;
+}
+.animate-sheet-up {
+  animation: as-sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.animate-slide-in {
+  animation: as-slide-in 0.2s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up,
+  .animate-sheet-up,
+  .animate-slide-in {
+    animation: none;
   }
 }

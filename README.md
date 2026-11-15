@@ -18,21 +18,33 @@ An interactive, web-deployable architectural & structural engineering CAD/BIM st
   - `Q-101`: Live Bill of Quantities (BOQ), Raw Civil Material Take-Off & Editable Unit Rates
 - **Engineering Exports**: AutoCAD `.DXF` (R12/2000 layers), Vector `.SVG`, `.CSV` BOQ, `.JSON` BIM Save/Load, and Print/PDF Drawing Binder (`A-000`).
 
-## Local Development & Deployment
+## Stack
+
+- **Web app** (`src/app/`): React 18 + Tailwind, responsive from phone to large desktop. Projects dashboard, templates, and a drawing workspace (sheet navigator, tool dock, properties inspector, AI Architect panel).
+- **Engine** (`src/engine`, `src/model`, `src/ai`, `src/components`): geometry, MEP, BOQ, projections and the CAD/3D/schematic views.
+- **API** (`worker/`): a Cloudflare Worker serving `/api/*` and the built app as static assets.
+  - **D1** (`DB`): users, sessions, project metadata, file records. Schema in `migrations/`.
+  - **R2** (`FILES`): project models (`projects/<id>/model.json`) and uploaded files.
+  - Email/password auth (PBKDF2, HttpOnly session cookie). The Claude API key stays on the Worker.
+
+## Local development
 
 ```bash
 npm install
-npm run dev
+cp .dev.vars.example .dev.vars        # add ANTHROPIC_API_KEY
+npm run db:migrate                    # local D1 (stored in .wrangler/)
+npm run dev:api                       # Worker on :8787 (uses local D1 + R2)
+npm run dev                           # Vite on :5173, proxies /api to the Worker
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173` and create an account.
 
-## Web Deployment (Static Bundle)
-
-This app requires zero backend services to run core CAD, 3D, Schematics, Sketch Conversion, and BOQ features:
+## Deploy to Cloudflare
 
 ```bash
-npm run build
+wrangler d1 create archstudio          # put the id in wrangler.jsonc
+wrangler r2 bucket create archstudio-files
+wrangler d1 migrations apply archstudio --remote
+wrangler secret put ANTHROPIC_API_KEY
+npm run deploy
 ```
-
-Deploy the generated `dist/` folder directly to **Vercel**, **Netlify**, **Cloudflare Pages**, **GitHub Pages**, or any static web server / CDN.

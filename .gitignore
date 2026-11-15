@@ -7,3 +7,6 @@ dist/
 exports/
 tsconfig.tsbuildinfo
 
+node_modules
+.wrangler/
+.dev.vars
