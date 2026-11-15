@@ -6,6 +6,9 @@ import { useMediaQuery } from '../../lib/hooks';
 import { INK, INK_2, INK_3, PAPER, WEIGHT } from '../style';
 import { usePrintMode } from '../printMode';
 import { useViewport } from '../useViewport';
+import * as THREE from 'three';
+import { buildScene } from '../three/buildScene';
+import { vectorElevation, type VectorDrawing } from '../three/vectorize';
 import { buildFrame } from '../model3d/faces';
 import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
 import { levelBounds } from '../model3d/faces';
@@ -34,6 +37,8 @@ interface Placed extends Annot {
   key: string;
   title: string;
   drawing: Drawing;
+  /** Elevations: the 3D model seen square-on, as vector drawing. */
+  vector?: VectorDrawing | null;
   section: boolean;
   ox: number;
   oy: number;
@@ -69,7 +74,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
   const [choice, setChoice] = useState(() => (wide ? 'all' : options[1]?.id ?? 'all'));
 
   const drawings = useMemo(() => {
-    const out: ({ key: string; title: string; drawing: Drawing; section: boolean } & Annot)[] = [];
+    const out: ({ key: string; title: string; drawing: Drawing; section: boolean; vector?: VectorDrawing | null } & Annot)[] = [];
     const b0 = levelBounds(model.levels[0]);
     const corners = [
       { x: b0.minX, y: b0.minY },
@@ -78,6 +83,9 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
       { x: b0.minX, y: b0.maxY },
     ];
     if (mode === 'elevations') {
+      // The 3D model (building, roof, fittings, outdoor objects), built once for all four views.
+      const parts = buildScene(model, false);
+      const roots: THREE.Object3D[] = [...parts.levels, parts.roof, parts.site];
       const cxm = (frame.bounds.minX + frame.bounds.maxX) / 2;
       const cym = (frame.bounds.minY + frame.bounds.maxY) / 2;
       for (const e of ELEVATIONS) {
@@ -86,15 +94,26 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
         const view = { look: e.look, origin };
         const us = corners.map((c) => uAt(view, c));
         const axes = e.look.y !== 0 ? model.grid.xAxes.map((a) => ({ label: a.label, p: { x: a.coord, y: 0 } })) : model.grid.yAxes.map((a) => ({ label: a.label, p: { x: 0, y: a.coord } }));
+        const drawing = project(frame, view);
+        const vector = vectorElevation(roots, view);
+        // Lay out by what is actually drawn (trees and gates can reach past the building).
+        const d2 = vector ? { ...drawing, uMin: Math.min(drawing.uMin, vector.uMin + 0.2), uMax: Math.max(drawing.uMax, vector.uMax - 0.2), zMax: Math.max(drawing.zMax, vector.zMax) } : drawing;
         out.push({
           key: e.id,
           title: e.name,
-          drawing: project(frame, view),
+          drawing: d2,
+          vector,
           section: false,
           grid: axes.map((a) => ({ label: a.label, u: uAt(view, a.p) })),
           width: [Math.min(...us), Math.max(...us)],
         });
       }
+      roots.forEach((r) =>
+        r.traverse((o) => {
+          if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();
+        })
+      );
+      parts.materials.forEach((m) => m.dispose());
     } else {
       for (const s of sections) {
         if (choice !== 'all' && choice !== s.id) continue;
@@ -229,7 +248,15 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       {/* Ground */}
       {p.section && <rect x={u0 - 1.5} y={0} width={u1 - u0 + 3} height={0.7} fill="url(#as-earth)" />}
       {/* Faces, each followed by the shadow that falls on it */}
-      {d.faces.map((f, i) => {
+      {p.vector ? (
+        <g>
+          {p.vector.fills.map((fl, i) => (
+            <path key={i} d={fl.d} fill={fl.fill} fillOpacity={fl.opacity} stroke={fl.opacity < 1 ? 'none' : fl.fill} strokeWidth={0.35} strokeLinejoin="round" />
+          ))}
+          <path d={p.vector.edges} fill="none" stroke={INK_2} strokeWidth={0.55} strokeLinecap="round" />
+          <line x1={u0 - 1.2} y1={0} x2={u1 + 1.2} y2={0} stroke={INK} strokeWidth={1.8} />
+        </g>
+      ) : d.faces.map((f, i) => {
         const st = FACE_STROKE[f.kind] ?? FACE_STROKE.wall;
         return (
           <g key={i}>
@@ -241,7 +268,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
         );
       })}
       {/* Profile: the building's outline, heaviest line after the ground */}
-      <path d={d.profile} fill="none" stroke={INK} strokeWidth={1.7} strokeLinejoin="round" />
+      {!p.vector && <path d={d.profile} fill="none" stroke={INK} strokeWidth={1.7} strokeLinejoin="round" />}
 
       {/* Scale figures in front of the building (elevations only) */}
       {!p.section && (
