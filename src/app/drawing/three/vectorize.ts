@@ -126,6 +126,51 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
   const f = (v: number) => v.toFixed(3);
   let zMax = 0;
 
+  type P = { u: number; h: number; z: number };
+  const mid = (p: P, q: P): P => ({ u: (p.u + q.u) / 2, h: (p.h + q.h) / 2, z: (p.z + q.z) / 2 });
+  // Fills: one pixel is enough (edges use the neighbourhood test above).
+  const seen = (u: number, h: number, z: number) => z <= depthAt(u, h) + tol;
+  let budget = 120000; // pieces; a safety net for very detailed scenes
+  const emit = (pa: P, pb: P, pc: P, sh: { fill: string; opacity: number }, depth: number) => {
+    const lab = Math.hypot(pa.u - pb.u, pa.h - pb.h);
+    const lbc = Math.hypot(pb.u - pc.u, pb.h - pc.h);
+    const lca = Math.hypot(pc.u - pa.u, pc.h - pa.h);
+    const size = Math.max(lab, lbc, lca);
+    // Sample the triangle on a grid fine enough not to miss thin visible strips.
+    const n = Math.max(2, Math.min(8, Math.ceil(size / (px * 5))));
+    let vis = 0;
+    let all = 0;
+    for (let i = 0; i <= n; i++)
+      for (let j = 0; j <= n - i; j++) {
+        const wa = (i + 0.15) / (n + 0.45);
+        const wb = (j + 0.15) / (n + 0.45);
+        const wc = 1 - wa - wb;
+        all++;
+        if (seen(pa.u * wa + pb.u * wb + pc.u * wc, pa.h * wa + pb.h * wb + pc.h * wc, pa.z * wa + pb.z * wb + pc.z * wc)) vis++;
+      }
+    if (vis === 0) return;
+    if (vis < all && depth < 16 && size > px * 3 && budget > 0) {
+      // Split across the longest edge: two pieces, so long thin parts don't explode.
+      budget--;
+      if (lab >= lbc && lab >= lca) {
+        const m = mid(pa, pb);
+        emit(pa, m, pc, sh, depth + 1);
+        emit(m, pb, pc, sh, depth + 1);
+      } else if (lbc >= lca) {
+        const m = mid(pb, pc);
+        emit(pa, pb, m, sh, depth + 1);
+        emit(pa, m, pc, sh, depth + 1);
+      } else {
+        const m = mid(pc, pa);
+        emit(pa, pb, m, sh, depth + 1);
+        emit(m, pb, pc, sh, depth + 1);
+      }
+      return;
+    }
+    zMax = Math.max(zMax, pa.h, pb.h, pc.h);
+    tris.push({ d: `M${f(pa.u)} ${f(-pa.h)}L${f(pb.u)} ${f(-pb.h)}L${f(pc.u)} ${f(-pc.h)}Z`, ...sh, z: (pa.z + pb.z + pc.z) / 3 });
+  };
+
   for (const root of roots)
     root.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -162,16 +207,11 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
         const pc = proj(c);
         const area2 = Math.abs((pb.u - pa.u) * (pc.h - pa.h) - (pc.u - pa.u) * (pb.h - pa.h));
         if (area2 < 1e-6) continue;
-        // Visible anywhere? Centroid and points just inside each corner.
-        const cu = (pa.u + pb.u + pc.u) / 3;
-        const ch = (pa.h + pb.h + pc.h) / 3;
-        const cz = (pa.z + pb.z + pc.z) / 3;
-        const samples = [[cu, ch, cz], ...[pa, pb, pc].map((p) => [p.u + (cu - p.u) * 0.2, p.h + (ch - p.h) * 0.2, p.z + (cz - p.z) * 0.2])];
-        if (!samples.some(([u, hh, z]) => visible(u, hh, z))) continue;
         const sh = shadeOf(mat, n, light);
         if (!sh) continue;
-        zMax = Math.max(zMax, pa.h, pb.h, pc.h);
-        tris.push({ d: `M${f(pa.u)} ${f(-pa.h)}L${f(pb.u)} ${f(-pb.h)}L${f(pc.u)} ${f(-pc.h)}Z`, ...sh, z: Math.max(pa.z, pb.z, pc.z) * 0.5 + cz * 0.5 });
+        // Keep only the visible parts: wholly visible triangles stay whole, wholly hidden ones
+        // go, and partly hidden ones are split until each piece is one or the other.
+        emit(pa, pb, pc, sh, 0);
       }
 
       // Visible edges.
@@ -209,12 +249,13 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
       }
     });
 
-  // Far to near; neighbouring triangles of one colour become one path.
+  // Far to near (boundary pieces can still overlap a little, so order matters); neighbouring
+  // pieces of one colour share a path.
   tris.sort((x, y) => y.z - x.z);
   const fills: VectorDrawing['fills'] = [];
   for (const t of tris) {
-    const lastF = fills[fills.length - 1];
-    if (lastF && lastF.fill === t.fill && lastF.opacity === t.opacity) lastF.d += t.d;
+    const last = fills[fills.length - 1];
+    if (last && last.fill === t.fill && last.opacity === t.opacity) last.d += t.d;
     else fills.push({ d: t.d, fill: t.fill, opacity: t.opacity });
   }
   return { fills, edges: edgeParts.join(''), uMin, uMax, zMax };
