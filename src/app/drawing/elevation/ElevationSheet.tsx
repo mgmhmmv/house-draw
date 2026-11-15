@@ -243,6 +243,15 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       {/* Profile: the building's outline, heaviest line after the ground */}
       <path d={d.profile} fill="none" stroke={INK} strokeWidth={1.7} strokeLinejoin="round" />
 
+      {/* Scale figures in front of the building (elevations only) */}
+      {!p.section && (
+        <g>
+          <ScaleFigure u={u0 + 0.9} h={1.78} kind="man" />
+          <ScaleFigure u={u0 + 1.55} h={1.65} kind="woman" />
+          <ScaleFigure u={u1 - 1.0} h={1.2} kind="child" />
+        </g>
+      )}
+
       {/* Grid bubbles */}
       {p.grid.map((g) => {
         const top = d.zMax + 1.0;
@@ -427,4 +436,34 @@ function wrap(text: string, max: number): string[] {
   }
   if (cur) lines.push(cur);
   return lines;
+}
+
+/**
+ * A standing figure for scale, drawn as an outline the usual way on elevations: a man 1.78 m,
+ * a woman 1.65 m, a child 1.20 m. Coordinates: u along the elevation, y = -height.
+ */
+function ScaleFigure({ u, h, kind }: { u: number; h: number; kind: 'man' | 'woman' | 'child' }) {
+  // Body outline in fractions of height (x across, y up), arms hanging.
+  const man: [number, number][] = [
+    [-0.045, 0.862], [-0.125, 0.835], [-0.15, 0.79], [-0.165, 0.5], [-0.135, 0.495], [-0.12, 0.73], [-0.1, 0.56],
+    [-0.095, 0.015], [-0.02, 0.015], [-0.014, 0.47], [0.014, 0.47], [0.02, 0.015], [0.095, 0.015], [0.1, 0.56],
+    [0.12, 0.73], [0.135, 0.495], [0.165, 0.5], [0.15, 0.79], [0.125, 0.835], [0.045, 0.862],
+  ];
+  const woman: [number, number][] = [
+    [-0.04, 0.86], [-0.11, 0.835], [-0.135, 0.79], [-0.15, 0.51], [-0.122, 0.505], [-0.105, 0.72], [-0.085, 0.6],
+    [-0.15, 0.3], [-0.06, 0.3], [-0.055, 0.015], [-0.015, 0.015], [-0.012, 0.3], [0.012, 0.3], [0.015, 0.015],
+    [0.055, 0.015], [0.06, 0.3], [0.15, 0.3], [0.085, 0.6], [0.105, 0.72], [0.122, 0.505], [0.15, 0.51],
+    [0.135, 0.79], [0.11, 0.835], [0.04, 0.86],
+  ];
+  const head = kind === 'child' ? 0.165 : 0.13;
+  const body = (kind === 'woman' ? woman : man).map(([x, y]) => [x * (kind === 'child' ? 1.15 : 1), y * (kind === 'child' ? (1 - head) / 0.87 : 1)] as [number, number]);
+  const d = body.map(([x, y], i) => `${i ? 'L' : 'M'}${(u + x * h).toFixed(3)} ${(-y * h).toFixed(3)}`).join(' ') + ' Z';
+  const r = (head * h) / 2;
+  const neckTop = body[0][1] * h;
+  return (
+    <g fill="rgba(255,255,255,0.88)" stroke={INK_2} strokeWidth={0.7} strokeLinejoin="round">
+      <path d={d} />
+      <ellipse cx={u} cy={-(neckTop + r * 0.95)} rx={r * 0.82} ry={r} />
+    </g>
+  );
 }

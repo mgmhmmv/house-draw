@@ -64,6 +64,7 @@ import { Assistant, type AboutRef, type AssistantHandle } from './Assistant';
 import { HistoryPanel } from './HistoryPanel';
 import { LibraryPanel } from './LibraryPanel';
 import { assetFor, type AssetDef } from '../drawing/assets/catalog';
+import { placeAssetAt } from '../drawing/assets/placement';
 import { Inspector, type Selection } from './Inspector';
 import { SheetView } from './SheetView';
 import { SHEET_GROUPS, SHEETS, sheetBySlug, type SheetDef } from './sheets';
@@ -183,6 +184,13 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   useEffect(() => {
     if (tool !== 'select') setPlacing(null);
   }, [tool]);
+
+  const openAssistant = () => {
+    if (isDesktop) {
+      setPanel('assistant');
+      setPanelOpen(true);
+    } else setMobileSheet('assistant');
+  };
 
   /** Start placing a library item; the plan is where things are placed. */
   const pickAsset = useCallback(
@@ -529,10 +537,26 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           onAsk: () => {
             if (!selection) return;
             assistantRef.current?.attach(describeSelection(model, selection));
-            if (isDesktop) {
-              setPanel('assistant');
-              setPanelOpen(true);
-            } else setMobileSheet('assistant');
+            openAssistant();
+          },
+          onPlaceAt: (def, hit, viewer) => {
+            if (!model) return;
+            const surface = hit.surface === 'object' ? 'floor' : hit.surface;
+            const r = placeAssetAt(model, hit.levelIndex, def, hit.at, surface, viewer);
+            if (!r) return toast(`Couldn't fit ${def.name} there`);
+            commit(r.next, { label: `Added ${def.name}` });
+            setSelection({ id: r.id, kind: r.kind });
+            toast(`${def.name} placed · Esc leaves walk`);
+          },
+          onAskAt: (hit, viewer) => {
+            const r2 = (v: number) => Math.round(v * 100) / 100;
+            assistantRef.current?.attach({
+              kind: `${hit.surface}_spot`,
+              id: hit.pick?.id ?? `${hit.surface}@${r2(hit.at.x)},${r2(hit.at.y)}`,
+              label: `${hit.surface === 'floor' && hit.levelIndex === 0 && !hit.pick ? 'Ground' : hit.surface[0].toUpperCase() + hit.surface.slice(1)} at (${r2(hit.at.x)}, ${r2(hit.at.y)})`,
+              details: { surface: hit.surface, point: { x: r2(hit.at.x), y: r2(hit.at.y) }, level: hit.levelIndex, element: hit.pick, viewerAt: { x: r2(viewer.x), y: r2(viewer.y) }, hint: 'Place things at this point; for a wall, back against the wall face that faces the viewer. If nothing in the library fits, create_asset then add_item.' },
+            });
+            openAssistant();
           },
         }}
         placing={preview ? null : placing}

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Footprints, Maximize2, MessageSquarePlus, MousePointer2, Scissors, Sun, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Footprints, Maximize2, MessageSquarePlus, MousePointer2, Plus, Scissors, Search, Sparkles, Sun, X } from 'lucide-react';
 import type { BuildingProject, SelectableElementKind } from '../../../model/types';
-import { resolvePick, selectionOutline } from './pick';
+import { resolveHit, resolvePick, selectionOutline, type WalkHit } from './pick';
+import { ASSETS, type AssetDef } from '../assets/catalog';
+import { fitsSurface } from '../assets/placement';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
 import { WalkController, type Move } from './walk';
@@ -27,6 +29,10 @@ export interface ModelViewSelect {
   onPick: (id: string | null, kind?: SelectableElementKind) => void;
   /** Ask the AI about the selected element. */
   onAsk: () => void;
+  /** Walk mode: place a library item where the user clicked. */
+  onPlaceAt?: (def: AssetDef, hit: WalkHit, viewer: { x: number; y: number }) => void;
+  /** Walk mode: ask the AI about a spot (e.g. to make a custom object for it). */
+  onAskAt?: (hit: WalkHit, viewer: { x: number; y: number }) => void;
 }
 
 export function ModelView({ model, select }: { model: BuildingProject; select?: ModelViewSelect }) {
@@ -115,6 +121,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.002;
     ground.receiveShadow = true;
+    ground.userData.kind = 'ground';
     scene.add(ground);
     const grid = new THREE.GridHelper(120, 120, '#DCD7CC', '#E4E0D6');
     (grid.material as THREE.Material).transparent = true;
@@ -220,7 +227,8 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     const onDown = (e: PointerEvent) => (down = { x: e.clientX, y: e.clientY });
     const onUp = (e: PointerEvent) => {
       const sel = selectRef.current;
-      if (!down || !sel?.active || walkRef.current?.active) return;
+      const walkingNow = !!walkRef.current?.active;
+      if (!down || !sel || (!sel.active && !walkingNow)) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       down = null;
       if (moved > 4 || e.button !== 0) return;
@@ -229,8 +237,18 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), c.camera);
       const targets: THREE.Object3D[] = [];
       c.parts?.levels.forEach((g) => g.visible && targets.push(g));
-      if (c.parts?.roof.visible) targets.push(c.parts.roof);
+      if (c.parts?.roof.visible && !walkingNow) targets.push(c.parts.roof);
+      if (walkingNow) targets.push(c.ground);
       const hits = ray.intersectObjects(targets, true).filter((h) => (h.object as THREE.Mesh).isMesh && h.object.visible && isShown(h, c.renderer));
+      if (walkingNow) {
+        // Walk mode: pick what you look at, and remember the spot for placing things there.
+        const h = hits.find((x) => x.object.userData.kind !== 'glass') ?? hits[0];
+        if (!h) return setWalkHit(null);
+        const wh = resolveHit(modelRef.current, h);
+        setWalkHit(wh);
+        sel.onPick(wh.pick?.id ?? null, wh.pick?.kind);
+        return;
+      }
       for (const h of hits) {
         const p = resolvePick(modelRef.current, h);
         if (p) return sel.onPick(p.id, p.kind);
@@ -246,6 +264,19 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
       el.removeEventListener('pointerup', onUp);
     };
   }, []);
+
+  const [walkHit, setWalkHit] = useState<WalkHit | null>(null);
+  const [placeOpen, setPlaceOpen] = useState(false);
+  useEffect(() => {
+    if (!walking) {
+      setWalkHit(null);
+      setPlaceOpen(false);
+    }
+  }, [walking]);
+  const viewer = () => {
+    const p = ctx.current?.camera.position;
+    return p ? { x: p.x, y: p.z } : { x: 0, y: 0 };
+  };
 
   // Outline the selection.
   const selId = select?.selected?.id;
@@ -423,6 +454,30 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
             W A S D to walk · double-click to step there · drag to look · Shift to hurry · Esc to leave
           </div>
           <WalkPad onPress={(m, d) => walkRef.current?.press(m, d)} />
+          {walkHit && select && (
+            <WalkActions
+              hit={walkHit}
+              open={placeOpen}
+              onOpen={setPlaceOpen}
+              onAsk={() => {
+                if (walkHit.pick) select.onAsk();
+                else select.onAskAt?.(walkHit, viewer());
+              }}
+              onCustom={() => {
+                setPlaceOpen(false);
+                select.onAskAt?.(walkHit, viewer());
+              }}
+              onPlace={(def) => {
+                setPlaceOpen(false);
+                select.onPlaceAt?.(def, walkHit, viewer());
+              }}
+              onClose={() => {
+                setWalkHit(null);
+                setPlaceOpen(false);
+                select.onPick(null);
+              }}
+            />
+          )}
         </>
       )}
 
@@ -621,4 +676,81 @@ function isShown(h: THREE.Intersection, renderer: THREE.WebGLRenderer) {
   const mat = (h.object as THREE.Mesh).material as THREE.Material | THREE.Material[];
   const planes = (Array.isArray(mat) ? mat[0] : mat)?.clippingPlanes ?? renderer.clippingPlanes;
   return !planes?.length || planes.every((p) => p.distanceToPoint(h.point) >= -1e-3);
+}
+
+const SURFACE_LABEL = { wall: 'Wall', floor: 'Floor', ceiling: 'Ceiling', object: 'Object' } as const;
+const KIND_LABEL: Record<string, string> = { wall: 'Wall', opening: 'Door / window', room: 'Floor', furniture: 'Object', mep_node: 'Fixture', solar_panel: 'Solar panel' };
+
+/** Walk mode: what you clicked, with Ask AI and Place here (items that fit that surface). */
+function WalkActions({
+  hit,
+  open,
+  onOpen,
+  onAsk,
+  onPlace,
+  onCustom,
+  onClose,
+}: {
+  hit: WalkHit;
+  open: boolean;
+  onOpen: (v: boolean) => void;
+  onAsk: () => void;
+  onPlace: (def: AssetDef) => void;
+  onCustom: () => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const surface = hit.surface === 'object' ? null : hit.surface;
+  const items = useMemo(() => {
+    if (!surface) return [];
+    const t = q.trim().toLowerCase();
+    return ASSETS.filter((a) => fitsSurface(a, surface) && (!t || `${a.name} ${a.keywords ?? ''} ${a.category}`.toLowerCase().includes(t))).slice(0, 80);
+  }, [surface, q, open]);
+  const label = hit.pick ? KIND_LABEL[hit.pick.kind] ?? SURFACE_LABEL[hit.surface] : hit.surface === 'floor' && hit.levelIndex === 0 ? 'Ground' : SURFACE_LABEL[hit.surface];
+  return (
+    <div className="absolute bottom-[84px] left-1/2 z-20 w-[min(420px,calc(100%-24px))] -translate-x-1/2 lg:bottom-16">
+      {open && surface && (
+        <div className="mb-2 overflow-hidden rounded-[14px] border border-line bg-surface shadow-float animate-fade-up">
+          <div className="relative border-b border-line p-2">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-3" />
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder={`Items for the ${surface}…`}
+              className="h-8 w-full rounded-[9px] bg-raised pl-7 pr-2 text-[13px] focus:outline-none"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto p-1">
+            {items.map((a) => (
+              <button key={a.id} onClick={() => onPlace(a)} className="flex w-full items-center gap-2 rounded-[9px] px-2.5 py-1.5 text-left text-[13px] hover:bg-sunken">
+                <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                <span className="font-mono text-[10.5px] text-ink-3">
+                  {a.w.toFixed(2)}×{a.d.toFixed(2)}
+                </span>
+              </button>
+            ))}
+            {!items.length && <p className="px-2.5 py-2 text-[13px] text-ink-3">Nothing in the library fits.</p>}
+            <button onClick={onCustom} className="mt-0.5 flex w-full items-center gap-2 rounded-[9px] border-t border-line px-2.5 py-2 text-left text-[13px] font-medium text-accent hover:bg-accent-soft">
+              <Sparkles className="h-3.5 w-3.5" /> Make a custom one with AI…
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 rounded-[14px] border border-line bg-surface/95 p-1.5 pl-3 shadow-float backdrop-blur">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
+        <button onClick={onAsk} className="flex h-8 items-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium text-accent hover:bg-accent-soft">
+          <MessageSquarePlus className="h-4 w-4" /> Ask AI
+        </button>
+        {surface && (
+          <button onClick={() => onOpen(!open)} className={cx('flex h-8 items-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium', open ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken hover:text-ink')}>
+            <Plus className="h-4 w-4" /> Place here
+          </button>
+        )}
+        <button onClick={onClose} aria-label="Clear" className="flex h-8 w-8 items-center justify-center rounded-[9px] text-ink-3 hover:bg-sunken hover:text-ink">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
 }

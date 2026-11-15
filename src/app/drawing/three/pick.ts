@@ -94,6 +94,30 @@ export function resolvePick(model: BuildingProject, hit: THREE.Intersection): Pi
   return null;
 }
 
+/** A click in walk mode: what was hit, which kind of surface, and where (plan metres). */
+export interface WalkHit {
+  pick: Picked | null;
+  surface: 'wall' | 'floor' | 'ceiling' | 'object';
+  at: { x: number; y: number };
+  levelIndex: number;
+}
+
+export function resolveHit(model: BuildingProject, hit: THREE.Intersection): WalkHit {
+  const kind = (hit.object.userData.kind as string | undefined) ?? '';
+  const lvl = levelAt(model, hit.point.y);
+  const levelIndex = Math.max(0, model.levels.indexOf(lvl));
+  const at = { x: hit.point.x, y: hit.point.z };
+  if (kind === 'ground') return { pick: null, surface: 'floor', at, levelIndex: 0 };
+  const pick = resolvePick(model, hit);
+  let o: THREE.Object3D | null = hit.object;
+  while (o) {
+    if (o.userData.pick) return { pick, surface: 'object', at, levelIndex };
+    o = o.parent;
+  }
+  const surface = kind === 'ceiling' ? 'ceiling' : kind === 'floor' || kind === 'slab' ? 'floor' : 'wall';
+  return { pick, surface, at, levelIndex };
+}
+
 /** An outline box around the selected element, in world space. */
 export function selectionOutline(model: BuildingProject, id: string, kind: SelectableElementKind | undefined, color = '#2F55D4'): THREE.Object3D | null {
   const mat = new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
