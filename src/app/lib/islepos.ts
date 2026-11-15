@@ -10,6 +10,10 @@ export interface IsleCustomer {
   tin: string | null;
   notes: string | null;
   existing?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  /** Any further fields IslePOS returns (island, atoll, balance…) are shown as they come. */
+  [extra: string]: unknown;
 }
 
 export interface IsleLine {
@@ -86,9 +90,9 @@ export const islepos = {
   disconnect: () => req<Connection>('DELETE', '/api/integrations/islepos'),
 
   products: (search = '') => req<{ data: IsleProduct[] }>('GET', `/api/islepos/products${q({ search, limit: 50 })}`),
-  customers: (search = '') => req<{ data: IsleCustomer[]; total: number }>('GET', `/api/islepos/customers${q({ search, limit: 100 })}`),
+  customers: (search = '', offset = 0, limit = 100) => req<{ data: IsleCustomer[]; total: number }>('GET', `/api/islepos/customers${q({ search, limit, offset })}`),
   customer: (id: string) => req<IsleCustomer>('GET', `/api/islepos/customers/${id}`),
-  createCustomer: (c: { name: string; mobile?: string; email?: string; address?: string }) => req<IsleCustomer>('POST', '/api/islepos/customers', c),
+  createCustomer: (c: { name: string; mobile?: string; email?: string; address?: string; tin?: string; notes?: string }) => req<IsleCustomer>('POST', '/api/islepos/customers', c),
   updateCustomer: (id: string, c: Partial<IsleCustomer>) => req<IsleCustomer>('PATCH', `/api/islepos/customers/${id}`, c),
 
   doc: (kind: 'quote' | 'invoice', id: string) => req<IsleDoc>('GET', `/api/islepos/${kind}s/${id}`),

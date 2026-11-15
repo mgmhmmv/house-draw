@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Mail, Phone, Plus, Search, Users } from 'lucide-react';
+import { Plus, Search, Users } from 'lucide-react';
 import { ApiError } from '../lib/api';
 import { islepos, type Connection, type IsleCustomer } from '../lib/islepos';
 import { Link } from '../lib/router';
@@ -82,22 +82,32 @@ export function IsleposSettings() {
   );
 }
 
-/** Clients: the customers this studio keeps in IslePOS. */
+/** Fields IslePOS already shows elsewhere, or that are internal. */
+const HIDDEN = new Set(['id', 'name', 'mobile', 'email', 'address', 'tin', 'notes', 'existing', 'created_at', 'updated_at']);
+const label = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+/** Clients: the customers in the studio's IslePOS books, with their full details. */
 export function ClientsPage() {
   const [conn, setConn] = useState<Connection | null>(null);
   const [list, setList] = useState<IsleCustomer[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
-  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<IsleCustomer | 'new' | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     islepos.connection().then(setConn).catch(() => setConn({ connected: false }));
   }, []);
   useEffect(() => {
     if (!conn?.connected) return;
+    setList(null);
     const t = setTimeout(() => {
       islepos
         .customers(search)
-        .then((r) => setList(r.data))
+        .then((r) => {
+          setList(r.data);
+          setTotal(r.total ?? r.data.length);
+        })
         .catch((e) => {
           setList([]);
           toast(e instanceof ApiError ? e.message : 'Could not load clients');
@@ -106,15 +116,34 @@ export function ClientsPage() {
     return () => clearTimeout(t);
   }, [conn, search]);
 
+  const more = async () => {
+    if (!list) return;
+    setLoadingMore(true);
+    try {
+      const r = await islepos.customers(search, list.length);
+      setList([...list, ...r.data]);
+      setTotal(r.total ?? total);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const saved = (c: IsleCustomer) => {
+    setList((l) => {
+      const rest = (l ?? []).filter((x) => x.id !== c.id);
+      return editing === 'new' ? [c, ...rest] : (l ?? []).map((x) => (x.id === c.id ? c : x));
+    });
+  };
+
   return (
     <div className="mx-auto w-full max-w-[1280px] px-4 py-6 sm:px-8 lg:px-12 lg:py-10">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-[28px] font-semibold tracking-tight sm:text-[32px]">Clients</h1>
-          <p className="mt-1 text-sm text-ink-3">Kept in IslePOS, so quotes and invoices land in your books.</p>
+          <p className="mt-1 text-sm text-ink-3">Your IslePOS customers. Changes here are saved to IslePOS.</p>
         </div>
         {conn?.connected && (
-          <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)}>
+          <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>
             New client
           </Button>
         )}
@@ -137,9 +166,12 @@ export function ClientsPage() {
         </div>
       ) : (
         <>
-          <div className="relative mt-6 sm:w-80">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" />
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, mobile, email" className="pl-10" />
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <div className="relative w-full sm:w-80">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, mobile, email" className="pl-10" />
+            </div>
+            {list && <span className="text-[13px] text-ink-3">{total.toLocaleString()} {total === 1 ? 'client' : 'clients'}</span>}
           </div>
           <div className="mt-5 overflow-hidden rounded-card border border-line bg-surface">
             {list === null ? (
@@ -147,97 +179,161 @@ export function ClientsPage() {
                 <Spinner />
               </div>
             ) : list.length === 0 ? (
-              <p className="px-5 py-14 text-center text-sm text-ink-3">{search ? 'No clients match.' : 'No clients yet. Add one, or pick one when billing a project.'}</p>
+              <p className="px-5 py-14 text-center text-sm text-ink-3">{search ? 'No clients match.' : 'No clients yet.'}</p>
             ) : (
-              list.map((c) => (
-                <div key={c.id} className="flex items-center gap-4 border-b border-line px-5 py-3.5 last:border-b-0">
-                  <Avatar name={c.name} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{c.name}</div>
-                    <div className="mt-0.5 flex flex-wrap gap-x-4 text-[13px] text-ink-3">
-                      {c.mobile && (
-                        <span className="inline-flex items-center gap-1">
-                          <Phone className="h-3.5 w-3.5" /> {c.mobile}
-                        </span>
-                      )}
-                      {c.email && (
-                        <span className="inline-flex items-center gap-1">
-                          <Mail className="h-3.5 w-3.5" /> {c.email}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-[13px]">
+                  <thead>
+                    <tr className="border-b border-line bg-raised text-left text-ink-3">
+                      <th className="px-5 py-2.5 font-medium">Client</th>
+                      <th className="px-4 py-2.5 font-medium">Mobile</th>
+                      <th className="px-4 py-2.5 font-medium">Email</th>
+                      <th className="px-4 py-2.5 font-medium">Address</th>
+                      <th className="px-4 py-2.5 font-medium">TIN</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {list.map((c) => (
+                      <tr key={c.id} onClick={() => setEditing(c)} className="cursor-pointer border-b border-line/70 last:border-b-0 hover:bg-raised">
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-3">
+                            <Avatar name={c.name} size={30} />
+                            <span className="font-medium text-ink">{c.name}</span>
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-ink-2">{c.mobile || '—'}</td>
+                        <td className="px-4 py-3 text-ink-2">{c.email || '—'}</td>
+                        <td className="max-w-[280px] truncate px-4 py-3 text-ink-2" title={c.address ?? ''}>
+                          {c.address || '—'}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 font-mono text-2xs text-ink-3">{c.tin || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
+          {list && list.length < total && (
+            <div className="mt-4 text-center">
+              <Button size="sm" loading={loadingMore} onClick={more}>
+                Load more
+              </Button>
+            </div>
+          )}
         </>
       )}
-      <NewClientDialog
-        open={adding}
-        onClose={() => setAdding(false)}
-        onCreated={(c) => {
-          setList((l) => [c, ...(l ?? []).filter((x) => x.id !== c.id)]);
-          toast(c.existing ? `${c.name} was already in IslePOS — linked` : `${c.name} added`);
+      <ClientDialog
+        client={editing === 'new' ? null : editing}
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        onSaved={(c) => {
+          saved(c);
+          toast(c.existing ? `${c.name} was already in IslePOS — linked` : `${c.name} saved to IslePOS`);
         }}
       />
     </div>
   );
 }
 
-export function NewClientDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (c: IsleCustomer) => void }) {
-  const [name, setName] = useState('');
-  const [mobile, setMobile] = useState('');
-  const [email, setEmail] = useState('');
+/** Create or edit a client. Every field maps to the IslePOS customer record. */
+export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleCustomer | null; open: boolean; onClose: () => void; onSaved: (c: IsleCustomer) => void }) {
+  const [form, setForm] = useState({ name: '', mobile: '', email: '', address: '', tin: '', notes: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setError('');
+    setForm({
+      name: client?.name ?? '',
+      mobile: client?.mobile ?? '',
+      email: client?.email ?? '',
+      address: client?.address ?? '',
+      tin: client?.tin ?? '',
+      notes: client?.notes ?? '',
+    });
+  }, [open, client]);
+
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
   const save = async () => {
-    if (!name.trim()) return setError('Enter the client’s name.');
+    if (!form.name.trim()) return setError('Enter the client’s name.');
     setBusy(true);
     setError('');
     try {
-      const c = await islepos.createCustomer({ name: name.trim(), mobile: mobile.trim() || undefined, email: email.trim() || undefined });
-      onCreated(c);
-      setName('');
-      setMobile('');
-      setEmail('');
+      const body = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
+      const c = client ? await islepos.updateCustomer(client.id, body) : await islepos.createCustomer({ ...body, name: body.name });
+      onSaved(c);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not add the client.');
+      setError(e instanceof ApiError ? e.message : 'Could not save the client.');
     } finally {
       setBusy(false);
     }
   };
+
+  const extras = client ? Object.entries(client).filter(([k, v]) => !HIDDEN.has(k) && v !== null && v !== '' && typeof v !== 'object') : [];
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="New client"
-      description="Saved in IslePOS. If the mobile or email is already in your books, that client is linked instead."
+      title={client ? client.name : 'New client'}
+      description={client ? 'Saved to the customer record in IslePOS.' : 'Saved in IslePOS. If the mobile or email is already in your books, that client is linked instead.'}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button variant="primary" loading={busy} onClick={save}>
-            Add client
+            {client ? 'Save changes' : 'Add client'}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
         <Field label="Name" error={error || undefined}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <Input value={form.name} onChange={set('name')} autoFocus={!client} />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Mobile">
-            <Input value={mobile} onChange={(e) => setMobile(e.target.value)} inputMode="tel" placeholder="+960 …" />
+            <Input value={form.mobile} onChange={set('mobile')} inputMode="tel" placeholder="+960 …" />
           </Field>
           <Field label="Email">
-            <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
+            <Input value={form.email} onChange={set('email')} type="email" />
           </Field>
         </div>
+        <Field label="Address">
+          <Input value={form.address} onChange={set('address')} placeholder="House, street, island / atoll" />
+        </Field>
+        <Field label="TIN" hint="Tax identification number, for invoices.">
+          <Input value={form.tin} onChange={set('tin')} />
+        </Field>
+        <Field label="Notes">
+          <textarea
+            value={form.notes}
+            onChange={set('notes')}
+            rows={3}
+            className="w-full rounded-ctl border border-line bg-surface px-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15 sm:text-sm"
+          />
+        </Field>
+        {extras.length > 0 && (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-ctl bg-raised px-3.5 py-3 text-[13px]">
+            {extras.map(([k, v]) => (
+              <div key={k}>
+                <dt className="text-2xs text-ink-3">{label(k)}</dt>
+                <dd className="text-ink">{String(v)}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </div>
     </Dialog>
   );
+}
+
+/** Kept for the Billing sheet: create-only. */
+export function NewClientDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (c: IsleCustomer) => void }) {
+  return <ClientDialog client={null} open={open} onClose={onClose} onSaved={onCreated} />;
 }
