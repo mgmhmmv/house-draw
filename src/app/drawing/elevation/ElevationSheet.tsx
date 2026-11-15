@@ -291,7 +291,7 @@ function Surface({
         drawingNumber: placed.length > 1 ? `${paper.drawingNumber}-${i + 1}` : paper.drawingNumber,
         sheetOf: `${i + 1} of ${placed.length}`,
       };
-      const frame = composeSheet(null, info, { scale }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      const frame = composeSheet(null, info, { scale, footerBar: false }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
       return { p, x0, y0, frame, top: i * (SHEET.h + PAGE_GAP) };
     });
     return { scale, m, pages };

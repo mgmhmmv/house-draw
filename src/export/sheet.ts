@@ -115,7 +115,7 @@ export const DRAWING_AREA = { x: M + 4, y: M + HEAD + 4, w: SX - M - 8, h: PAPER
  * Compose one A3 sheet as an SVG document (mm units). With no content, `opts.scale` still sets
  * the scale bar and title block (the live paper view draws the drawing itself).
  */
-export function composeSheet(content: SheetContent | null, info: SheetInfo, opts: { scale?: number } = {}): { svg: string; scale: number | null } {
+export function composeSheet(content: SheetContent | null, info: SheetInfo, opts: { scale?: number; footerBar?: boolean } = {}): { svg: string; scale: number | null } {
   const parts: string[] = [];
   const area = DRAWING_AREA;
 
@@ -164,7 +164,11 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
   // Footer: scale bar + legend.
   const fy = PAPER.h - M - FOOT / 2 + 1;
   let fx = M + 5;
-  if (scale) {
+  if (scale && opts.footerBar === false) {
+    // The drawings carry their own scale bars under their titles.
+    parts.push(t(fx, fy + 0.4, `Scale 1:${scale} at ${PAPER.name}`, 2.3, { w: 600 }));
+    fx += 40;
+  } else if (scale) {
     const nice = [1, 2, 5, 10, 20, 50, 100].find((m) => (m * 1000) / scale! >= 30) ?? 100;
     const len = (nice * 1000) / scale;
     for (let i = 0; i < 4; i++) parts.push(`<rect x="${fx + (len / 4) * i}" y="${fy - 1}" width="${len / 4}" height="1.4" fill="${i % 2 ? '#fff' : INK}" stroke="${INK}" stroke-width="0.2"/>`);
