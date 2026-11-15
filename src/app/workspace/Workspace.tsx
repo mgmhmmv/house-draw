@@ -55,7 +55,8 @@ import {
   triggerDownload,
 } from '../../export/exporters';
 import { sheetsHTML } from '../../export/sheet';
-import { composeCurrent, PRINTABLE } from './printSheets';
+import { composePages, PRINTABLE, sheetInfo } from './printSheets';
+import type { SheetInfo } from '../../export/sheet';
 import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
@@ -175,6 +176,20 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     },
     [projectId, preview]
   );
+  // Elevations and sections are shown on paper, with the same title block as the print.
+  const [paperInfo, setPaperInfo] = useState<SheetInfo | null>(null);
+  const metaKey = model ? JSON.stringify(model.meta) : '';
+  useEffect(() => {
+    const p = doc.project;
+    if (!p || !model || (sheet.id !== 'A-201' && sheet.id !== 'A-301')) return setPaperInfo(null);
+    let live = true;
+    void sheetInfo({ project: p, model, sheetId: sheet.id, sheetCode: sheet.code }).then((i) => live && setPaperInfo(i));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.project?.id, doc.project?.name, doc.project?.client, doc.project?.status, metaKey, sheet.id]);
+
   // The user's own (AI-made) objects join the library.
   useEffect(() => {
     void loadCustomAssets();
@@ -310,9 +325,11 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         setSelection(null);
         setPlacing(null);
         await sleep(80);
-        const svg = await composeCurrent({ project, model, sheetId: sheet.id, sheetCode: sheet.code, levelName: levels[safeLevel]?.name, levelIndex: safeLevel });
-        if (kind === 'sheet-svg') await triggerDownload(`${project.name.replace(/[^\w-]+/g, '_')}_${sheet.code}.svg`, `<?xml version="1.0" encoding="UTF-8"?>\n${svg}`, 'image/svg+xml');
-        else showSheets(win, `${project.name} · ${sheet.code}`, [svg]);
+        const pages = await composePages({ project, model, sheetId: sheet.id, sheetCode: sheet.code, levelName: levels[safeLevel]?.name, levelIndex: safeLevel });
+        if (kind === 'sheet-svg')
+          for (const [i, svg] of pages.entries())
+            await triggerDownload(`${project.name.replace(/[^\w-]+/g, '_')}_${sheet.code}${pages.length > 1 ? `-${i + 1}` : ''}.svg`, `<?xml version="1.0" encoding="UTF-8"?>\n${svg}`, 'image/svg+xml');
+        else showSheets(win, `${project.name} · ${sheet.code}`, pages);
       } else if (kind === 'set-pdf') {
         // Visit each drawing sheet (every level for the plans), capture it, then come back.
         const back = { sheet, level: safeLevel };
@@ -331,7 +348,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           navigate(`/p/${projectId}/${j.def.slug}`, { replace: true });
           setLevelIndex(j.level);
           await sleep(j.def.id === '3D-VIEW' ? 1600 : 700);
-          svgs.push(await composeCurrent({ project, model, sheetId: j.def.id, sheetCode: j.def.code, levelName: levels[j.level]?.name, levelIndex: j.level, sheetOf: `${i + 1} of ${jobs.length}` }));
+          svgs.push(...(await composePages({ project, model, sheetId: j.def.id, sheetCode: j.def.code, levelName: levels[j.level]?.name, levelIndex: j.level, sheetOf: `${i + 1} of ${jobs.length}` })));
         }
         navigate(`/p/${projectId}/${back.sheet.slug}`, { replace: true });
         setLevelIndex(back.level);
@@ -559,6 +576,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             openAssistant();
           },
         }}
+        paperInfo={paperInfo}
         placing={preview ? null : placing}
         onPlaced={(id, kind) => {
           // One click places one item; it is selected (rotate handle) but the Library stays open.

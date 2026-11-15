@@ -133,6 +133,26 @@ export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
   };
 }
 
+/** The sheets shown in the paper view (each already A3 with its title block), if showing. */
+export function paperSheets(): string[] {
+  const svg = document.querySelector('main svg[data-paper]') as SVGSVGElement | null;
+  if (!svg) return [];
+  const defs = svg.querySelector('defs')?.innerHTML ?? '';
+  return [...svg.querySelectorAll('[data-paper-page]')].map(
+    (pg) =>
+      `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297" font-family="Inter, Helvetica, Arial, sans-serif"><style>.as-w * { vector-effect: non-scaling-stroke; }</style><defs>${defs}</defs>${pg.innerHTML}</svg>`
+  );
+}
+
+/** All sheets for the current view: the paper view's pages, or one composed sheet. */
+export async function composePages(c: SheetContext): Promise<string[]> {
+  if (c.sheetId === 'A-201' || c.sheetId === 'A-301') {
+    const shown = paperSheets();
+    if (shown.length) return shown;
+  }
+  return [await composeCurrent(c)];
+}
+
 export async function composeCurrent(c: SheetContext) {
   setPrintMode(true);
   await nextPaint();

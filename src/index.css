@@ -115,6 +115,11 @@
 .as-plan > g * {
   vector-effect: non-scaling-stroke;
 }
+/* Paper view: the title block is drawn to scale like the printed sheet. */
+.as-plan .as-scale,
+.as-plan .as-scale * {
+  vector-effect: none;
+}
 
 @keyframes as-fade-up {
   from {

@@ -4,6 +4,7 @@ import { PlanCanvas } from '../drawing/plan/PlanCanvas';
 import type { AssetDef } from '../drawing/assets/catalog';
 import { ModelView, type ModelViewSelect } from '../drawing/three/ModelView';
 import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
+import type { SheetInfo } from '../../export/sheet';
 import { ElectricalSheet } from '../sheets/ElectricalSheet';
 import { HvacSheet } from '../sheets/HvacSheet';
 import { PlumbingSheet } from '../sheets/PlumbingSheet';
@@ -31,6 +32,7 @@ interface Props {
   placing?: { def: AssetDef; rotation: number } | null;
   onPlaced?: (id: string, kind: SelectableElementKind) => void;
   select3d?: ModelViewSelect;
+  paperInfo?: SheetInfo | null;
 }
 
 /**
@@ -45,7 +47,7 @@ export function SheetView(p: Props) {
       break;
     case 'A-201':
     case 'A-301':
-      view = <ElevationSheet model={p.model} mode={p.sheet === 'A-201' ? 'elevations' : 'sections'} svgRef={p.svgRef} />;
+      view = <ElevationSheet model={p.model} mode={p.sheet === 'A-201' ? 'elevations' : 'sections'} svgRef={p.svgRef} paperInfo={p.paperInfo} />;
       break;
     case 'E-101':
       view = <ElectricalSheet model={p.model} />;

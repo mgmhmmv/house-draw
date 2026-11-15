@@ -108,10 +108,16 @@ export function chooseScale(widthM: number, heightM: number, areaW: number, area
   return SCALES.find((s) => s >= need) ?? 1000;
 }
 
-/** Compose one A3 sheet as an SVG document (mm units). */
-export function composeSheet(content: SheetContent | null, info: SheetInfo): { svg: string; scale: number | null } {
+/** Where the drawing goes on the sheet (mm). */
+export const DRAWING_AREA = { x: M + 4, y: M + HEAD + 4, w: SX - M - 8, h: PAPER.h - 2 * M - HEAD - FOOT - 8 };
+
+/**
+ * Compose one A3 sheet as an SVG document (mm units). With no content, `opts.scale` still sets
+ * the scale bar and title block (the live paper view draws the drawing itself).
+ */
+export function composeSheet(content: SheetContent | null, info: SheetInfo, opts: { scale?: number } = {}): { svg: string; scale: number | null } {
   const parts: string[] = [];
-  const area = { x: M + 4, y: M + HEAD + 4, w: SX - M - 8, h: PAPER.h - 2 * M - HEAD - FOOT - 8 };
+  const area = DRAWING_AREA;
 
   // Frame, drawing area rules.
   parts.push(`<rect x="0" y="0" width="${PAPER.w}" height="${PAPER.h}" fill="#FFFFFF"/>`);
@@ -125,7 +131,7 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo): { s
   if (info.subtitle) parts.push(t(M + 5 + info.title.length * 2.75 + 4, M + 7.2, info.subtitle, 2.6, { c: INK2 }));
 
   // The drawing.
-  let scale: number | null = null;
+  let scale: number | null = opts.scale ?? null;
   if (content) {
     const [vx, vy, vw, vh] = content.vb;
     let w = area.w;

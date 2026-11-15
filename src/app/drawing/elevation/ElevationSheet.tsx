@@ -16,11 +16,14 @@ import { buildFrame } from '../model3d/faces';
 import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
 import { levelBounds } from '../model3d/faces';
 import { fmtMM } from '../plan/kernel';
+import { chooseScale, composeSheet, DRAWING_AREA, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
 
 interface Props {
   model: BuildingProject;
   mode: 'elevations' | 'sections';
   svgRef: RefObject<SVGSVGElement | null>;
+  /** Title-block details: when given, the sheet is shown on paper (A3, as printed). */
+  paperInfo?: SheetInfo | null;
 }
 
 interface Info {
@@ -73,7 +76,8 @@ const FACE_STROKE: Record<string, { color: string; w: number }> = {
 };
 const GAP_Y = 7.5;
 
-export function ElevationSheet({ model, mode, svgRef }: Props) {
+export function ElevationSheet({ model, mode, svgRef, paperInfo }: Props) {
+  const [paperOn, setPaperOn] = useState(true);
   const frame = useMemo(() => buildFrame(model), [model]);
   const sections = useMemo(() => defaultSections(model), [model]);
   const options = mode === 'elevations' ? [{ id: 'all', label: 'All' }, ...ELEVATIONS.map((e) => ({ id: e.id, label: e.name.split(' ')[0] }))] : [{ id: 'all', label: 'All' }, ...sections.map((s) => ({ id: s.id, label: s.label }))];
@@ -209,7 +213,23 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
     };
   }, [drawings, mode, wide]);
 
-  return <Surface key={`${mode}-${choice}`} placed={placed} bounds={bounds} frameInfo={{ model, eave: frame.eaveZ, ridge: frame.ridgeZ, notes: frame.notes }} svgRef={svgRef} options={options} choice={choice} setChoice={setChoice} />;
+  const paper = paperOn && paperInfo ? paperInfo : null;
+  return (
+    <Surface
+      key={`${mode}-${choice}-${paper ? 'paper' : 'free'}`}
+      placed={placed}
+      bounds={bounds}
+      frameInfo={{ model, eave: frame.eaveZ, ridge: frame.ridgeZ, notes: frame.notes }}
+      svgRef={svgRef}
+      options={options}
+      choice={choice}
+      setChoice={setChoice}
+      paper={paper}
+      canPaper={!!paperInfo}
+      paperOn={paperOn}
+      setPaperOn={setPaperOn}
+    />
+  );
 }
 
 function Surface({
@@ -220,6 +240,10 @@ function Surface({
   options,
   choice,
   setChoice,
+  paper,
+  canPaper,
+  paperOn,
+  setPaperOn,
 }: {
   placed: Placed[];
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
@@ -228,20 +252,61 @@ function Surface({
   options: { id: string; label: string }[];
   choice: string;
   setChoice: (c: string) => void;
+  paper: SheetInfo | null;
+  canPaper: boolean;
+  paperOn: boolean;
+  setPaperOn: (v: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const vp = useViewport(ref, bounds, 48);
-  const { k, tx, ty } = vp.view;
   const drag = useRef<{ x: number; y: number } | null>(null);
   const print = usePrintMode();
-  const fs = (paper: number, px: number) => (print ? paper : Math.max(paper, px / k));
+  // On paper, text is at its printed size (it grows and shrinks with the sheet).
+  const fs = (paperSize: number, px: number) => (print || paper ? paperSize : Math.max(paperSize, px / k));
+
+  // One drawing per sheet. All sheets share one scale (the one the largest drawing needs) so
+  // the set reads consistently; sheets stack like pages.
+  const PAGE_GAP = 24;
+  const layout = useMemo(() => {
+    if (!paper) return null;
+    const extent = (p: Placed) => {
+      const d = p.drawing;
+      // What is actually drawn at print text size: datum names on the left (~4 m at 1:100),
+      // level values and the notes column on the right, grid bubbles above, title below.
+      return { minX: d.uMin - 4.2, maxX: d.uMax + (p.section ? 3 : 8.2), minY: -(d.zMax + 1.6), maxY: p.section ? 3.3 : 2.9 };
+    };
+    const scale = Math.max(...placed.map((p) => {
+      const e = extent(p);
+      return chooseScale(e.maxX - e.minX, e.maxY - e.minY, DRAWING_AREA.w, DRAWING_AREA.h);
+    }));
+    const m = 1000 / scale;
+    const pages = placed.map((p, i) => {
+      const e = extent(p);
+      const x0 = DRAWING_AREA.x + (DRAWING_AREA.w - (e.maxX - e.minX) * m) / 2 - e.minX * m;
+      const y0 = DRAWING_AREA.y + (DRAWING_AREA.h - (e.maxY - e.minY) * m) / 2 - e.minY * m;
+      const info: SheetInfo = {
+        ...paper,
+        title: p.title,
+        subtitle: undefined,
+        legend: [],
+        drawingNumber: placed.length > 1 ? `${paper.drawingNumber}-${i + 1}` : paper.drawingNumber,
+        sheetOf: `${i + 1} of ${placed.length}`,
+      };
+      const frame = composeSheet(null, info, { scale }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      return { p, x0, y0, frame, top: i * (SHEET.h + PAGE_GAP) };
+    });
+    return { scale, m, pages };
+  }, [paper, placed]);
+  const sheetBounds = { minX: 0, minY: 0, maxX: SHEET.w, maxY: Math.max(1, placed.length) * (SHEET.h + PAGE_GAP) - PAGE_GAP };
+  const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48);
+  const { k, tx, ty } = vp.view;
 
   return (
     <div ref={ref} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
       <svg
         ref={svgRef as RefObject<SVGSVGElement>}
         className="as-plan absolute inset-0 h-full w-full"
-        style={{ fontFamily: 'Inter, system-ui, sans-serif', cursor: drag.current ? 'grabbing' : 'grab' }}
+        data-paper={layout ? '' : undefined}
+        style={{ fontFamily: 'Inter, system-ui, sans-serif', cursor: drag.current ? 'grabbing' : 'grab', background: layout ? '#E9E8E4' : undefined }}
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           drag.current = { x: e.clientX, y: e.clientY };
@@ -271,15 +336,44 @@ function Surface({
             <line x1={0} y1={0} x2={0} y2={0.1} stroke={INK_2} strokeWidth={0.01} />
           </pattern>
         </defs>
-        <g transform={`translate(${tx} ${ty}) scale(${k})`}>
-          {placed.map((p) => (
-            <g key={p.key} transform={`translate(${p.ox} ${p.oy})`}>
-              <DrawingView p={p} k={k} fs={fs} info={frameInfo} />
-            </g>
-          ))}
-        </g>
+        {layout ? (
+          <g transform={`translate(${tx} ${ty}) scale(${k})`}>
+            {layout.pages.map((pg) => (
+              <g key={pg.p.key} transform={`translate(0 ${pg.top})`}>
+                <rect x={2} y={3} width={SHEET.w} height={SHEET.h} fill="rgba(0,0,0,0.08)" className="as-scale" />
+                {/* One printed sheet: title block and the drawing at true scale. */}
+                <g data-paper-page="">
+                  <g className="as-scale" fontFamily="Inter, Helvetica, Arial, sans-serif" dangerouslySetInnerHTML={{ __html: pg.frame }} />
+                  <g className="as-w" transform={`translate(${pg.x0} ${pg.y0}) scale(${layout.m})`}>
+                    <DrawingView p={pg.p} k={1e6} fs={fs} info={frameInfo} />
+                  </g>
+                </g>
+              </g>
+            ))}
+          </g>
+        ) : (
+          <g transform={`translate(${tx} ${ty}) scale(${k})`}>
+            {placed.map((p) => (
+              <g key={p.key} transform={`translate(${p.ox} ${p.oy})`}>
+                <DrawingView p={p} k={k} fs={fs} info={frameInfo} />
+              </g>
+            ))}
+          </g>
+        )}
       </svg>
 
+      {canPaper && (
+        <div className="absolute right-3 top-3 flex gap-1 rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur">
+          {[
+            { on: true, label: 'Paper' },
+            { on: false, label: 'Drawing' },
+          ].map((b) => (
+            <button key={b.label} onClick={() => setPaperOn(b.on)} className={cx('h-7 rounded-[8px] px-3 text-[13px] font-medium', paperOn === b.on ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken')}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
       {options.length > 2 && (
         <div className="absolute left-3 top-3 flex max-w-[calc(100%-24px)] gap-1 overflow-x-auto rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur no-scrollbar">
           {options.map((o) => (
@@ -297,7 +391,7 @@ function Surface({
         {[
           { label: 'Zoom in', icon: <Plus className="h-4 w-4" />, on: () => vp.zoomAt(1.25) },
           { label: 'Zoom out', icon: <Minus className="h-4 w-4" />, on: () => vp.zoomAt(0.8) },
-          { label: 'Fit drawing', icon: <Maximize2 className="h-4 w-4" />, on: vp.fit },
+          { label: paper ? 'Fit sheet' : 'Fit drawing', icon: <Maximize2 className="h-4 w-4" />, on: vp.fit },
         ].map((b) => (
           <button key={b.label} aria-label={b.label} title={b.label} onClick={b.on} className="flex h-9 w-9 items-center justify-center text-ink-2 hover:bg-sunken hover:text-ink">
             {b.icon}
