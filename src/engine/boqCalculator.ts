@@ -1,0 +1,317 @@
+import { BuildingProject, getDesignConfig, getHVACConfig, getSolarConfig, RoofMaterial } from '../model/types';
+import { levelBoundingBox, openingWorldCenter, polygonArea, polygonPerimeter, wallLength } from './geometry';
+import { computeHVACReport } from './mepEngine';
+
+export interface BOQLineItem {
+  code: string;
+  division: string;
+  description: string;
+  unit: string;
+  quantity: number;
+  unitRate: number;
+  totalCost: number;
+}
+
+export interface RawMaterialsSummary {
+  cementBags50Kg: number;
+  riverSandM3: number;
+  coarseAggregateM3: number;
+  bricksOrBlocksCount: number;
+  rebarSteelKg: number;
+  paintLiters: number;
+  tileAreaM2: number;
+}
+
+export interface BOQReport {
+  items: BOQLineItem[];
+  divisionTotals: { division: string; amount: number; sharePct: number }[];
+  subtotal: number;
+  contingencyPct: number;
+  contingencyAmount: number;
+  grandTotal: number;
+  grossFloorAreaM2: number;
+  costPerM2: number;
+  rawMaterials: RawMaterialsSummary;
+}
+
+export function calculateBOQ(project: BuildingProject): BOQReport {
+  const r = project.rates;
+  const items: BOQLineItem[] = [];
+
+  const add = (
+    code: string,
+    division: string,
+    description: string,
+    unit: string,
+    qty: number,
+    unitRate: number
+  ) => {
+    const q = Math.max(0, Number(qty.toFixed(2)));
+    items.push({
+      code,
+      division,
+      description,
+      unit,
+      quantity: q,
+      unitRate,
+      totalCost: Number((q * unitRate).toFixed(2)),
+    });
+  };
+
+  // Ground footprint & gross floor area
+  const ground = project.levels[0];
+  const groundBB = ground ? levelBoundingBox(ground) : { width: 12, depth: 10, minX: 0, minY: 0, maxX: 12, maxY: 10 };
+  const footprintArea = Math.max(20, groundBB.width * groundBB.depth);
+
+  let grossFloorArea = 0;
+  let extWallNetArea = 0;
+  let extWallVol = 0;
+  let intWallNetArea = 0;
+  let totalWallPerimeterLen = 0;
+  let totalSlabVol = 0;
+  let totalColVol = 0;
+  let totalBeamLen = 0;
+  let totalColumns = 0;
+  let totalDoors = 0;
+  let totalWindowArea = 0;
+  let tileFloorArea = 0;
+  let hardwoodFloorArea = 0;
+  let totalSkirtingLen = 0;
+  let totalMepElectricalPts = 0;
+  let totalMepPlumbingPts = 0;
+
+  for (const lvl of project.levels) {
+    let lvlRoomArea = 0;
+    for (const room of lvl.rooms) {
+      const area = polygonArea(room.polygon);
+      const perim = polygonPerimeter(room.polygon);
+      lvlRoomArea += area;
+      totalSkirtingLen += perim;
+      if (room.finish === 'hardwood' || room.finish === 'carpet' || room.finish === 'herringbone_oak') {
+        hardwoodFloorArea += area;
+      } else {
+        tileFloorArea += area;
+      }
+    }
+    if (lvlRoomArea < 1) {
+      const bb = levelBoundingBox(lvl);
+      lvlRoomArea = bb.width * bb.depth;
+      tileFloorArea += lvlRoomArea;
+    }
+    grossFloorArea += lvlRoomArea;
+    totalSlabVol += lvlRoomArea * lvl.slabThickness;
+
+    // Walls & openings deduction
+    for (const wall of lvl.walls) {
+      const len = wallLength(wall);
+      totalWallPerimeterLen += len;
+      const wallOpenings = lvl.openings.filter((o) => o.wallId === wall.id);
+      let openArea = 0;
+      for (const o of wallOpenings) {
+        openArea += o.width * o.height;
+        if (o.kind === 'door') totalDoors += 1;
+        else totalWindowArea += o.width * o.height;
+        // ensure helper is referenced without unused warning
+        void openingWorldCenter(wall, o);
+      }
+      const grossArea = len * wall.height;
+      const netArea = Math.max(0, grossArea - openArea);
+      if (wall.isExterior) {
+        extWallNetArea += netArea;
+        extWallVol += netArea * wall.thickness;
+      } else {
+        intWallNetArea += netArea;
+      }
+    }
+
+    // Columns & beams
+    totalColumns += lvl.columns.length;
+    for (const col of lvl.columns) {
+      totalColVol += col.width * col.depth * lvl.floorToFloorHeight;
+    }
+    totalBeamLen += totalWallPerimeterLen;
+
+    // MEP counts
+    const eCount = lvl.mepNodes.filter((n) => n.system === 'electrical').length;
+    const pCount = lvl.mepNodes.filter((n) => n.system === 'plumbing').length;
+    totalMepElectricalPts += eCount || Math.max(10, lvl.rooms.length * 4);
+    totalMepPlumbingPts += pCount || Math.max(4, lvl.rooms.filter((rm) => rm.category === 'bathroom' || rm.category === 'kitchen').length * 3);
+  }
+
+  // Substructure calculations
+  const stripTrenchLen = ground
+    ? ground.walls.filter((w) => w.isLoadBearing || w.isExterior).reduce((s, w) => s + wallLength(w), 0)
+    : 45;
+  const padFootingCount = Math.max(totalColumns / project.levels.length, 6);
+  const excavationVol = stripTrenchLen * 0.65 * 0.95 + padFootingCount * 1.25 * 1.25 * 1.2;
+  const pccVol = stripTrenchLen * 0.65 * 0.1 + padFootingCount * 1.25 * 1.25 * 0.1;
+  const footingConcreteVol = stripTrenchLen * 0.55 * 0.3 + padFootingCount * 1.15 * 1.15 * 0.35;
+  const plinthWallVol = stripTrenchLen * 0.23 * 0.45;
+
+  const beamConcreteVol = totalBeamLen * 0.23 * 0.35;
+  const superConcreteVol = totalSlabVol + totalColVol + beamConcreteVol;
+  const rebarKg = footingConcreteVol * 85 + totalColVol * 145 + beamConcreteVol * 125 + totalSlabVol * 95;
+  const formworkM2 =
+    totalSlabVol / 0.15 +
+    totalBeamLen * (0.35 * 2 + 0.23) +
+    totalColumns * 4 * 0.3 * 3.0;
+
+  // Roof calculations
+  const pitchRad = (project.roof.pitchDeg * Math.PI) / 180;
+  const overhang = project.roof.overhang;
+  const planRoofArea = (groundBB.width + overhang * 2) * (groundBB.depth + overhang * 2);
+  const slopedRoofArea =
+    project.roof.type === 'flat' ? planRoofArea : planRoofArea / Math.max(0.5, Math.cos(pitchRad));
+  const gutterLen = 2 * (groundBB.width + overhang * 2 + groundBB.depth + overhang * 2);
+
+  // Finishes
+  const internalPlasterArea = extWallNetArea + intWallNetArea * 2 + grossFloorArea; // walls + ceiling
+  const externalPlasterArea = extWallNetArea;
+  const totalPaintArea = internalPlasterArea + externalPlasterArea;
+
+  // Division 01: Substructure
+  add('01.01', '01 Substructure', 'Site Clearing, Levelling & Setting Out Grid', 'm²', footprintArea * 1.35, r.siteClearingPerM2);
+  add('01.02', '01 Substructure', 'Trench & Pad Footing Excavation (Depth 1.1m)', 'm³', excavationVol, r.excavationPerM3);
+  add('01.03', '01 Substructure', 'PCC 1:4:8 Lean Concrete Blinding (100mm)', 'm³', pccVol, r.pccBlindingPerM3);
+  add('01.04', '01 Substructure', 'RC C25 Strip & Pad Footings Concrete', 'm³', footingConcreteVol, r.footingConcretePerM3);
+  add('01.05', '01 Substructure', 'Plinth Masonry & Anti-Termite DPC Membrane', 'm³', plinthWallVol, r.brickWallPerM3);
+
+  const allWalls = project.levels.flatMap((l) => l.walls);
+  const hasCinderBlock = allWalls.some((w) => w.material === 'cinder_block');
+  const hasCoralStone = allWalls.some((w) => w.material === 'coral_stone');
+  const extWallDesc = hasCoralStone
+    ? 'Coral Stone & Mortar Load-Bearing Masonry (200mm)'
+    : hasCinderBlock
+    ? 'Hollow Cement-Sand Cinder Block Masonry (200mm)'
+    : 'Exterior Load-Bearing Wall Masonry (230mm)';
+  const intWallDesc = hasCinderBlock
+    ? 'Hollow Cement-Sand Blockwork Partitions (150mm)'
+    : 'Interior Partition Wall Masonry (120mm)';
+
+  // Division 02: Superstructure
+  add('02.01', '02 Superstructure', 'RC C25/30 Columns, Beams & Suspended Slabs', 'm³', superConcreteVol, r.superConcretePerM3);
+  add('02.02', '02 Superstructure', 'Deformed High-Yield Steel Rebar (B500B)', 'kg', rebarKg, r.rebarPerKg);
+  add('02.03', '02 Superstructure', 'Shuttering & Formwork for RC Frame & Slabs', 'm²', formworkM2, r.formworkPerM2);
+  add('02.04', '02 Superstructure', extWallDesc, 'm³', extWallVol, r.brickWallPerM3);
+  add('02.05', '02 Superstructure', intWallDesc, 'm²', intWallNetArea, r.partitionWallPerM2);
+
+  // Division 03: Roofing
+  const roofMatMultipliers: Record<RoofMaterial, number> = {
+    natural_slate: 1.45,
+    clay_tile: 1.25,
+    green_roof: 1.6,
+    cedar_shake: 1.35,
+    standing_seam: 1.15,
+    corrugated_metal: 0.9,
+    marine_metal: 1.18,
+    thatch_palm: 1.3,
+    asphalt_shingle: 1.0,
+    concrete_slab: 1.1,
+  };
+  const roofCladRate = Number((r.roofCladdingPerM2 * (roofMatMultipliers[project.roof.material] ?? 1.0)).toFixed(2));
+  add(
+    '03.01',
+    '03 Roofing',
+    project.roof.type === 'flat' ? 'RC Flat Roof Slab Insulation & Screed' : `Roof Timber/Steel Truss Framing (${project.roof.type.toUpperCase()} ${project.roof.pitchDeg}°)`,
+    'm²',
+    slopedRoofArea,
+    r.roofStructurePerM2
+  );
+  add('03.02', '03 Roofing', `Roof Cladding (${project.roof.material.replace(/_/g, ' ')}) & Waterproofing`, 'm²', slopedRoofArea, roofCladRate);
+  add('03.03', '03 Roofing', 'uPVC Half-Round Gutters & Downpipes', 'lm', gutterLen, 22);
+
+  const designCfg = getDesignConfig(project);
+
+  // Division 04: Doors & Windows
+  add('04.01', '04 Openings', `Architectural Doors (${designCfg.doorMaterial.replace(/_/g, ' ')}), Frames & Ironmongery`, 'nr', Math.max(totalDoors, 3), r.doorUnit);
+  add('04.02', '04 Openings', `Double-Glazed Windows (${designCfg.windowFrame.replace(/_/g, ' ')} frames) & Sills`, 'm²', Math.max(totalWindowArea, 8), r.windowPerM2);
+
+  // Division 05: Finishes
+  add('05.01', '05 Finishes', `Internal Wall Finish (${designCfg.interiorWalls.replace(/_/g, ' ')}) & Ceiling Skim`, 'm²', internalPlasterArea, r.plasterPerM2);
+  add('05.02', '05 Finishes', `External Facade Cladding / Render (${designCfg.exteriorFacade.replace(/_/g, ' ')})`, 'm²', externalPlasterArea, r.plasterPerM2 * 1.15);
+  add('05.03', '05 Finishes', 'Interior Emulsion & Exterior Acrylic Paint (3 Coats)', 'm²', totalPaintArea, r.paintPerM2);
+  add('05.04', '05 Finishes', 'Porcelain, Stone, Terrazzo & Anti-Skid Floor Tiling + Skirting', 'm²', tileFloorArea + totalSkirtingLen * 0.1, r.tileFloorPerM2);
+  if (hardwoodFloorArea > 0) {
+    add('05.05', '05 Finishes', 'Engineered Hardwood / Herringbone Oak & Acoustic Underlay', 'm²', hardwoodFloorArea, r.hardwoodFloorPerM2);
+  }
+
+  // Division 06: MEP
+  add('06.01', '06 MEP Systems', 'Electrical First/Second Fix, MDB, Breakers & Fixtures', 'pts', totalMepElectricalPts, r.electricalPoint);
+  add('06.02', '06 MEP Systems', 'Plumbing PPR Supply, uPVC Drainage & Sanitaryware', 'pts', totalMepPlumbingPts, r.plumbingPoint);
+  const solar = getSolarConfig(project);
+  if (solar.enabled) {
+    const arrayKwp = Number(((solar.panelCount * solar.panelWattage) / 1000).toFixed(2));
+    const solarCost = Math.round(arrayKwp * 1150 + solar.inverterKW * 380 + solar.batteryKWh * 520);
+    add(
+      '06.03',
+      '06 MEP Systems',
+      `Solar PV Array (${solar.panelCount}×${solar.panelWattage}Wp = ${arrayKwp}kWp), ${solar.inverterKW}kW Hybrid Inverter & ${solar.batteryKWh}kWh LiFePO4 BESS`,
+      'sys',
+      1,
+      solarCost
+    );
+  }
+  const hvacCfg = getHVACConfig(project);
+  if (hvacCfg.enabled) {
+    const hvacRep = computeHVACReport(project);
+    const fanCount = hvacCfg.ceilingFansEnabled ? hvacRep.rows.filter((x) => x.hasCeilingFan).length : 0;
+    const coatingPrem = hvacCfg.condenserProtection === 'marine_blue_fin' ? 180 : hvacCfg.condenserProtection === 'epoxy_gold_fin' ? 95 : 0;
+    const estPipingMeters = hvacRep.rows.length * 9;
+    const hvacCost = Math.round(
+      hvacRep.totalCoolingTons * 1280 +
+        estPipingMeters * 28 +
+        hvacRep.condenserUnitsCount * coatingPrem +
+        fanCount * 145
+    );
+    add(
+      '06.04',
+      '06 MEP Systems',
+      `HVAC ${hvacCfg.systemType.replace(/_/g, ' ').toUpperCase()} (${hvacRep.rows.length} FCUs, ${hvacRep.condenserUnitsCount} ${hvacCfg.condenserProtection.replace(/_/g, ' ')} CDUs, ${hvacRep.totalCoolingTons} TR, ${hvacCfg.refrigerant} Twin Pipe${fanCount > 0 ? `, ${fanCount} BLDC Fans` : ''})`,
+      'sys',
+      1,
+      Math.max(950, hvacCost)
+    );
+  }
+
+  const divMap = new Map<string, number>();
+  for (const item of items) {
+    divMap.set(item.division, (divMap.get(item.division) ?? 0) + item.totalCost);
+  }
+  const subtotal = items.reduce((s, i) => s + i.totalCost, 0);
+  const divisionTotals = Array.from(divMap.entries()).map(([division, amount]) => ({
+    division,
+    amount: Number(amount.toFixed(2)),
+    sharePct: subtotal > 0 ? Number(((amount / subtotal) * 100).toFixed(1)) : 0,
+  }));
+
+  const contingencyPct = 8;
+  const contingencyAmount = Number((subtotal * (contingencyPct / 100)).toFixed(2));
+  const grandTotal = Number((subtotal + contingencyAmount).toFixed(2));
+
+  // Raw Material Estimates using standard civil mix factors (C25 1:1.5:3, 1:4 mortar)
+  const totalConcrete = pccVol + footingConcreteVol + superConcreteVol;
+  const cementBags50Kg = Math.ceil(totalConcrete * 7.2 + (extWallVol + intWallNetArea * 0.12) * 1.6 + (internalPlasterArea + externalPlasterArea) * 0.16);
+  const riverSandM3 = Number((totalConcrete * 0.45 + (extWallVol + intWallNetArea * 0.12) * 0.25 + (internalPlasterArea + externalPlasterArea) * 0.022).toFixed(1));
+  const coarseAggregateM3 = Number((totalConcrete * 0.88).toFixed(1));
+  const bricksOrBlocksCount = Math.ceil(extWallVol * 460 + intWallNetArea * 52);
+
+  return {
+    items,
+    divisionTotals,
+    subtotal: Number(subtotal.toFixed(2)),
+    contingencyPct,
+    contingencyAmount,
+    grandTotal,
+    grossFloorAreaM2: Number(grossFloorArea.toFixed(2)),
+    costPerM2: grossFloorArea > 0 ? Number((grandTotal / grossFloorArea).toFixed(2)) : 0,
+    rawMaterials: {
+      cementBags50Kg,
+      riverSandM3,
+      coarseAggregateM3,
+      bricksOrBlocksCount,
+      rebarSteelKg: Math.ceil(rebarKg),
+      paintLiters: Math.ceil(totalPaintArea * 0.24),
+      tileAreaM2: Number((tileFloorArea * 1.08).toFixed(1)),
+    },
+  };
+}
