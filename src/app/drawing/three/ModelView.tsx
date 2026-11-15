@@ -6,6 +6,7 @@ import type { BuildingProject } from '../../../model/types';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
 import { WalkController, type Move } from './walk';
+import { buildServices, type ServiceSystem } from './services';
 
 type Style = 'rendered' | 'clay' | 'xray';
 type Cut = 'all' | number; // show everything, or levels up to N with the roof off
@@ -26,6 +27,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
   const [showCut, setShowCut] = useState(false);
   const [cutZ, setCutZ] = useState<number | null>(null); // horizontal section height (m), null = off
   const [walking, setWalking] = useState(false);
+  const [services, setServices] = useState<'off' | 'all' | ServiceSystem>('off');
   const walkRef = useRef<WalkController | null>(null);
   const fillRef = useRef<THREE.AmbientLight | null>(null);
 
@@ -199,6 +201,34 @@ export function ModelView({ model }: { model: BuildingProject }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walking]);
 
+  // Building services: built on demand, filtered by system and by the level cutaway.
+  const svc = useMemo(() => (services === 'off' ? null : buildServices(model)), [model, services === 'off']);
+  useEffect(() => {
+    const c = ctx.current;
+    if (!c || !svc) return;
+    c.scene.add(svc.group);
+    return () => {
+      c.scene.remove(svc.group);
+      svc.group.traverse((o) => o instanceof THREE.Mesh && o.geometry.dispose());
+      svc.materials.forEach((m) => m.dispose());
+    };
+  }, [svc]);
+  useEffect(() => {
+    if (!svc) return;
+    for (const o of svc.group.children) {
+      const { system, level } = o.userData as { system: ServiceSystem; level: number };
+      o.visible = (services === 'all' || services === system) && (cut === 'all' || level <= cut);
+    }
+  }, [svc, services, cut]);
+  useEffect(() => {
+    if (!svc) return;
+    const plane = cutZ === null ? null : [new THREE.Plane(new THREE.Vector3(0, -1, 0), cutZ)];
+    for (const m of svc.materials) {
+      m.clippingPlanes = plane;
+      m.needsUpdate = true;
+    }
+  }, [svc, cutZ]);
+
   // Doors stand open while walking, so you can see and step through them.
   useEffect(() => {
     for (const g of parts.levels) g.traverse((o) => o.userData.kind === 'door' && (o.visible = !walking));
@@ -247,6 +277,22 @@ export function ModelView({ model }: { model: BuildingProject }) {
             { id: 'rendered', label: 'Rendered' },
             { id: 'clay', label: 'Clay' },
             { id: 'xray', label: 'X-ray' },
+          ]}
+        />
+        <Chips
+          value={services}
+          onChange={(v) => {
+            setServices(v as typeof services);
+            // Services sit inside walls and ceilings: switch to X-ray so they can be seen.
+            if (v !== 'off' && style === 'rendered') setStyle('xray');
+          }}
+          options={[
+            { id: 'off', label: 'No services' },
+            { id: 'all', label: 'All services' },
+            { id: 'electrical', label: 'Electrical' },
+            { id: 'plumbing', label: 'Plumbing' },
+            { id: 'hvac', label: 'HVAC' },
+            ...(model.solar?.enabled !== false ? [{ id: 'solar', label: 'Solar' }] : []),
           ]}
         />
         <Chips
