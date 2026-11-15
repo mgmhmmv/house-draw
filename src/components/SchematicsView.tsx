@@ -4,11 +4,16 @@ import {
   ClimateZone,
   CondenserProtection,
   getHVACConfig,
+  getRoofDrainageConfig,
   getSolarConfig,
+  GUTTER_PROFILE_META,
+  GutterProfile,
   HVACConfig,
   HVACSystemType,
   MALDIVES_HVAC_CONFIG,
   SolarPVConfig,
+  WATER_COLLECTION_META,
+  WaterCollectionMode,
 } from '../model/types';
 import {
   autoPopulateMEPForLevel,
@@ -210,8 +215,11 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
                 {sld.solarPV.enabled ? 'BI-DIR NET METER kWh' : 'kWh UTILITY METER'}
               </text>
               <line x1={371} y1={46} x2={371} y2={76} stroke="#d97706" strokeWidth={2} />
-              <text x={380} y={65} fill={subInk} fontSize={8} fontFamily="monospace">
-                {sld.supplyCableSpec}
+              <text x={380} y={62} fill={subInk} fontSize={8} fontFamily="monospace">
+                {sld.supplyCableSpec} ({sld.equipmentRouting.meterToMdbM}m)
+              </text>
+              <text x={371} y={11} textAnchor="middle" fill={subInk} fontSize={7} fontFamily="monospace">
+                MTR @ ({sld.equipmentRouting.meterPos.x.toFixed(1)}, {sld.equipmentRouting.meterPos.y.toFixed(1)}) · MDB @ ({sld.equipmentRouting.mdbPos.x.toFixed(1)}, {sld.equipmentRouting.mdbPos.y.toFixed(1)})
               </text>
 
               {/* Main Breaker + RCCB */}
@@ -273,7 +281,7 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
                     HYBRID INVERTER {sld.solarPV.inverterKW} kW
                   </text>
                   <text x={722} y={127} textAnchor="middle" fill={isLight ? '#0369a1' : '#7dd3fc'} fontSize={7.5} fontFamily="monospace">
-                    DC/AC · IEC 62109 Anti-Island
+                    INV @ ({sld.equipmentRouting.inverterPos.x.toFixed(1)}, {sld.equipmentRouting.inverterPos.y.toFixed(1)}) · PV→{sld.equipmentRouting.pvToInverterM}m
                   </text>
 
                   {sld.solarPV.batteryKWh > 0 && (
@@ -290,9 +298,9 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
                   )}
 
                   <line x1={722} y1={132} x2={722} y2={174} stroke="#0284c7" strokeWidth={2} />
-                  <rect x={682} y={142} width={80} height={18} rx={2} fill={isLight ? '#dcfce7' : '#064e3b'} stroke="#16a34a" strokeWidth={1.1} />
-                  <text x={722} y={154} textAnchor="middle" fill={isLight ? '#15803d' : '#6ee7b7'} fontSize={7.5} fontFamily="monospace" fontWeight="bold">
-                    {sld.solarPV.acBreakerSpec.split(' ')[0]} BI-DIR RCBO
+                  <rect x={668} y={142} width={108} height={18} rx={2} fill={isLight ? '#dcfce7' : '#064e3b'} stroke="#16a34a" strokeWidth={1.1} />
+                  <text x={722} y={154} textAnchor="middle" fill={isLight ? '#15803d' : '#6ee7b7'} fontSize={7.2} fontFamily="monospace" fontWeight="bold">
+                    {sld.solarPV.acBreakerSpec.split(' ')[0]} RCBO ({sld.equipmentRouting.inverterToMdbM}m)
                   </text>
                 </g>
               )}
@@ -303,44 +311,52 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
                 MAIN COPPER BUSBAR 100A · CU 25×3mm
               </text>
 
-              {/* Outgoing Feeder Circuits */}
+              {/* Outgoing Feeder Circuits (Room Sub-DBs & Legacy Branch Circuits) */}
               {sld.circuits.map((ckt, idx) => {
-                const spacing = 750 / Math.max(1, sld.circuits.length - 1);
-                const x = sld.circuits.length === 1 ? 475 : 100 + idx * spacing;
+                const count = sld.circuits.length;
+                const compact = count > 6;
+                const span = compact ? 820 : 750;
+                const x0 = compact ? 70 : 100;
+                const spacing = span / Math.max(1, count - 1);
+                const x = count === 1 ? 475 : x0 + idx * spacing;
                 const isPvCkt = ckt.circuitId === 'CKT-PV';
                 const cktCol = isPvCkt ? '#16a34a' : '#0284c7';
+                const staggerY = compact && idx % 2 === 1 ? 14 : 0;
+                const bw = compact ? 32 : 38;
                 return (
                   <g key={ckt.circuitId}>
                     <line x1={x} y1={174} x2={x} y2={212} stroke={cktCol} strokeWidth={1.6} />
                     {/* Breaker Symbol + Fault Rating */}
                     <rect
-                      x={x - 19}
+                      x={x - bw / 2}
                       y={212}
-                      width={38}
-                      height={26}
+                      width={bw}
+                      height={24}
                       rx={3}
                       fill={isLight ? (isPvCkt ? '#dcfce7' : '#e0f2fe') : '#0c4a6e'}
                       stroke={cktCol}
                       strokeWidth={1.3}
                     />
-                    <text x={x} y={228} textAnchor="middle" fill={isLight ? (isPvCkt ? '#15803d' : '#0369a1') : '#bae6fd'} fontSize={8.5} fontFamily="monospace" fontWeight="bold">
+                    <text x={x} y={227} textAnchor="middle" fill={isLight ? (isPvCkt ? '#15803d' : '#0369a1') : '#bae6fd'} fontSize={compact ? 7.5 : 8.5} fontFamily="monospace" fontWeight="bold">
                       {ckt.breakerRating.split(' ')[0]}
                     </text>
-                    <text x={x + 23} y={228} fill={subInk} fontSize={7.5} fontFamily="monospace">
-                      {ckt.breakingCapacityKA}kA
+                    {!compact && (
+                      <text x={x + 23} y={228} fill={subInk} fontSize={7.5} fontFamily="monospace">
+                        {ckt.breakingCapacityKA}kA
+                      </text>
+                    )}
+                    <line x1={x} y1={236} x2={x} y2={288 + staggerY} stroke={cktCol} strokeWidth={1.6} />
+                    <polygon points={`${x - 4.5},${288 + staggerY} ${x + 4.5},${288 + staggerY} ${x},${297 + staggerY}`} fill={cktCol} />
+                    <text x={x} y={313 + staggerY} textAnchor="middle" fill={mainInk} fontSize={compact ? 7.8 : 9.5} fontFamily="monospace" fontWeight="bold">
+                      {compact ? ckt.circuitId : `${ckt.circuitId} (${isPvCkt ? 'PV' : ckt.phase})`}
                     </text>
-                    <line x1={x} y1={238} x2={x} y2={292} stroke={cktCol} strokeWidth={1.6} />
-                    <polygon points={`${x - 5},292 ${x + 5},292 ${x},302`} fill={cktCol} />
-                    <text x={x} y={320} textAnchor="middle" fill={mainInk} fontSize={9.5} fontFamily="monospace" fontWeight="bold">
-                      {ckt.circuitId} ({isPvCkt ? 'PV' : ckt.phase})
+                    <text x={x} y={326 + staggerY} textAnchor="middle" fill={subInk} fontSize={compact ? 7.0 : 8.5} fontFamily="monospace">
+                      {compact ? `${ckt.loadWatts}W·${ckt.designAmps}A` : `${ckt.loadWatts}W · ${ckt.designAmps}A · ΔV ${ckt.voltageDropPct}%`}
                     </text>
-                    <text x={x} y={336} textAnchor="middle" fill={subInk} fontSize={8.5} fontFamily="monospace">
-                      {ckt.loadWatts}W · {ckt.designAmps}A · ΔV {ckt.voltageDropPct}%
+                    <text x={x} y={339 + staggerY} textAnchor="middle" fill={subInk} fontSize={compact ? 6.8 : 8} fontFamily="monospace">
+                      {compact ? `${ckt.phase} · ${ckt.cableLengthM}m · ${ckt.voltageDropPct}%` : `${ckt.cableSpec.split(' ')[0]} · ${ckt.cableLengthM}m`}
                     </text>
-                    <text x={x} y={350} textAnchor="middle" fill={subInk} fontSize={8} fontFamily="monospace">
-                      {ckt.cableSpec.split(' ')[0]} · {ckt.cableLengthM}m
-                    </text>
-                    <text x={x} y={365} textAnchor="middle" fill={isLight ? '#15803d' : '#4ade80'} fontSize={7.5} fontFamily="monospace">
+                    <text x={x} y={352 + staggerY} textAnchor="middle" fill={isLight ? '#15803d' : '#4ade80'} fontSize={compact ? 6.8 : 7.5} fontFamily="monospace">
                       Max Zs {ckt.zsMaxOhms}Ω
                     </text>
                   </g>
@@ -742,10 +758,106 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
 
   // Plumbing, Sanitary & Stormwater Riser Schematic (P-101)
   const plumb = computePlumbingRiser(project);
+  const drainage = getRoofDrainageConfig(project.roof);
+  const gutterMeta = GUTTER_PROFILE_META[drainage.gutterProfile];
+  const collectMeta = WATER_COLLECTION_META[drainage.waterCollectionMode];
+
+  const updateRoofDrainage = (patch: Partial<typeof project.roof>) => {
+    if (!onUpdateProject) return;
+    const next = structuredClone(project);
+    next.roof = { ...next.roof, ...patch };
+    onUpdateProject(next);
+  };
 
   return (
     <div className="flex flex-col h-full w-full bg-[#070b14] overflow-hidden">
       <div className="flex-1 overflow-auto p-5 space-y-5">
+        {/* Interactive Roof Gutter & Rainwater Collection / Redirect Bar */}
+        {onUpdateProject && (
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateRoofDrainage({ gutterEnabled: !drainage.gutterEnabled })}
+                className={`px-2.5 py-1 rounded font-mono font-semibold ${
+                  drainage.gutterEnabled
+                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}
+              >
+                {drainage.gutterEnabled ? 'GUTTERS ON' : 'GUTTERS OFF'}
+              </button>
+              <select
+                aria-label="P-101 Gutter Profile"
+                value={drainage.gutterProfile}
+                onChange={(e) => updateRoofDrainage({ gutterProfile: e.target.value as GutterProfile })}
+                disabled={!drainage.gutterEnabled}
+                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 disabled:opacity-40"
+              >
+                {(Object.keys(GUTTER_PROFILE_META) as GutterProfile[]).map((gp) => (
+                  <option key={gp} value={gp}>
+                    {GUTTER_PROFILE_META[gp].label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-mono text-slate-400 uppercase">Redirect To:</span>
+              <select
+                aria-label="P-101 Rainwater Collection Mode"
+                value={drainage.waterCollectionMode}
+                onChange={(e) => updateRoofDrainage({ waterCollectionMode: e.target.value as WaterCollectionMode })}
+                disabled={!drainage.gutterEnabled}
+                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sky-300 font-medium disabled:opacity-40"
+              >
+                {(Object.keys(WATER_COLLECTION_META) as WaterCollectionMode[]).map((wm) => (
+                  <option key={wm} value={wm}>
+                    {WATER_COLLECTION_META[wm].label}
+                  </option>
+                ))}
+              </select>
+              {(drainage.waterCollectionMode === 'harvesting_tank' ||
+                drainage.waterCollectionMode === 'underground_cistern') && (
+                <select
+                  aria-label="P-101 Tank Volume"
+                  value={drainage.harvestingTankLiters}
+                  onChange={(e) => updateRoofDrainage({ harvestingTankLiters: parseInt(e.target.value, 10) })}
+                  className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono"
+                >
+                  {[1500, 3500, 5000, 10000].map((v) => (
+                    <option key={v} value={v}>
+                      {v.toLocaleString()} L
+                    </option>
+                  ))}
+                </select>
+              )}
+              <select
+                aria-label="P-101 Downpipes"
+                value={drainage.downpipeCount}
+                onChange={(e) => updateRoofDrainage({ downpipeCount: parseInt(e.target.value, 10) })}
+                disabled={!drainage.gutterEnabled}
+                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono disabled:opacity-40"
+              >
+                {[2, 4, 6, 8].map((n) => (
+                  <option key={n} value={n}>
+                    {n}× RWP
+                  </option>
+                ))}
+              </select>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={drainage.firstFlushDiverter}
+                  onChange={(e) => updateRoofDrainage({ firstFlushDiverter: e.target.checked })}
+                  disabled={!drainage.gutterEnabled}
+                  className="accent-sky-500"
+                />
+                First-Flush
+              </label>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
             <div className="text-[11px] text-slate-400 uppercase">Peak Flow (Hunter WSFU {plumb.totalWSFU})</div>
@@ -812,15 +924,33 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
               VENT COWL (+1.0m)
             </text>
 
-            {/* Rainwater Downpipe to Soakaway (EN 12056-3) */}
-            <line x1={845} y1={26} x2={845} y2={285} stroke="#0284c7" strokeWidth={2.5} strokeDasharray="7 3" />
-            <text x={845} y={17} textAnchor="middle" fill={isLight ? '#0369a1' : '#38bdf8'} fontSize={8.5} fontFamily="monospace" fontWeight="bold">
-              {plumb.rainwaterDownpipesCount}×RWP Ø100
-            </text>
-            <rect x={790} y={295} width={125} height={36} rx={4} fill={isLight ? '#e0f2fe' : '#082f49'} stroke="#0284c7" strokeWidth={1.3} />
-            <text x={852} y={316} textAnchor="middle" fill={isLight ? '#0369a1' : '#bae6fd'} fontSize={8.5} fontFamily="monospace" fontWeight="bold">
-              {plumb.rainwaterTankSpec.includes('Rainwater') ? '3500L RW TANK + UV' : 'STORM SOAKAWAY'}
-            </text>
+            {/* Rainwater Downpipe to Selected Collection / Redirect Destination (EN 12056-3) */}
+            {plumb.gutterEnabled ? (
+              <g>
+                <line x1={845} y1={26} x2={845} y2={285} stroke="#0284c7" strokeWidth={2.5} strokeDasharray="7 3" />
+                <text x={845} y={17} textAnchor="middle" fill={isLight ? '#0369a1' : '#38bdf8'} fontSize={8.5} fontFamily="monospace" fontWeight="bold">
+                  {plumb.rainwaterDownpipesCount}×RWP Ø100 ({gutterMeta.shortLabel})
+                </text>
+                {plumb.firstFlushDiverter && (
+                  <text x={838} y={196} textAnchor="end" fill={isLight ? '#0369a1' : '#7dd3fc'} fontSize={7.5} fontFamily="monospace">
+                    FIRST-FLUSH →
+                  </text>
+                )}
+                <rect x={775} y={295} width={150} height={42} rx={4} fill={isLight ? '#e0f2fe' : '#082f49'} stroke={collectMeta.badgeColor} strokeWidth={1.5} />
+                <text x={850} y={313} textAnchor="middle" fill={isLight ? '#0369a1' : '#bae6fd'} fontSize={8.5} fontFamily="monospace" fontWeight="bold">
+                  {collectMeta.shortLabel.toUpperCase()}
+                </text>
+                <text x={850} y={328} textAnchor="middle" fill={isLight ? '#0284c7' : '#7dd3fc'} fontSize={7.5} fontFamily="monospace">
+                  {plumb.waterCollectionMode === 'harvesting_tank' || plumb.waterCollectionMode === 'underground_cistern'
+                    ? `${plumb.harvestingTankLiters.toLocaleString()}L${plumb.firstFlushDiverter ? ' + UV FILTER' : ''}`
+                    : `${plumb.stormwaterRunoffLps} L/s REDIRECT`}
+                </text>
+              </g>
+            ) : (
+              <text x={845} y={34} textAnchor="middle" fill={subInk} fontSize={8} fontFamily="monospace">
+                EAVE GUTTERS OFF
+              </text>
+            )}
 
             {/* Downcomer Cold Supply & Booster Riser Pipe */}
             <line x1={180} y1={64} x2={180} y2={285} stroke="#0284c7" strokeWidth={3} />

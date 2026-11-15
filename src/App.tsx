@@ -10,16 +10,24 @@ import {
   FloorFinish,
   getDesignConfig,
   getHVACConfig,
+  getRoofDrainageConfig,
   getSolarConfig,
+  GUTTER_PROFILE_META,
+  GutterProfile,
   HVACSystemType,
   InteriorWallMaterial,
   MALDIVES_HVAC_CONFIG,
   RoofMaterial,
   RoofType,
   RoomCategory,
+  SelectableElementKind,
   SketchStroke,
+  SolarRoofFace,
   WallMaterial,
+  WATER_COLLECTION_META,
+  WaterCollectionMode,
   WindowFrameFinish,
+  WiringRouteMode,
 } from './model/types';
 import {
   createBlankEngineeringLot,
@@ -32,12 +40,19 @@ import { calculateBOQ } from './engine/boqCalculator';
 import {
   autoGenerateStructuralGrid,
   autoPlaceStructuralColumns,
+  computeSolarArrayLayout,
   computeTotalFloorArea,
+  levelBoundingBox,
   polygonArea,
   uid,
   wallLength,
 } from './engine/geometry';
-import { autoPopulateMEPForLevel } from './engine/mepEngine';
+import {
+  autoPopulateMEPForLevel,
+  computePVAndEquipmentRoutes,
+  getCoreElectricalNodes,
+  relocateMEPNode,
+} from './engine/mepEngine';
 import { convertSketchStrokesToBIM } from './ai/sketchRecognizer';
 import { AILLMConfig, runPromptArchitect } from './ai/promptEngine';
 import {
@@ -85,8 +100,10 @@ import {
   MousePointer2,
   Palette,
   PenTool,
+  Pencil,
   Plus,
   Redo2,
+  RotateCcw,
   Ruler,
   Send,
   Settings2,
@@ -123,6 +140,48 @@ const PROMPT_SUGGESTIONS = [
   'Add a second floor',
 ];
 
+const PROJECT_PRESET_OPTIONS: {
+  id: string;
+  label: string;
+  dimensions: string;
+  subtitle: string;
+}[] = [
+  { id: 'courtyard', label: 'Modern 3BR Courtyard', dimensions: '14×11m', subtitle: 'Single-story courtyard residence' },
+  { id: 'maldives', label: 'Maldives Tropical Residence', dimensions: '14.5×11m', subtitle: 'MNBC coastal cinder block & R32' },
+  { id: 'villa', label: 'Two-Story Family Villa', dimensions: '15×11m', subtitle: 'Double-level RC frame villa' },
+  { id: 'eco', label: 'Compact Eco Bungalow', dimensions: '10×8m', subtitle: 'Efficient compact layout' },
+  { id: 'blank', label: 'Blank Engineering Lot', dimensions: 'Custom', subtitle: 'Empty plot for fresh sketch' },
+];
+
+type ProjectMetaTextKey =
+  | 'title'
+  | 'projectCode'
+  | 'client'
+  | 'architect'
+  | 'location'
+  | 'revision'
+  | 'date'
+  | 'scale'
+  | 'currency';
+
+const PROJECT_META_FIELDS: {
+  key: ProjectMetaTextKey;
+  label: string;
+  placeholder: string;
+  mono?: boolean;
+  fullWidth?: boolean;
+}[] = [
+  { key: 'title', label: 'Project Title', placeholder: 'e.g. Maldives Tropical Residence', fullWidth: true },
+  { key: 'projectCode', label: 'Project Code', placeholder: 'MV-2026-301', mono: true },
+  { key: 'revision', label: 'Revision', placeholder: 'R1', mono: true },
+  { key: 'client', label: 'Client / Developer', placeholder: 'Client name' },
+  { key: 'architect', label: 'Lead Architect / Engineer', placeholder: 'Architect / Engineer' },
+  { key: 'location', label: 'Site Location', placeholder: 'City / Atoll / Country', fullWidth: true },
+  { key: 'date', label: 'Issue Date', placeholder: '2026-05-01', mono: true },
+  { key: 'scale', label: 'Drawing Sheet Scale', placeholder: '1:100 @ A3', mono: true },
+  { key: 'currency', label: 'BOQ Currency', placeholder: '$ or MVR', mono: true },
+];
+
 export function App() {
   const [project, setProject] = useState<BuildingProject>(() => createModernCourtyardHouse());
   const [history, setHistory] = useState<BuildingProject[]>([]);
@@ -133,7 +192,7 @@ export function App() {
   const [activeTool, setActiveTool] = useState<CADTool>('select');
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedKind, setSelectedKind] = useState<'wall' | 'opening' | 'room' | 'column' | null>(null);
+  const [selectedKind, setSelectedKind] = useState<SelectableElementKind | null>(null);
 
   // Hand-drawn AI Sketch state
   const [sketchStrokes, setSketchStrokes] = useState<SketchStroke[]>([]);
@@ -165,6 +224,8 @@ export function App() {
     return !window.localStorage.getItem('archstudio_claude_key');
   });
   const [showDrawingSetModal, setShowDrawingSetModal] = useState<boolean>(false);
+  const [showProjectDetailsModal, setShowProjectDetailsModal] = useState<boolean>(false);
+  const [focusElecUnit, setFocusElecUnit] = useState<'mdb' | 'utility_meter' | 'solar_inv' | 'solar_bess'>('mdb');
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState<boolean>(false);
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState<boolean>(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -173,9 +234,29 @@ export function App() {
   const [lastExport, setLastExport] = useState<ExportResult | null>(null);
   const [recentExports, setRecentExports] = useState<ExportResult[]>([]);
   const [copiedExport, setCopiedExport] = useState<boolean>(false);
+  const [historyToast, setHistoryToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = (msg: string) => {
+    setHistoryToast(msg);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setHistoryToast(null), 2600);
+  };
   const isLight = theme === 'light';
 
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
+  const kbRef = useRef<{
+    handleUndo: () => void;
+    handleRedo: () => void;
+    handleResetProject: () => void;
+    handleDeleteSelected: () => void;
+    selectedId: string | null;
+  }>({
+    handleUndo: () => {},
+    handleRedo: () => {},
+    handleResetProject: () => {},
+    handleDeleteSelected: () => {},
+    selectedId: null,
+  });
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
@@ -184,13 +265,56 @@ export function App() {
       }
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenHeaderMenu(null);
+      const target = e.target as HTMLElement | null;
+      const isTextInput =
+        target instanceof HTMLTextAreaElement ||
+        Boolean(target?.isContentEditable) ||
+        (target instanceof HTMLInputElement &&
+          !['range', 'checkbox', 'radio', 'button', 'color', 'file'].includes(target.type));
+
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !isTextInput) {
+        const key = e.key.toLowerCase();
+        if (!e.shiftKey && key === 'z') {
+          e.preventDefault();
+          kbRef.current.handleUndo();
+          return;
+        }
+        if ((e.shiftKey && key === 'z') || (!e.shiftKey && key === 'y')) {
+          e.preventDefault();
+          kbRef.current.handleRedo();
+          return;
+        }
+      }
+
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !isTextInput &&
+        !(target instanceof HTMLSelectElement)
+      ) {
+        if (kbRef.current.selectedId) {
+          e.preventDefault();
+          kbRef.current.handleDeleteSelected();
+          return;
+        }
+      }
+
+      if (e.key === 'Escape') {
+        setOpenHeaderMenu(null);
+        setShowProjectDetailsModal(false);
+        setShowDrawingSetModal(false);
+        setSelectedId(null);
+        setSelectedKind(null);
+        setActiveTool('select');
+      }
     };
     window.addEventListener('mousedown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('mousedown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     };
   }, []);
 
@@ -248,25 +372,79 @@ export function App() {
   const traceInputRef = useRef<HTMLInputElement | null>(null);
 
   const commitProject = (next: BuildingProject) => {
-    setHistory((h) => [...h.slice(-24), project]);
+    setHistory((h) => [...h.slice(-49), project]);
     setFuture([]);
     setProject(next);
   };
 
+  const updateProjectMeta = <K extends keyof BuildingProject['meta']>(
+    field: K,
+    value: BuildingProject['meta'][K]
+  ) => {
+    const next = structuredClone(project);
+    next.meta[field] = value;
+    commitProject(next);
+  };
+
+  const updateFloorLevel = (
+    idx: number,
+    patch: Partial<Pick<BuildingProject['levels'][number], 'name' | 'elevation' | 'floorToFloorHeight'>>
+  ) => {
+    const next = structuredClone(project);
+    const target = next.levels[idx];
+    if (!target) return;
+    Object.assign(target, patch);
+    commitProject(next);
+  };
+
+  const canUndo = history.length > 0 || sketchStrokes.length > 0;
+
   const handleUndo = () => {
+    if (sketchStrokes.length > 0) {
+      setSketchStrokes((s) => s.slice(0, -1));
+      showToast('Undid sketch stroke (⌘Z)');
+      return;
+    }
     if (history.length === 0) return;
     const prev = history[history.length - 1];
     setHistory((h) => h.slice(0, -1));
     setFuture((f) => [project, ...f]);
     setProject(prev);
+    setActiveLevelIndex((idx) => Math.min(idx, Math.max(0, prev.levels.length - 1)));
+    showToast(`Undid last action (⌘Z) · ${history.length - 1} left`);
   };
 
   const handleRedo = () => {
     if (future.length === 0) return;
     const next = future[0];
     setFuture((f) => f.slice(1));
-    setHistory((h) => [...h, project]);
+    setHistory((h) => [...h.slice(-49), project]);
     setProject(next);
+    setActiveLevelIndex((idx) => Math.min(idx, Math.max(0, next.levels.length - 1)));
+    showToast('Redid action (⇧⌘Z)');
+  };
+
+  const createPresetByKey = (presetKey: string): BuildingProject => {
+    if (presetKey === 'maldives') return createMaldivesTropicalVilla();
+    if (presetKey === 'courtyard') return createModernCourtyardHouse();
+    if (presetKey === 'villa') return createTwoStoryVilla();
+    if (presetKey === 'eco') return createCompactEcoBungalow();
+    return createBlankEngineeringLot();
+  };
+
+  const handleResetProject = () => {
+    const fresh = createPresetByKey(activePreset);
+    commitProject(fresh);
+    setActiveLevelIndex(0);
+    setSelectedId(null);
+    setSelectedKind(null);
+    setSketchStrokes([]);
+    setActiveTool('select');
+    setAiLogs((l) => [
+      { prompt: `Reset Template: ${fresh.meta.title}`, summary: 'Restored default template geometry, structural grid, MEP & BOQ (undoable with ⌘Z).' },
+      ...l,
+    ]);
+    showToast('Reset project to default template (press ⌘Z to undo)');
   };
 
   const boqSummary = useMemo(() => calculateBOQ(project), [project]);
@@ -277,12 +455,7 @@ export function App() {
 
   const handlePresetChange = (presetKey: string) => {
     setActivePreset(presetKey);
-    let next: BuildingProject;
-    if (presetKey === 'maldives') next = createMaldivesTropicalVilla();
-    else if (presetKey === 'courtyard') next = createModernCourtyardHouse();
-    else if (presetKey === 'villa') next = createTwoStoryVilla();
-    else if (presetKey === 'eco') next = createCompactEcoBungalow();
-    else next = createBlankEngineeringLot();
+    const next = createPresetByKey(presetKey);
 
     commitProject(next);
     setActiveLevelIndex(0);
@@ -381,10 +554,31 @@ export function App() {
       lvl.rooms = lvl.rooms.filter((r) => r.id !== selectedId);
     } else if (selectedKind === 'column') {
       lvl.columns = lvl.columns.filter((c) => c.id !== selectedId);
+    } else if (selectedKind === 'furniture') {
+      lvl.furniture = lvl.furniture.filter((f) => f.id !== selectedId);
+    } else if (selectedKind === 'mep_node') {
+      lvl.mepNodes = lvl.mepNodes.filter((n) => n.id !== selectedId);
+    } else if (selectedKind === 'solar_panel') {
+      const panelIdx = Number(selectedId.replace('solar_panel_', ''));
+      const curSolar = getSolarConfig(next);
+      const nextOffsets = { ...(curSolar.panelOffsets ?? {}) };
+      delete nextOffsets[panelIdx];
+      next.solar = { ...curSolar, panelOffsets: nextOffsets };
+    } else if (selectedKind === 'solar_array') {
+      next.solar = { ...getSolarConfig(next), enabled: false };
     }
     commitProject(next);
     setSelectedId(null);
     setSelectedKind(null);
+    showToast('Deleted selected element (⌘Z to undo)');
+  };
+
+  kbRef.current = {
+    handleUndo,
+    handleRedo,
+    handleResetProject,
+    handleDeleteSelected,
+    selectedId,
   };
 
   const handleLoadJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -445,6 +639,12 @@ export function App() {
   const selOpening = selectedKind === 'opening' ? activeLevel.openings.find((o) => o.id === selectedId) : null;
   const selRoom = selectedKind === 'room' ? activeLevel.rooms.find((r) => r.id === selectedId) : null;
   const selCol = selectedKind === 'column' ? activeLevel.columns.find((c) => c.id === selectedId) : null;
+  const selFurniture = selectedKind === 'furniture' ? activeLevel.furniture.find((f) => f.id === selectedId) : null;
+  const selMepNode = selectedKind === 'mep_node' ? activeLevel.mepNodes.find((n) => n.id === selectedId) : null;
+  const selSolarPanelIndex =
+    selectedKind === 'solar_panel' && selectedId?.startsWith('solar_panel_')
+      ? Number(selectedId.replace('solar_panel_', ''))
+      : null;
 
   return (
     <div
@@ -455,7 +655,7 @@ export function App() {
       {/* Top Application Ribbon */}
       <header
         ref={headerMenuRef}
-        className="no-print relative z-30 h-12 bg-slate-900 border-b border-slate-800 px-3 flex items-center justify-between gap-2.5 shrink-0"
+        className="no-print relative z-30 h-12 bg-slate-900 border-b border-slate-800 px-2.5 flex items-center justify-between gap-1.5 shrink-0"
       >
         {/* Left: Brand, Project Template & Floor Level */}
         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
@@ -467,18 +667,30 @@ export function App() {
             <div className="text-[10px] text-cyan-400 font-mono hidden 2xl:block">AI CAD · 3D · MEP · BOQ</div>
           </div>
 
-          <select
-            aria-label="Project Template"
-            onChange={(e) => handlePresetChange(e.target.value)}
-            value={activePreset}
-            className="ml-0.5 h-8 w-36 xl:w-44 bg-slate-950 border border-slate-700 rounded-lg px-2 text-xs font-medium text-slate-200 focus:outline-none focus:border-cyan-500 truncate cursor-pointer"
-          >
-            <option value="courtyard">Modern 3BR Courtyard (14×11m)</option>
-            <option value="maldives">Maldives Tropical Residence (14.5×11m)</option>
-            <option value="villa">Two-Story Family Villa (15×11m)</option>
-            <option value="eco">Compact Eco Bungalow (10×8m)</option>
-            <option value="blank">Blank Engineering Lot (Sketch New)</option>
-          </select>
+          <div className="ml-0.5 flex items-center gap-1 h-8 bg-slate-950 border border-slate-700/80 rounded-lg pl-2 pr-1">
+            <button
+              type="button"
+              onClick={() => setShowProjectDetailsModal(true)}
+              className="flex items-center gap-1.5 min-w-0 max-w-[130px] 2xl:max-w-[200px] text-left focus:outline-none"
+              title={`${project.meta.title} (${project.meta.projectCode}) — Click to edit project details`}
+            >
+              <span className="text-xs font-semibold text-slate-100 truncate leading-none">
+                {project.meta.title}
+              </span>
+              <span className="hidden 2xl:inline-block text-[10px] font-mono text-cyan-400 bg-cyan-500/20 border border-cyan-500/30 px-1.5 py-0.5 rounded leading-none shrink-0">
+                {project.meta.projectCode}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label="Edit Project Details"
+              title="Edit Project Details, Title Block & Template"
+              onClick={() => setShowProjectDetailsModal(true)}
+              className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors shrink-0"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           <div className="flex items-center gap-0.5 bg-slate-950 border border-slate-800 rounded-lg p-0.5 h-8">
             {project.levels.length > 2 ? (
@@ -690,24 +902,44 @@ export function App() {
           );
         })()}
 
-        {/* Right: History Capsule, File & Export Dropdown, Theme & Drawing Set */}
+        {/* Right: History & Reset Capsule, File & Export Dropdown, Theme & Drawing Set */}
         <div className="flex items-center gap-1.5 shrink-0">
-          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 h-8">
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 h-8 gap-0.5">
             <button
+              type="button"
               onClick={handleUndo}
-              disabled={history.length === 0}
-              className="p-1.5 rounded-md hover:bg-slate-800 disabled:opacity-35 text-slate-300"
-              title="Undo"
+              disabled={!canUndo}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium hover:bg-slate-800 disabled:opacity-35 text-slate-200 transition whitespace-nowrap"
+              title="Undo last action (⌘Z / Ctrl+Z)"
             >
               <Undo2 className="w-3.5 h-3.5" />
+              <span>Undo</span>
+              <span className="font-mono text-[10px] opacity-70">⌘Z</span>
+              {history.length > 0 && (
+                <span className="px-1 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px] leading-tight">
+                  {history.length}
+                </span>
+              )}
             </button>
             <button
+              type="button"
               onClick={handleRedo}
               disabled={future.length === 0}
-              className="p-1.5 rounded-md hover:bg-slate-800 disabled:opacity-35 text-slate-300"
-              title="Redo"
+              className="p-1.5 rounded-md hover:bg-slate-800 disabled:opacity-35 text-slate-300 transition"
+              title="Redo (⇧⌘Z / Ctrl+Y)"
+              aria-label="Redo"
             >
               <Redo2 className="w-3.5 h-3.5" />
+            </button>
+            <span className="h-4 w-px bg-slate-800 mx-0.5" />
+            <button
+              type="button"
+              onClick={handleResetProject}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium hover:bg-rose-500/15 hover:text-rose-300 text-slate-300 transition whitespace-nowrap"
+              title="Reset project to default template (undoable with ⌘Z)"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset</span>
             </button>
           </div>
 
@@ -824,7 +1056,7 @@ export function App() {
               setOpenHeaderMenu(null);
               setShowDrawingSetModal(true);
             }}
-            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-white-keep text-xs font-semibold shadow-sm whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-white-keep text-xs font-semibold shadow-sm whitespace-nowrap shrink-0"
           >
             <FileStack className="w-3.5 h-3.5" /> Drawing Set
           </button>
@@ -1027,6 +1259,7 @@ export function App() {
                 if (id) setRightTab('inspector');
               }}
               onUpdateProject={commitProject}
+              onSwitchSheet={(sheet) => setActiveSheet(sheet)}
               sketchStrokes={sketchStrokes}
               onAddSketchStroke={(st) => setSketchStrokes((prev) => [...prev, st])}
               traceImageUrl={traceImageUrl}
@@ -1043,6 +1276,7 @@ export function App() {
               project={project}
               mode={activeSheet}
               onUpdateProject={commitProject}
+              onSwitchSheet={(sheet) => setActiveSheet(sheet)}
               isLight={isLight}
             />
           )}
@@ -1323,17 +1557,36 @@ export function App() {
           ) : (
             /* BIM Properties Inspector */
             <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
-              {selectedId && (selWall || selOpening || selRoom || selCol) ? (
+              {selectedId &&
+              (selWall ||
+                selOpening ||
+                selRoom ||
+                selCol ||
+                selFurniture ||
+                selMepNode ||
+                selectedKind === 'solar_array' ||
+                selSolarPanelIndex !== null) ? (
                 <div className="bg-slate-950 border border-cyan-500/40 rounded-lg p-3 space-y-2.5">
                   <div className="flex items-center justify-between">
                     <span className="font-mono font-bold text-cyan-300 uppercase">
-                      Selected {selectedKind}
+                      {selSolarPanelIndex !== null
+                        ? `Solar Panel #${selSolarPanelIndex + 1}`
+                        : selectedKind === 'solar_array'
+                        ? 'Solar PV Array'
+                        : selectedKind === 'mep_node'
+                        ? 'MEP / Equipment'
+                        : `Selected ${selectedKind}`}
                     </span>
                     <button
                       onClick={handleDeleteSelected}
                       className="flex items-center gap-1 px-2 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-[11px]"
                     >
-                      <Trash2 className="w-3 h-3" /> Delete
+                      <Trash2 className="w-3 h-3" />{' '}
+                      {selectedKind === 'solar_panel'
+                        ? 'Reset Panel'
+                        : selectedKind === 'solar_array'
+                        ? 'Disable PV'
+                        : 'Delete'}
                     </button>
                   </div>
 
@@ -1526,17 +1779,396 @@ export function App() {
                   )}
 
                   {selCol && (
-                    <div className="space-y-1 font-mono text-[11px] text-slate-300">
-                      <div>Column Tag: {selCol.label}</div>
-                      <div>Size: {Math.round(selCol.width * 1000)}×{Math.round(selCol.depth * 1000)} mm</div>
-                      <div>Footing: {selCol.footingSize}×{selCol.footingSize} m</div>
+                    <div className="space-y-2 font-mono text-[11px] text-slate-300">
+                      <div>Column Tag: {selCol.label} · {Math.round(selCol.width * 1000)}×{Math.round(selCol.depth * 1000)} mm</div>
                       <div>Rebar: {selCol.rebarSpec}</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-slate-400">Pos X (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selCol.position.x}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const col = next.levels[activeLevelIndex].columns.find((c) => c.id === selCol.id);
+                              if (col) col.position.x = parseFloat(e.target.value) || 0;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-slate-400">Pos Y (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selCol.position.y}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const col = next.levels[activeLevelIndex].columns.find((c) => c.id === selCol.id);
+                              if (col) col.position.y = parseFloat(e.target.value) || 0;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1"
+                          />
+                        </label>
+                      </div>
+                      <label className="block">
+                        <span className="text-slate-400">Footing Size (m)</span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0.6"
+                          max="3.0"
+                          value={selCol.footingSize}
+                          onChange={(e) => {
+                            const next = structuredClone(project);
+                            const col = next.levels[activeLevelIndex].columns.find((c) => c.id === selCol.id);
+                            if (col) col.footingSize = parseFloat(e.target.value) || 1.2;
+                            commitProject(next);
+                          }}
+                          className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1"
+                        />
+                      </label>
                     </div>
                   )}
+
+                  {selFurniture && (
+                    <div className="space-y-2">
+                      <div className="text-slate-400 font-mono uppercase text-[10px]">
+                        Fixture: {selFurniture.type.replace('_', ' ')}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-slate-400">Pos X (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selFurniture.position.x}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const f = next.levels[activeLevelIndex].furniture.find((x) => x.id === selFurniture.id);
+                              if (f) f.position.x = parseFloat(e.target.value) || 0;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-slate-400">Pos Y (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selFurniture.position.y}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const f = next.levels[activeLevelIndex].furniture.find((x) => x.id === selFurniture.id);
+                              if (f) f.position.y = parseFloat(e.target.value) || 0;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block mb-1">Rotation ({selFurniture.rotation}°)</span>
+                        <div className="grid grid-cols-4 gap-1">
+                          {[0, 90, 180, 270].map((deg) => (
+                            <button
+                              key={deg}
+                              onClick={() => {
+                                const next = structuredClone(project);
+                                const f = next.levels[activeLevelIndex].furniture.find((x) => x.id === selFurniture.id);
+                                if (f) f.rotation = deg;
+                                commitProject(next);
+                              }}
+                              className={`py-1 rounded font-mono text-[10px] border ${
+                                selFurniture.rotation === deg
+                                  ? 'bg-cyan-600 text-white border-cyan-500'
+                                  : 'bg-slate-900 text-slate-300 border-slate-700'
+                              }`}
+                            >
+                              {deg}°
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-slate-400">Width (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.3"
+                            max="5"
+                            value={selFurniture.width}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const f = next.levels[activeLevelIndex].furniture.find((x) => x.id === selFurniture.id);
+                              if (f) f.width = parseFloat(e.target.value) || 0.8;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-slate-400">Depth (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.3"
+                            max="5"
+                            value={selFurniture.depth}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const f = next.levels[activeLevelIndex].furniture.find((x) => x.id === selFurniture.id);
+                              if (f) f.depth = parseFloat(e.target.value) || 0.8;
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {selMepNode && (
+                    <div className="space-y-2">
+                      <div className="text-slate-400 font-mono text-[10px] uppercase">
+                        {selMepNode.kind.replace('_', ' ')} · {selMepNode.system}
+                      </div>
+                      <label className="block">
+                        <span className="text-slate-400">Equipment Tag / Label</span>
+                        <input
+                          type="text"
+                          value={selMepNode.label ?? ''}
+                          onChange={(e) => {
+                            const next = structuredClone(project);
+                            const n = next.levels[activeLevelIndex].mepNodes.find((x) => x.id === selMepNode.id);
+                            if (n) n.label = e.target.value;
+                            commitProject(next);
+                          }}
+                          className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-slate-400">Pos X (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selMepNode.position.x}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const lvl = next.levels[activeLevelIndex];
+                              const sl = getSolarConfig(next).enabled ? computeSolarArrayLayout(next) : null;
+                              relocateMEPNode(
+                                lvl,
+                                selMepNode.id,
+                                { x: parseFloat(e.target.value) || 0, y: selMepNode.position.y },
+                                sl ? { x: sl.bounds.minX, y: sl.bounds.centerY } : undefined
+                              );
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-slate-400">Pos Y (m)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selMepNode.position.y}
+                            onChange={(e) => {
+                              const next = structuredClone(project);
+                              const lvl = next.levels[activeLevelIndex];
+                              const sl = getSolarConfig(next).enabled ? computeSolarArrayLayout(next) : null;
+                              relocateMEPNode(
+                                lvl,
+                                selMepNode.id,
+                                { x: selMepNode.position.x, y: parseFloat(e.target.value) || 0 },
+                                sl ? { x: sl.bounds.minX, y: sl.bounds.centerY } : undefined
+                              );
+                              commitProject(next);
+                            }}
+                            className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {(selectedKind === 'solar_array' || selSolarPanelIndex !== null) && (() => {
+                    const s = getSolarConfig(project);
+                    const pOff = selSolarPanelIndex !== null ? s.panelOffsets?.[selSolarPanelIndex] ?? { x: 0, y: 0 } : null;
+                    return (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="block">
+                            <span className="text-slate-400">Roof Slope</span>
+                            <select
+                              value={s.roofFace ?? 'south'}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.solar = {
+                                  ...getSolarConfig(next),
+                                  roofFace: e.target.value as SolarRoofFace,
+                                  offsetX: 0,
+                                  offsetY: 0,
+                                };
+                                commitProject(next);
+                              }}
+                              className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1"
+                            >
+                              <option value="south">South Slope</option>
+                              <option value="north">North Slope</option>
+                              <option value="east">East Slope</option>
+                              <option value="west">West Slope</option>
+                              <option value="flat_center">Roof Center</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="text-slate-400">Columns</span>
+                            <select
+                              value={s.columns ?? 0}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.solar = { ...getSolarConfig(next), columns: Number(e.target.value) };
+                                commitProject(next);
+                              }}
+                              className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1"
+                            >
+                              <option value={0}>Auto-Fit</option>
+                              {[2, 3, 4, 5, 6, 7, 8].map((c) => (
+                                <option key={c} value={c}>
+                                  {c} Cols
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="block">
+                            <span className="text-slate-400">Array Offset X (m)</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={s.offsetX ?? 0}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.solar = { ...getSolarConfig(next), offsetX: parseFloat(e.target.value) || 0 };
+                                commitProject(next);
+                              }}
+                              className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-slate-400">Array Offset Y (m)</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={s.offsetY ?? 0}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.solar = { ...getSolarConfig(next), offsetY: parseFloat(e.target.value) || 0 };
+                                commitProject(next);
+                              }}
+                              className="w-full mt-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono"
+                            />
+                          </label>
+                        </div>
+
+                        {selSolarPanelIndex !== null && pOff && (
+                          <div className="p-2 rounded bg-slate-900 border border-amber-500/40 space-y-1.5">
+                            <div className="text-[10px] font-mono font-bold text-amber-300">
+                              PANEL #{selSolarPanelIndex + 1} INDIVIDUAL OFFSET
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="block">
+                                <span className="text-slate-400">dX (m)</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  value={pOff.x}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    const cur = getSolarConfig(next);
+                                    next.solar = {
+                                      ...cur,
+                                      panelOffsets: {
+                                        ...(cur.panelOffsets ?? {}),
+                                        [selSolarPanelIndex]: { x: parseFloat(e.target.value) || 0, y: pOff.y },
+                                      },
+                                    };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="text-slate-400">dY (m)</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  value={pOff.y}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    const cur = getSolarConfig(next);
+                                    next.solar = {
+                                      ...cur,
+                                      panelOffsets: {
+                                        ...(cur.panelOffsets ?? {}),
+                                        [selSolarPanelIndex]: { x: pOff.x, y: parseFloat(e.target.value) || 0 },
+                                      },
+                                    };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex gap-1.5 pt-1">
+                          <button
+                            onClick={() => {
+                              const next = structuredClone(project);
+                              const cur = getSolarConfig(next);
+                              next.solar = { ...cur, rotationDeg: ((cur.rotationDeg ?? 0) + 90) % 360 };
+                              commitProject(next);
+                            }}
+                            className="flex-1 px-2 py-1 rounded bg-slate-900 border border-slate-700 hover:border-cyan-500 text-[10px] font-medium"
+                          >
+                            Rotate 90° ({s.rotationDeg ?? 0}°)
+                          </button>
+                          <button
+                            onClick={() => {
+                              const next = structuredClone(project);
+                              next.solar = {
+                                ...getSolarConfig(next),
+                                offsetX: 0,
+                                offsetY: 0,
+                                rotationDeg: 0,
+                                columns: 0,
+                                panelOffsets: {},
+                              };
+                              commitProject(next);
+                            }}
+                            className="px-2 py-1 rounded bg-slate-900 border border-slate-700 hover:border-rose-500 text-[10px] text-rose-300 font-medium"
+                          >
+                            Reset All
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="bg-slate-950/60 border border-slate-800 rounded p-3 text-slate-400">
-                  Click any Wall, Door, Window, Room, or Column in the 2D CAD view to inspect or edit its parameters.
+                  Click or drag any Wall, Door, Window, Room, Column, Furniture fixture, Solar PV Panel/Array, or MEP node in the 2D CAD view to inspect or reposition it.
                 </div>
               )}
 
@@ -1595,7 +2227,378 @@ export function App() {
                     ))}
                   </select>
                 </label>
+                <label className="block">
+                  <span className="text-slate-400">Eave Overhang ({project.roof.overhang.toFixed(2)} m)</span>
+                  <input
+                    type="range"
+                    min={0.2}
+                    max={1.2}
+                    step={0.05}
+                    value={project.roof.overhang}
+                    onChange={(e) => {
+                      const next = structuredClone(project);
+                      next.roof.overhang = parseFloat(e.target.value);
+                      commitProject(next);
+                    }}
+                    className="w-full accent-cyan-500"
+                  />
+                </label>
+
+                {/* Roof Gutters, Downpipes & Rainwater Collection / Redirect Options */}
+                {(() => {
+                  const drainage = getRoofDrainageConfig(project.roof);
+                  const collectMeta = WATER_COLLECTION_META[drainage.waterCollectionMode];
+                  return (
+                    <div className="p-2.5 rounded bg-slate-800/40 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-mono font-semibold text-sky-300 uppercase">
+                          Gutters & Rainwater Redirect
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = structuredClone(project);
+                            next.roof.gutterEnabled = !drainage.gutterEnabled;
+                            commitProject(next);
+                          }}
+                          className={`px-2 py-0.5 rounded font-mono text-[10px] ${
+                            drainage.gutterEnabled
+                              ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {drainage.gutterEnabled ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                      {drainage.gutterEnabled && (
+                        <>
+                          <label className="block">
+                            <span className="text-slate-400">Gutter Profile</span>
+                            <select
+                              value={drainage.gutterProfile}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.roof.gutterProfile = e.target.value as GutterProfile;
+                                commitProject(next);
+                              }}
+                              className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1"
+                            >
+                              {(Object.keys(GUTTER_PROFILE_META) as GutterProfile[]).map((gp) => (
+                                <option key={gp} value={gp}>
+                                  {GUTTER_PROFILE_META[gp].label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="text-slate-400">Water Collection / Redirect</span>
+                            <select
+                              value={drainage.waterCollectionMode}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.roof.waterCollectionMode = e.target.value as WaterCollectionMode;
+                                commitProject(next);
+                              }}
+                              className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1"
+                            >
+                              {(Object.keys(WATER_COLLECTION_META) as WaterCollectionMode[]).map((wm) => (
+                                <option key={wm} value={wm}>
+                                  {WATER_COLLECTION_META[wm].label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="text-[10px] text-slate-400 leading-snug bg-slate-950/60 border border-slate-800 rounded p-1.5">
+                            {collectMeta.desc}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <label className="block">
+                              <span className="text-slate-400">Downpipes (RWP)</span>
+                              <select
+                                value={drainage.downpipeCount}
+                                onChange={(e) => {
+                                  const next = structuredClone(project);
+                                  next.roof.downpipeCount = parseInt(e.target.value, 10);
+                                  commitProject(next);
+                                }}
+                                className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                              >
+                                {[2, 4, 6, 8].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}× Ø100
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {(drainage.waterCollectionMode === 'harvesting_tank' ||
+                              drainage.waterCollectionMode === 'underground_cistern') && (
+                              <label className="block">
+                                <span className="text-slate-400">Tank Volume</span>
+                                <select
+                                  value={drainage.harvestingTankLiters}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    next.roof.harvestingTankLiters = parseInt(e.target.value, 10);
+                                    commitProject(next);
+                                  }}
+                                  className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                                >
+                                  {[1500, 3500, 5000, 10000].map((v) => (
+                                    <option key={v} value={v}>
+                                      {v.toLocaleString()} L
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer pt-0.5">
+                            <input
+                              type="checkbox"
+                              checked={drainage.firstFlushDiverter}
+                              onChange={(e) => {
+                                const next = structuredClone(project);
+                                next.roof.firstFlushDiverter = e.target.checked;
+                                commitProject(next);
+                              }}
+                              className="accent-sky-500"
+                            />
+                            First-Flush Diverter & Leaf Screen
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
+
+              {/* Electrical Panels, Utility Meter, Inverter Relocation & Wiring Plan */}
+              {(() => {
+                const groundLvl = project.levels[0];
+                if (!groundLvl) return null;
+                const core = getCoreElectricalNodes(groundLvl);
+                const gBB = levelBoundingBox(groundLvl);
+                const solarCfg = getSolarConfig(project);
+                const unitNode =
+                  focusElecUnit === 'mdb'
+                    ? core.mdb
+                    : focusElecUnit === 'utility_meter'
+                    ? core.meter
+                    : focusElecUnit === 'solar_inv'
+                    ? core.inverter
+                    : core.bess;
+                const moveUnitTo = (nx: number, ny: number) => {
+                  const next = structuredClone(project);
+                  const lvl0 = next.levels[0];
+                  if (!lvl0) return;
+                  const sl = getSolarConfig(next).enabled ? computeSolarArrayLayout(next) : null;
+                  relocateMEPNode(
+                    lvl0,
+                    focusElecUnit,
+                    { x: Number(nx.toFixed(2)), y: Number(ny.toFixed(2)) },
+                    sl ? { x: sl.bounds.minX, y: sl.bounds.centerY } : undefined
+                  );
+                  commitProject(next);
+                };
+                const snapWall = (side: 'west' | 'north' | 'east' | 'south') => {
+                  const slot = focusElecUnit === 'mdb' ? 0.55 : focusElecUnit === 'utility_meter' ? 1.4 : focusElecUnit === 'solar_inv' ? 2.35 : 3.15;
+                  const inOut = focusElecUnit === 'mdb' ? 0.35 : -0.14;
+                  if (side === 'west') moveUnitTo(gBB.minX + inOut, gBB.minY + slot);
+                  else if (side === 'north') moveUnitTo(gBB.minX + slot, gBB.minY + inOut);
+                  else if (side === 'east') moveUnitTo(gBB.maxX - inOut, gBB.minY + slot);
+                  else moveUnitTo((gBB.minX + gBB.maxX) / 2 - 1.2 + slot * 0.5, gBB.maxY - inOut);
+                };
+                const routes = computePVAndEquipmentRoutes(project, 0);
+                const dcRouteMode: WiringRouteMode = solarCfg.dcRouteMode ?? 'auto';
+                const acRouteMode: WiringRouteMode = solarCfg.acRouteMode ?? 'auto';
+                const conduitElev = solarCfg.conduitElevationOffset ?? 0;
+                const updateSolarWiring = (patch: Partial<typeof solarCfg>) => {
+                  const next = structuredClone(project);
+                  next.solar = { ...getSolarConfig(next), ...patch };
+                  commitProject(next);
+                };
+                const resnapWires = () => {
+                  const next = structuredClone(project);
+                  next.solar = {
+                    ...getSolarConfig(next),
+                    dcWaypoints: undefined,
+                    acWaypoints: undefined,
+                  };
+                  const lvl0 = next.levels[0];
+                  if (lvl0) {
+                    const rt = computePVAndEquipmentRoutes(next, 0);
+                    relocateMEPNode(lvl0, core.inverter.id, core.inverter.position, rt.pvCombinerPos);
+                  }
+                  commitProject(next);
+                };
+                const routeOpts: [WiringRouteMode, string][] = [
+                  ['auto', 'Auto Wall'],
+                  ['north_wall', 'North Wall'],
+                  ['south_wall', 'South Wall'],
+                  ['west_wall', 'West Wall'],
+                  ['east_wall', 'East Wall'],
+                  ['corridor', 'Corridor'],
+                ];
+
+                return (
+                  <div className="p-2.5 rounded bg-slate-800/40 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-mono font-semibold text-amber-300 uppercase flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5" /> Panels, Meter &amp; Wiring
+                      </span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setActiveSheet('M-101')}
+                          className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-400 text-[10px] font-mono text-amber-300"
+                          title="Open 2D MEP Wiring Plan"
+                        >
+                          2D Plan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveSheet('3D-VIEW')}
+                          className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-cyan-400 text-[10px] font-mono text-cyan-300"
+                          title="Open 3D View (toggle ⚡ 3D Wiring Plan)"
+                        >
+                          3D View
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {(
+                        [
+                          ['mdb', 'Main DB (MDB)'],
+                          ['utility_meter', 'Utility Meter'],
+                          ...(solarCfg.enabled ? [['solar_inv', 'Solar Inverter'], ['solar_bess', 'BESS Battery']] : []),
+                        ] as ['mdb' | 'utility_meter' | 'solar_inv' | 'solar_bess', string][]
+                      ).map(([k, lbl]) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setFocusElecUnit(k)}
+                          className={`px-2 py-1 rounded text-[10px] font-medium border transition ${
+                            focusElecUnit === k
+                              ? 'bg-amber-600 text-white border-amber-500 font-semibold'
+                              : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+                          }`}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <label className="block">
+                        <span className="text-slate-400">Pos X (m)</span>
+                        <input
+                          type="number"
+                          step="0.2"
+                          value={unitNode.position.x}
+                          onChange={(e) => moveUnitTo(parseFloat(e.target.value) || 0, unitNode.position.y)}
+                          className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-slate-400">Pos Y (m)</span>
+                        <input
+                          type="number"
+                          step="0.2"
+                          value={unitNode.position.y}
+                          onChange={(e) => moveUnitTo(unitNode.position.x, parseFloat(e.target.value) || 0)}
+                          className="w-full mt-0.5 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {(['west', 'north', 'east', 'south'] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => snapWall(s)}
+                          className="py-1 rounded bg-slate-900 border border-slate-700 hover:border-amber-400 text-[10px] text-slate-300 capitalize"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="space-y-1.5 pt-1.5 border-t border-slate-800/80">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono text-slate-400 uppercase">Conduit Routing</span>
+                        <button
+                          type="button"
+                          onClick={resnapWires}
+                          className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-400 text-[10px] font-mono text-amber-300"
+                          title="Reset manual waypoint bends and snap to walls"
+                        >
+                          Re-Snap Wires
+                        </button>
+                      </div>
+                      {solarCfg.enabled && (
+                        <label className="block">
+                          <div className="flex justify-between text-[10px] text-rose-300 mb-0.5">
+                            <span>PV → INV Route</span>
+                            <span className="font-mono">{routes.pvToInverter.lengthM}m</span>
+                          </div>
+                          <select
+                            value={dcRouteMode}
+                            onChange={(e) =>
+                              updateSolarWiring({ dcRouteMode: e.target.value as WiringRouteMode, dcWaypoints: undefined })
+                            }
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px]"
+                          >
+                            {routeOpts.map(([v, l]) => (
+                              <option key={v} value={v}>
+                                {l}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <label className="block">
+                        <div className="flex justify-between text-[10px] text-emerald-300 mb-0.5">
+                          <span>INV → MDB Route</span>
+                          <span className="font-mono">{routes.inverterToMdb.lengthM}m</span>
+                        </div>
+                        <select
+                          value={acRouteMode}
+                          onChange={(e) =>
+                            updateSolarWiring({ acRouteMode: e.target.value as WiringRouteMode, acWaypoints: undefined })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px]"
+                        >
+                          {routeOpts.map(([v, l]) => (
+                            <option key={v} value={v}>
+                              {l}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <div className="flex justify-between text-[10px] text-slate-400">
+                          <span>Conduit Trunk Height</span>
+                          <span className="font-mono">
+                            {conduitElev >= 0 ? '+' : ''}
+                            {conduitElev.toFixed(2)}m
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-0.5}
+                          max={0.2}
+                          step={0.05}
+                          value={conduitElev}
+                          onChange={(e) => updateSolarWiring({ conduitElevationOffset: parseFloat(e.target.value) })}
+                          className="w-full accent-amber-500"
+                        />
+                      </label>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 bg-slate-950/60 border border-slate-800 rounded p-1.5 flex justify-between">
+                      <span>MTR→MDB: {routes.meterToMdb.lengthM}m</span>
+                      <span>{solarCfg.enabled ? `PV→INV: ${routes.pvToInverter.lengthM}m` : 'Grid Only'}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Solar PV & Battery Storage (IEC 62446) */}
               {(() => {
@@ -1692,6 +2695,123 @@ export function App() {
                               </select>
                             </label>
                           </div>
+
+                          {/* Manual Solar PV Placement Controls */}
+                          <div className="pt-1.5 border-t border-slate-700/60 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="block">
+                                <span className="text-slate-400">Roof Slope</span>
+                                <select
+                                  value={solar.roofFace ?? 'south'}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    next.solar = {
+                                      ...getSolarConfig(next),
+                                      roofFace: e.target.value as SolarRoofFace,
+                                      offsetX: 0,
+                                      offsetY: 0,
+                                    };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full mt-1 bg-slate-950 border border-slate-700 rounded px-2 py-1"
+                                >
+                                  <option value="south">South Slope</option>
+                                  <option value="north">North Slope</option>
+                                  <option value="east">East Slope</option>
+                                  <option value="west">West Slope</option>
+                                  <option value="flat_center">Roof Center</option>
+                                </select>
+                              </label>
+                              <label className="block">
+                                <span className="text-slate-400">Array Cols</span>
+                                <select
+                                  value={solar.columns ?? 0}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    next.solar = { ...getSolarConfig(next), columns: Number(e.target.value) };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full mt-1 bg-slate-950 border border-slate-700 rounded px-2 py-1"
+                                >
+                                  <option value={0}>Auto-Fit</option>
+                                  {[2, 3, 4, 5, 6, 7, 8].map((c) => (
+                                    <option key={c} value={c}>
+                                      {c} Cols
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="block">
+                                <span className="text-slate-400">
+                                  Offset X ({(solar.offsetX ?? 0).toFixed(1)}m)
+                                </span>
+                                <input
+                                  type="range"
+                                  min={-6}
+                                  max={6}
+                                  step={0.1}
+                                  value={solar.offsetX ?? 0}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    next.solar = { ...getSolarConfig(next), offsetX: Number(e.target.value) };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full accent-cyan-500 mt-1"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="text-slate-400">
+                                  Offset Y ({(solar.offsetY ?? 0).toFixed(1)}m)
+                                </span>
+                                <input
+                                  type="range"
+                                  min={-6}
+                                  max={6}
+                                  step={0.1}
+                                  value={solar.offsetY ?? 0}
+                                  onChange={(e) => {
+                                    const next = structuredClone(project);
+                                    next.solar = { ...getSolarConfig(next), offsetY: Number(e.target.value) };
+                                    commitProject(next);
+                                  }}
+                                  className="w-full accent-cyan-500 mt-1"
+                                />
+                              </label>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                onClick={() => {
+                                  const next = structuredClone(project);
+                                  const cur = getSolarConfig(next);
+                                  next.solar = { ...cur, rotationDeg: ((cur.rotationDeg ?? 0) + 90) % 360 };
+                                  commitProject(next);
+                                }}
+                                className="px-2 py-1 rounded bg-slate-900 border border-slate-700 hover:border-cyan-500 text-[10px] font-medium"
+                              >
+                                Rotate 90° ({solar.rotationDeg ?? 0}°)
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const next = structuredClone(project);
+                                  next.solar = {
+                                    ...getSolarConfig(next),
+                                    offsetX: 0,
+                                    offsetY: 0,
+                                    rotationDeg: 0,
+                                    columns: 0,
+                                    panelOffsets: {},
+                                  };
+                                  commitProject(next);
+                                }}
+                                className="px-2 py-1 rounded bg-slate-900 border border-slate-700 hover:border-rose-500 text-[10px] text-rose-300 font-medium"
+                              >
+                                Reset Position
+                              </button>
+                            </div>
+                          </div>
+
                           <div className="grid grid-cols-2 gap-1.5 pt-1">
                             <button
                               onClick={() => setActiveSheet('E-101')}
@@ -1992,52 +3112,19 @@ export function App() {
                 );
               })()}
 
-              {/* Project Title Block Metadata */}
-              <div className="space-y-2.5 border-t border-slate-800 pt-3">
-                <div className="text-[11px] font-mono font-semibold text-slate-300 uppercase">
-                  Title Block Metadata
-                </div>
-                <label className="block">
-                  <span className="text-slate-400">Project Title</span>
-                  <input
-                    type="text"
-                    value={project.meta.title}
-                    onChange={(e) => {
-                      const next = structuredClone(project);
-                      next.meta.title = e.target.value;
-                      commitProject(next);
-                    }}
-                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded px-2 py-1"
-                  />
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="text-slate-400">Code</span>
-                    <input
-                      type="text"
-                      value={project.meta.projectCode}
-                      onChange={(e) => {
-                        const next = structuredClone(project);
-                        next.meta.projectCode = e.target.value;
-                        commitProject(next);
-                      }}
-                      className="w-full mt-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-slate-400">Currency</span>
-                    <input
-                      type="text"
-                      value={project.meta.currency}
-                      onChange={(e) => {
-                        const next = structuredClone(project);
-                        next.meta.currency = e.target.value || '$';
-                        commitProject(next);
-                      }}
-                      className="w-full mt-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                    />
-                  </label>
-                </div>
+              {/* Project Details Shortcut */}
+              <div className="border-t border-slate-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowProjectDetailsModal(true)}
+                  className="w-full py-2 px-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700/80 flex items-center justify-between text-xs text-slate-200 transition-colors"
+                >
+                  <span className="flex items-center gap-2 font-medium truncate">
+                    <Pencil className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span className="truncate">Edit Project Details & Title Block</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400 shrink-0">{project.meta.projectCode}</span>
+                </button>
               </div>
             </div>
           )}
@@ -2099,6 +3186,253 @@ export function App() {
           onClose={() => setShowDrawingSetModal(false)}
           onJumpToSheet={(sheet) => setActiveSheet(sheet)}
         />
+      )}
+
+      {showProjectDetailsModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Project Details & Template"
+          onClick={() => setShowProjectDetailsModal(false)}
+          className="no-print fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden shadow-2xl"
+          >
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center shrink-0">
+                  <Pencil className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-slate-100 text-sm truncate">
+                    Project Details &amp; Title Block
+                  </h3>
+                  <p className="text-xs text-slate-400 truncate">
+                    {project.meta.projectCode} · {project.meta.title} · {grossArea.toFixed(1)} m² GFA
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Project Details"
+                onClick={() => setShowProjectDetailsModal(false)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-5 overflow-y-auto space-y-6 text-xs">
+              {/* Section 1: Starter Project Templates */}
+              <section className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-mono font-semibold text-slate-300 uppercase tracking-wider">
+                    Project Template / Preset
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    Switching presets loads a fresh synchronized model (Undo supported)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {PROJECT_PRESET_OPTIONS.map((preset) => {
+                    const isActive = activePreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => handlePresetChange(preset.id)}
+                        className={`text-left p-2.5 rounded-lg border transition-all ${
+                          isActive
+                            ? 'bg-cyan-500/20 border-cyan-500/50 text-slate-100 shadow-sm'
+                            : 'bg-slate-950 border-slate-800 hover:border-slate-600 text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold truncate">{preset.label}</span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-cyan-400 shrink-0">
+                            {preset.dimensions}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1 truncate">{preset.subtitle}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* Section 2: Project Identity & Title Block Metadata */}
+              <section className="space-y-3 border-t border-slate-800 pt-5">
+                <div className="text-[11px] font-mono font-semibold text-slate-300 uppercase tracking-wider">
+                  Title Block &amp; Engineering Metadata
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {PROJECT_META_FIELDS.map((field) => (
+                    <label
+                      key={field.key}
+                      className={`block ${field.fullWidth ? 'sm:col-span-2' : ''}`}
+                    >
+                      <span className="text-[11px] font-medium text-slate-400">{field.label}</span>
+                      <input
+                        type="text"
+                        value={project.meta[field.key]}
+                        placeholder={field.placeholder}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          updateProjectMeta(
+                            field.key,
+                            field.key === 'currency' ? raw : raw
+                          );
+                        }}
+                        onBlur={(e) => {
+                          if (field.key === 'currency' && !e.target.value.trim()) {
+                            updateProjectMeta('currency', '$');
+                          }
+                        }}
+                        className={`w-full mt-1 bg-slate-950 border border-slate-700 focus:border-cyan-500 focus:outline-none rounded-lg px-2.5 py-1.5 text-slate-100 ${
+                          field.mono ? 'font-mono' : ''
+                        }`}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              {/* Section 3: Site Plot Dimensions & Floor Levels */}
+              <section className="space-y-3 border-t border-slate-800 pt-5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-mono font-semibold text-slate-300 uppercase tracking-wider">
+                    Site Plot &amp; Floor Levels
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddFloor}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-white-keep text-[11px] font-medium transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Floor Level
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-[11px] font-medium text-slate-400">Plot Width (m)</span>
+                    <input
+                      type="number"
+                      step={0.5}
+                      min={4}
+                      max={150}
+                      value={project.meta.plotWidth}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        if (Number.isFinite(val)) {
+                          updateProjectMeta('plotWidth', Math.max(4, Math.min(150, val)));
+                        }
+                      }}
+                      className="w-full mt-1 bg-slate-950 border border-slate-700 focus:border-cyan-500 focus:outline-none rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[11px] font-medium text-slate-400">Plot Depth (m)</span>
+                    <input
+                      type="number"
+                      step={0.5}
+                      min={4}
+                      max={150}
+                      value={project.meta.plotDepth}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        if (Number.isFinite(val)) {
+                          updateProjectMeta('plotDepth', Math.max(4, Math.min(150, val)));
+                        }
+                      }}
+                      className="w-full mt-1 bg-slate-950 border border-slate-700 focus:border-cyan-500 focus:outline-none rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
+                    />
+                  </label>
+                </div>
+
+                <div className="space-y-2">
+                  {project.levels.map((lvl, idx) => (
+                    <div
+                      key={lvl.id}
+                      className="grid grid-cols-12 gap-2 items-center bg-slate-950 border border-slate-800 rounded-lg p-2.5"
+                    >
+                      <div className="col-span-2 sm:col-span-1 flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => setActiveLevelIndex(idx)}
+                          className={`px-2 py-1 rounded text-[11px] font-mono font-semibold ${
+                            activeLevelIndex === idx
+                              ? 'bg-cyan-600 text-white text-white-keep'
+                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          }`}
+                          title="Switch to this floor"
+                        >
+                          L{idx + 1}
+                        </button>
+                      </div>
+                      <label className="col-span-10 sm:col-span-5 block">
+                        <span className="text-[10px] text-slate-400">Level Name</span>
+                        <input
+                          type="text"
+                          value={lvl.name}
+                          onChange={(e) => updateFloorLevel(idx, { name: e.target.value })}
+                          className="w-full mt-0.5 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-100"
+                        />
+                      </label>
+                      <label className="col-span-6 sm:col-span-3 block">
+                        <span className="text-[10px] text-slate-400">Elevation (m)</span>
+                        <input
+                          type="number"
+                          step={0.1}
+                          value={lvl.elevation}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (Number.isFinite(val)) updateFloorLevel(idx, { elevation: val });
+                          }}
+                          className="w-full mt-0.5 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-slate-100"
+                        />
+                      </label>
+                      <label className="col-span-6 sm:col-span-3 block">
+                        <span className="text-[10px] text-slate-400">Height (m)</span>
+                        <input
+                          type="number"
+                          step={0.1}
+                          min={2.2}
+                          max={8}
+                          value={lvl.floorToFloorHeight}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (Number.isFinite(val)) {
+                              updateFloorLevel(idx, { floorToFloorHeight: Math.max(2.2, Math.min(8, val)) });
+                            }
+                          }}
+                          className="w-full mt-0.5 bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-slate-100"
+                        />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <span className="text-[11px] text-slate-400">
+                Changes sync live across Title Blocks, CAD Sheets, 3D Model &amp; BOQ
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowProjectDetailsModal(false)}
+                className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-white-keep text-xs font-medium transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Export Status & Download Confirmation Banner */}
@@ -2186,6 +3520,17 @@ export function App() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {historyToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="no-print fixed bottom-9 left-1/2 -translate-x-1/2 z-50 px-3.5 py-1.5 rounded-full bg-slate-900/95 border border-cyan-500/50 text-cyan-300 text-xs font-medium shadow-xl backdrop-blur pointer-events-none flex items-center gap-2"
+        >
+          <Undo2 className="w-3.5 h-3.5 shrink-0" />
+          <span>{historyToast}</span>
         </div>
       )}
     </div>

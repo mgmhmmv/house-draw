@@ -76,6 +76,14 @@ Respond with VALID JSON ONLY (no markdown, no explanation outside JSON) matching
   "climateZone": "maldives_tropical" | "temperate" | "arid_desert" | "mediterranean",
   "solar": { "enabled": boolean, "panelCount": number, "inverterKW": number, "batteryKWh": number },
   "hvac": { "enabled": boolean, "ceilingFansEnabled": boolean },
+  "equipment"?: {
+    "mdb"?: { "x": number, "y": number },
+    "utility_meter"?: { "x": number, "y": number },
+    "solar_inv"?: { "x": number, "y": number },
+    "solar_bess"?: { "x": number, "y": number },
+    "dcRouteMode"?: "auto" | "north_wall" | "south_wall" | "west_wall" | "east_wall" | "corridor",
+    "acRouteMode"?: "auto" | "north_wall" | "south_wall" | "west_wall" | "east_wall" | "corridor"
+  },
   "levels": [
     {
       "name": string,
@@ -86,8 +94,9 @@ Respond with VALID JSON ONLY (no markdown, no explanation outside JSON) matching
   ]
 }
 
-CRITICAL GEOMETRY RULES WHEN PROVIDING "levels":
+CRITICAL GEOMETRY RULES WHEN PROVIDING "levels" OR "equipment":
 - All coordinates are in meters inside the rectangle [0, width] x [0, depth]. Top (North) is y=0, Front Entry (South) is y=depth.
+- When asked to move/relocate electrical items (MDB, Hybrid Inverter, BESS Battery, Utility Meter) into a room (e.g., Entrance/Foyer, Hallway, Utility, Garage) or inside the house, set "action": "modify_building", omit "levels", and populate "equipment" with exact interior wall-mounted coordinates strictly inside that target room's bounds (at least 0.35m inside exterior walls).
 - Room rectangles on each floor MUST exactly tile the floor plate cleanly with ZERO overlaps and ZERO dead gaps (adjacent rooms share exact coordinates like x+w == next.x).
 - Every floor MUST contain a "hallway" spine rectangle so non-public rooms connect cleanly to doors.`;
 
