@@ -9,6 +9,9 @@ import { useViewport } from '../useViewport';
 import * as THREE from 'three';
 import { buildScene } from '../three/buildScene';
 import { vectorElevation, type VectorDrawing } from '../three/vectorize';
+import { ASSET_BY_ID } from '../assets/catalog';
+import { AssetMaterials } from '../assets/kit';
+import { assetModel } from '../assets/render';
 import { buildFrame } from '../model3d/faces';
 import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
 import { levelBounds } from '../model3d/faces';
@@ -86,6 +89,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
       // The 3D model (building, roof, fittings, outdoor objects), built once for all four views.
       const parts = buildScene(model, false);
       const roots: THREE.Object3D[] = [...parts.levels, parts.roof, parts.site];
+      const figureMats = new AssetMaterials(false);
       const cxm = (frame.bounds.minX + frame.bounds.maxX) / 2;
       const cym = (frame.bounds.minY + frame.bounds.maxY) / 2;
       for (const e of ELEVATIONS) {
@@ -95,7 +99,10 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
         const us = corners.map((c) => uAt(view, c));
         const axes = e.look.y !== 0 ? model.grid.xAxes.map((a) => ({ label: a.label, p: { x: a.coord, y: 0 } })) : model.grid.yAxes.map((a) => ({ label: a.label, p: { x: 0, y: a.coord } }));
         const drawing = project(frame, view);
-        const vector = vectorElevation(roots, view);
+        // People for scale: the library's 3D figures, standing in front of this facade.
+        const people = scaleFigures(frame.bounds, e.look, figureMats);
+        const vector = vectorElevation([...roots, people], view);
+        people.traverse((o) => o instanceof THREE.Mesh && o.geometry.dispose());
         // Lay out by what is actually drawn (trees and gates can reach past the building).
         const d2 = vector ? { ...drawing, uMin: Math.min(drawing.uMin, vector.uMin + 0.2), uMax: Math.max(drawing.uMax, vector.uMax - 0.2), zMax: Math.max(drawing.zMax, vector.zMax) } : drawing;
         out.push({
@@ -114,6 +121,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
         })
       );
       parts.materials.forEach((m) => m.dispose());
+      figureMats.dispose();
     } else {
       for (const s of sections) {
         if (choice !== 'all' && choice !== s.id) continue;
@@ -270,14 +278,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       {/* Profile: the building's outline, heaviest line after the ground */}
       {!p.vector && <path d={d.profile} fill="none" stroke={INK} strokeWidth={1.7} strokeLinejoin="round" />}
 
-      {/* Scale figures in front of the building (elevations only) */}
-      {!p.section && (
-        <g>
-          <ScaleFigure u={u0 + 0.9} h={1.78} kind="man" />
-          <ScaleFigure u={u0 + 1.55} h={1.65} kind="woman" />
-          <ScaleFigure u={u1 - 1.0} h={1.2} kind="child" />
-        </g>
-      )}
+
 
       {/* Grid bubbles */}
       {p.grid.map((g) => {
@@ -466,31 +467,29 @@ function wrap(text: string, max: number): string[] {
 }
 
 /**
- * A standing figure for scale, drawn as an outline the usual way on elevations: a man 1.78 m,
- * a woman 1.65 m, a child 1.20 m. Coordinates: u along the elevation, y = -height.
+ * A man (1.78 m), a woman (1.65 m) and a child (1.20 m) from the library, standing on the
+ * ground in front of the facade that faces the viewer, turned towards them. Drawing only.
  */
-function ScaleFigure({ u, h, kind }: { u: number; h: number; kind: 'man' | 'woman' | 'child' }) {
-  // Body outline in fractions of height (x across, y up), arms hanging.
-  const man: [number, number][] = [
-    [-0.045, 0.862], [-0.125, 0.835], [-0.15, 0.79], [-0.165, 0.5], [-0.135, 0.495], [-0.12, 0.73], [-0.1, 0.56],
-    [-0.095, 0.015], [-0.02, 0.015], [-0.014, 0.47], [0.014, 0.47], [0.02, 0.015], [0.095, 0.015], [0.1, 0.56],
-    [0.12, 0.73], [0.135, 0.495], [0.165, 0.5], [0.15, 0.79], [0.125, 0.835], [0.045, 0.862],
-  ];
-  const woman: [number, number][] = [
-    [-0.04, 0.86], [-0.11, 0.835], [-0.135, 0.79], [-0.15, 0.51], [-0.122, 0.505], [-0.105, 0.72], [-0.085, 0.6],
-    [-0.15, 0.3], [-0.06, 0.3], [-0.055, 0.015], [-0.015, 0.015], [-0.012, 0.3], [0.012, 0.3], [0.015, 0.015],
-    [0.055, 0.015], [0.06, 0.3], [0.15, 0.3], [0.085, 0.6], [0.105, 0.72], [0.122, 0.505], [0.15, 0.51],
-    [0.135, 0.79], [0.11, 0.835], [0.04, 0.86],
-  ];
-  const head = kind === 'child' ? 0.165 : 0.13;
-  const body = (kind === 'woman' ? woman : man).map(([x, y]) => [x * (kind === 'child' ? 1.15 : 1), y * (kind === 'child' ? (1 - head) / 0.87 : 1)] as [number, number]);
-  const d = body.map(([x, y], i) => `${i ? 'L' : 'M'}${(u + x * h).toFixed(3)} ${(-y * h).toFixed(3)}`).join(' ') + ' Z';
-  const r = (head * h) / 2;
-  const neckTop = body[0][1] * h;
-  return (
-    <g fill="rgba(255,255,255,0.88)" stroke={INK_2} strokeWidth={0.7} strokeLinejoin="round">
-      <path d={d} />
-      <ellipse cx={u} cy={-(neckTop + r * 0.95)} rx={r * 0.82} ry={r} />
-    </g>
-  );
+function scaleFigures(b: { minX: number; maxX: number; minY: number; maxY: number }, look: { x: number; y: number }, mats: AssetMaterials) {
+  const g = new THREE.Group();
+  const cx = (b.minX + b.maxX) / 2;
+  const cy = (b.minY + b.maxY) / 2;
+  const r = { x: -look.y, y: look.x };
+  const halfDepth = Math.abs(look.x) * (b.maxX - b.minX) / 2 + Math.abs(look.y) * (b.maxY - b.minY) / 2;
+  const halfWidth = Math.abs(r.x) * (b.maxX - b.minX) / 2 + Math.abs(r.y) * (b.maxY - b.minY) / 2;
+  const front = halfDepth + 1.4;
+  const yaw = Math.atan2(-look.x, -look.y);
+  const place = (id: string, along: number) => {
+    const def = ASSET_BY_ID.get(id);
+    if (!def) return;
+    const o = assetModel(def, def.w, def.d, def.h, mats, false);
+    o.position.set(cx - look.x * front + r.x * along, 0, cy - look.y * front + r.y * along);
+    o.rotation.y = yaw;
+    g.add(o);
+  };
+  place('person_man', -halfWidth + 1.0);
+  place('person_woman', -halfWidth + 1.6);
+  place('person_child', halfWidth - 1.1);
+  g.updateMatrixWorld(true);
+  return g;
 }
