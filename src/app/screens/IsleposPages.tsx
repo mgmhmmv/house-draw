@@ -3,6 +3,7 @@ import { Plus, Search, Users } from 'lucide-react';
 import { ApiError } from '../lib/api';
 import { islepos, type Connection, type IsleCustomer } from '../lib/islepos';
 import { Link } from '../lib/router';
+import { ATOLL_NAMES, getAllIslandsByAtoll } from '../lib/maldivesLocations';
 import { Avatar, Button, Dialog, Field, Input, Segmented, Spinner, toast } from '../ui';
 
 /** Settings card: paste the merchant's IslePOS key once; it is checked and stored encrypted. */
@@ -82,8 +83,11 @@ export function IsleposSettings() {
   );
 }
 
+const SELECT =
+  'h-11 w-full rounded-ctl border border-line bg-surface px-3 text-[15px] text-ink focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15 disabled:opacity-50 sm:text-sm';
+
 /** Fields IslePOS already shows elsewhere, or that are internal. */
-const HIDDEN = new Set(['id', 'name', 'mobile', 'email', 'address', 'tin', 'notes', 'existing', 'created_at', 'updated_at']);
+const HIDDEN = new Set(['id', 'name', 'mobile', 'email', 'address', 'street', 'island', 'atoll', 'billing_address', 'tin', 'notes', 'existing', 'created_at', 'updated_at']);
 /** Address with island and atoll, the way Maldivian addresses are read. */
 const place = (c: IsleCustomer) => [c.address, c.island, c.atoll].filter((x) => typeof x === 'string' && x.trim()).join(', ');
 const label = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
@@ -240,31 +244,33 @@ export function ClientsPage() {
 
 /** Create or edit a client. Every field maps to the IslePOS customer record. */
 export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleCustomer | null; open: boolean; onClose: () => void; onSaved: (c: IsleCustomer) => void }) {
-  const [form, setForm] = useState({ name: '', mobile: '', email: '', address: '', tin: '', notes: '' });
+  const [form, setForm] = useState({ name: '', mobile: '', email: '', street: '', atoll: '', island: '', tin: '', notes: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open) return;
     setError('');
-    setForm({
-      name: client?.name ?? '',
-      mobile: client?.mobile ?? '',
-      email: client?.email ?? '',
-      address: client?.address ?? '',
-      tin: client?.tin ?? '',
-      notes: client?.notes ?? '',
-    });
+    const str = (v: unknown) => (typeof v === 'string' ? v : '');
+    const atoll = str(client?.atoll);
+    const island = str(client?.island);
+    // House and road: the structured street if IslePOS sends it, else the flat address minus island/atoll.
+    let street = str(client?.street) || str(client?.billing_address);
+    if (!street && client?.address) street = client.address.split(',').map((p) => p.trim()).filter((p) => p && p !== island && p !== atoll).join(', ');
+    setForm({ name: client?.name ?? '', mobile: client?.mobile ?? '', email: client?.email ?? '', street, atoll, island, tin: client?.tin ?? '', notes: client?.notes ?? '' });
   }, [open, client]);
 
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const islands = form.atoll ? getAllIslandsByAtoll(form.atoll) : [];
 
   const save = async () => {
     if (!form.name.trim()) return setError('Enter the client’s name.');
     setBusy(true);
     setError('');
     try {
-      const body = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
+      const body: Record<string, string> = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
+      // IslePOS keeps both: the structured street / island / atoll, and the flat "street, island, atoll".
+      body.address = [body.street, body.island, body.atoll].filter(Boolean).join(', ');
       const c = client ? await islepos.updateCustomer(client.id, body) : await islepos.createCustomer({ ...body, name: body.name });
       onSaved(c);
       onClose();
@@ -306,9 +312,37 @@ export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleC
             <Input value={form.email} onChange={set('email')} type="email" />
           </Field>
         </div>
-        <Field label="Address">
-          <Input value={form.address} onChange={set('address')} placeholder="House, street, island / atoll" />
+        <Field label="House and road">
+          <Input value={form.street} onChange={set('street')} placeholder="e.g. G. Hazel House, Rah Dhebai Magu" />
         </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Atoll">
+            <select
+              value={form.atoll}
+              onChange={(e) => setForm((f) => ({ ...f, atoll: e.target.value, island: getAllIslandsByAtoll(e.target.value).includes(f.island) ? f.island : '' }))}
+              className={SELECT}
+            >
+              <option value="">Choose atoll</option>
+              {ATOLL_NAMES.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Island">
+            <select value={form.island} onChange={set('island')} disabled={!form.atoll} className={SELECT}>
+              <option value="">{form.atoll ? 'Choose island' : 'Choose an atoll first'}</option>
+              {/* Keep a saved island that is not on the list, so it is never silently dropped. */}
+              {form.island && !islands.includes(form.island) && <option value={form.island}>{form.island}</option>}
+              {islands.map((i) => (
+                <option key={i} value={i}>
+                  {i}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
         <Field label="TIN" hint="Tax identification number, for invoices.">
           <Input value={form.tin} onChange={set('tin')} />
         </Field>
