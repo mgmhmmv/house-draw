@@ -52,6 +52,10 @@ const FACE_STROKE: Record<string, { color: string; w: number }> = {
   sill: { color: INK_2, w: 0.5 },
   reveal: { color: INK_3, w: 0.4 },
   slab: { color: INK_2, w: 0.6 },
+  gutter: { color: INK_2, w: 0.6 },
+  downpipe: { color: INK_2, w: 0.5 },
+  tank: { color: INK_2, w: 0.6 },
+  solar: { color: INK, w: 0.5 },
 };
 const GAP_Y = 7.5;
 
@@ -370,7 +374,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
   );
 }
 
-const NOTE_ORDER = ['roof', 'fascia', 'wall', 'frame', 'door', 'plinth'];
+const NOTE_ORDER = ['roof', 'solar', 'gutter', 'fascia', 'wall', 'frame', 'door', 'plinth', 'tank'];
 
 function Notes({ d, info, x, avoid, textSize }: { d: Drawing; info: Info; x: number; avoid: number[]; textSize: number }) {
   const items = d.targets

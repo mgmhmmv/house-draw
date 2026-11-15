@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Maximize2, Sun } from 'lucide-react';
+import { Maximize2, Scissors, Sun } from 'lucide-react';
 import type { BuildingProject } from '../../../model/types';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
 
-type Style = 'rendered' | 'clay';
+type Style = 'rendered' | 'clay' | 'xray';
 type Cut = 'all' | number; // show everything, or levels up to N with the roof off
 type Preset = 'iso' | 'front' | 'side' | 'top';
 
@@ -22,6 +22,8 @@ export function ModelView({ model }: { model: BuildingProject }) {
   const [cut, setCut] = useState<Cut>('all');
   const [hour, setHour] = useState(15);
   const [showSun, setShowSun] = useState(false);
+  const [showCut, setShowCut] = useState(false);
+  const [cutZ, setCutZ] = useState<number | null>(null); // horizontal section height (m), null = off
 
   // Long-lived three.js objects.
   const ctx = useRef<{
@@ -45,6 +47,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
     renderer.toneMappingExposure = 1.05;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.localClippingEnabled = true;
     host.appendChild(renderer.domElement);
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.touchAction = 'none';
@@ -116,14 +119,14 @@ export function ModelView({ model }: { model: BuildingProject }) {
   }, []);
 
   // Rebuild the building whenever the model or style changes.
-  const parts = useMemo(() => buildScene(model, style === 'clay'), [model, style]);
+  const parts = useMemo(() => buildScene(model, style !== 'rendered'), [model, style]);
   useEffect(() => {
     const c = ctx.current;
     if (!c) return;
     disposeParts(c);
     c.parts = parts;
     parts.levels.forEach((g) => c.scene.add(g));
-    c.scene.add(parts.roof);
+    c.scene.add(parts.roof, parts.site);
     if (!c.fitted) {
       applyPreset(c, 'iso');
       c.fitted = true;
@@ -132,6 +135,31 @@ export function ModelView({ model }: { model: BuildingProject }) {
       // Disposal happens when the next parts replace these (or on unmount).
     };
   }, [parts]);
+
+  // X-ray: the building shell turns to glass so rooms, furniture and services show through.
+  useEffect(() => {
+    if (style !== 'xray') return;
+    for (const g of [...parts.levels, parts.roof]) {
+      g.traverse((o) => {
+        if (!(o instanceof THREE.Mesh) || o.userData.solid) return;
+        const m = o.material as THREE.MeshStandardMaterial;
+        m.transparent = true;
+        m.opacity = 0.16;
+        m.depthWrite = false;
+        o.castShadow = false;
+      });
+    }
+    parts.edges.forEach((e) => ((e.material as THREE.LineBasicMaterial).opacity = 0.75));
+  }, [style, parts]);
+
+  // Horizontal section: clip everything above the cut height.
+  useEffect(() => {
+    const plane = cutZ === null ? null : [new THREE.Plane(new THREE.Vector3(0, -1, 0), cutZ)];
+    for (const m of parts.materials) {
+      m.clippingPlanes = plane;
+      m.needsUpdate = true;
+    }
+  }, [cutZ, parts]);
 
   // Cutaway: hide the roof and levels above the chosen one.
   useEffect(() => {
@@ -175,6 +203,7 @@ export function ModelView({ model }: { model: BuildingProject }) {
           options={[
             { id: 'rendered', label: 'Rendered' },
             { id: 'clay', label: 'Clay' },
+            { id: 'xray', label: 'X-ray' },
           ]}
         />
         <Chips
@@ -185,6 +214,24 @@ export function ModelView({ model }: { model: BuildingProject }) {
       </div>
 
       <div className="absolute bottom-[84px] right-3 flex flex-col items-end gap-2 lg:bottom-4">
+        {showCut && (
+          <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
+            <span className="w-16 text-[13px] font-medium tabular-nums">{cutZ === null ? 'No cut' : `${cutZ.toFixed(1)} m`}</span>
+            <input
+              type="range"
+              min={0.2}
+              max={Math.ceil(parts.roofTopZ + 0.5)}
+              step={0.1}
+              value={cutZ ?? Math.ceil(parts.roofTopZ + 0.5)}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setCutZ(v >= parts.roofTopZ + 0.4 ? null : v);
+              }}
+              className="w-36 accent-[rgb(var(--accent))]"
+              aria-label="Section height"
+            />
+          </div>
+        )}
         {showSun && (
           <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
             <span className="w-11 text-[13px] font-medium tabular-nums">{fmtHour(hour)}</span>
@@ -201,6 +248,9 @@ export function ModelView({ model }: { model: BuildingProject }) {
               {p === 'iso' ? '3D' : p}
             </button>
           ))}
+          <button aria-label="Section height" title="Section height" onClick={() => setShowCut((s) => !s)} className={cx('flex h-9 w-9 items-center justify-center border-l border-line hover:bg-sunken', showCut || cutZ !== null ? 'text-accent' : 'text-ink-2')}>
+            <Scissors className="h-4 w-4" />
+          </button>
           <button aria-label="Sun position" title="Sun position" onClick={() => setShowSun((s) => !s)} className={cx('flex h-9 w-9 items-center justify-center border-l border-line hover:bg-sunken', showSun ? 'text-accent' : 'text-ink-2')}>
             <Sun className="h-4 w-4" />
           </button>
@@ -234,7 +284,7 @@ const fmtHour = (h: number) => `${Math.floor(h)}:${String(Math.round((h % 1) * 6
 function disposeParts(c: { scene: THREE.Scene; parts: SceneParts | null }) {
   const p = c.parts;
   if (!p) return;
-  for (const g of [...p.levels, p.roof]) {
+  for (const g of [...p.levels, p.roof, p.site]) {
     c.scene.remove(g);
     g.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();

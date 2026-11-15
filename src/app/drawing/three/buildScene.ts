@@ -6,15 +6,19 @@
  */
 import * as THREE from 'three';
 import type { BuildingProject } from '../../../model/types';
-import { buildFrame, type Face, type FaceKind, type V3 } from '../model3d/faces';
+import { buildFrame, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
+import { ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
 
 const T = (p: V3) => new THREE.Vector3(p.x, p.z, p.y);
 
 export interface SceneParts {
-  /** One group per level (walls, openings, floors), plus the roof. */
+  /** One group per level (walls, openings, floors, furniture), plus the roof and site items. */
   levels: THREE.Group[];
   roof: THREE.Group;
+  /** Downpipes, rainwater tank: always shown. */
+  site: THREE.Group;
+  roofTopZ: number;
   edges: THREE.LineSegments[];
   materials: THREE.Material[];
   box: THREE.Box3;
@@ -109,10 +113,13 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   };
 
   for (const f of frame.faces) {
-    const isRoof = f.kind === 'roof' || f.kind === 'fascia' || (f.kind === 'wall' && f.order === 1);
+    // Rainwater goods are rebuilt below as round geometry; the boxes are for the 2D drawings.
+    if (f.kind === 'gutter' || f.kind === 'downpipe' || f.kind === 'tank') continue;
+    const isRoof = f.kind === 'roof' || f.kind === 'fascia' || f.kind === 'solar' || (f.kind === 'wall' && f.order === 1);
     if (isRoof) {
       triangulate(f, bucket(roofBuckets, f.kind, f.fill));
-      edgesOf(f, roofEdges);
+      // Roof texture comes from real ribs, so only outline edges are drawn for roof planes.
+      edgesOf(f.kind === 'roof' ? { pts: f.pts } : f, roofEdges);
     } else {
       const li = levelOf(f, elevations);
       triangulate(f, bucket(levelBuckets[li], f.kind, f.fill));
@@ -168,9 +175,176 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   roof.add(re);
   edges.push(re);
 
+  const ribColor = new THREE.Color(roofRibColor(model, clay));
+  const metalMat = (color: string | THREE.Color, rough = 0.45, metal = 0.35) => {
+    const m = new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: clay ? 0 : metal });
+    materials.push(m);
+    return m;
+  };
+
+  // Roof ribs (standing seams, corrugations, tile rolls) as real raised geometry.
+  const ribGeo: THREE.BufferGeometry[] = [];
+  for (const f of frame.faces) {
+    if (f.kind !== 'roof' || !f.ribs) continue;
+    const n = new THREE.Vector3(f.n.x, f.n.z, f.n.y);
+    for (const r of f.ribs) ribGeo.push(barBetween(T(r.a), T(r.b), n, r.width, r.height));
+  }
+  if (ribGeo.length) {
+    const m = new THREE.Mesh(mergeGeos(ribGeo), metalMat(clay ? '#ECE9E3' : ribColor, 0.5, 0.3));
+    m.castShadow = true;
+    m.receiveShadow = true;
+    roof.add(m);
+  }
+
+  // Ridge and hip caps.
+  const capGeo = frame.ridgeEdges.map(([a, b]) => barBetween(T(a), T(b), new THREE.Vector3(0, 1, 0), 0.16, 0.06));
+  if (capGeo.length) {
+    const m = new THREE.Mesh(mergeGeos(capGeo), metalMat(clay ? '#E2DED7' : ribColor.clone().multiplyScalar(0.85)));
+    m.castShadow = true;
+    roof.add(m);
+  }
+
+  // Rainwater goods: gutters with the roof, downpipes and collection on the site.
+  const site = new THREE.Group();
+  const d = frame.drainage;
+  if (d) {
+    const gm = metalMat(clay ? '#E7E4DE' : d.color, 0.4, d.color === '#B26A2E' ? 0.7 : 0.2);
+    for (const g of d.gutters) {
+      const a = T(g.a);
+      const b = T(g.b);
+      const len = a.distanceTo(b);
+      const geo = d.halfRound ? new THREE.CylinderGeometry(0.075, 0.075, len, 16, 1, true, 0, Math.PI) : new THREE.BoxGeometry(0.13, len, 0.12);
+      const mesh = new THREE.Mesh(geo, gm);
+      (gm as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+      mesh.position.copy(a).add(b).multiplyScalar(0.5);
+      // Cylinder axis (local Y) along the run; the half shell (local +X) hangs downward, open side up.
+      const dir = new THREE.Vector3().subVectors(b, a).normalize();
+      const down = new THREE.Vector3(0, -1, 0);
+      const zAxis = new THREE.Vector3().crossVectors(down, dir).normalize();
+      mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(down, dir, zAxis));
+      mesh.castShadow = true;
+      roof.add(mesh);
+    }
+    for (const p of d.downpipes) {
+      const top = T(p.top);
+      const wall = new THREE.Vector3(p.wall.x, top.y - 0.29, p.wall.y);
+      const r = 0.045;
+      const v1 = cylinderBetween(new THREE.Vector3(wall.x, 0.15, wall.z), new THREE.Vector3(wall.x, wall.y, wall.z), r, gm);
+      const v2 = cylinderBetween(new THREE.Vector3(wall.x, wall.y, wall.z), new THREE.Vector3(top.x, wall.y, top.z), r, gm);
+      const v3 = cylinderBetween(new THREE.Vector3(top.x, wall.y, top.z), new THREE.Vector3(top.x, top.y, top.z), r, gm);
+      const shoe = cylinderBetween(new THREE.Vector3(wall.x, 0.16, wall.z), new THREE.Vector3(wall.x + p.out.x * 0.18, 0.05, wall.z + p.out.y * 0.18), r, gm);
+      site.add(v1, v2, v3, shoe);
+    }
+    const c = d.collection;
+    if (c && c.mode === 'harvesting_tank') {
+      const tm = metalMat(clay ? '#E9E6E0' : '#5F7A6A', 0.8, 0);
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(c.radius, c.radius, c.height, 32), tm);
+      tank.position.set(c.x, c.height / 2, c.y);
+      tank.castShadow = true;
+      tank.receiveShadow = true;
+      const lid = new THREE.Mesh(new THREE.CylinderGeometry(c.radius * 0.35, c.radius * 0.35, 0.08, 24), tm);
+      lid.position.set(c.x, c.height + 0.04, c.y);
+      site.add(tank, lid);
+    } else if (c) {
+      const pad = new THREE.Mesh(new THREE.CylinderGeometry(c.radius, c.radius, 0.06, 28), metalMat(clay ? '#E2DED7' : '#9A968C', 1, 0));
+      pad.position.set(c.x, 0.03, c.y);
+      pad.receiveShadow = true;
+      site.add(pad);
+    }
+  }
+
+  // Furniture and AC units, so cutaway and X-ray views read as rooms.
+  model.levels.forEach((lvl, i) => {
+    const fm = metalMat(clay ? '#E6E2DA' : '#D8CFC2', 0.9, 0);
+    for (const f of lvl.furniture) {
+      const h = FURNITURE_H[f.type] ?? 0.75;
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(f.width, h, f.depth), fm);
+      mesh.position.set(f.position.x, lvl.elevation + h / 2, f.position.y);
+      mesh.rotation.y = (-f.rotation * Math.PI) / 180;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.solid = true;
+      levels[i].add(mesh);
+    }
+    const am = metalMat('#F3F3F1', 0.6, 0.1);
+    for (const n of lvl.mepNodes) {
+      if (n.kind === 'ac_split') {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.28, 0.22), am);
+        m.position.set(n.position.x, lvl.elevation + 2.35, n.position.y);
+        m.userData.solid = true;
+        levels[i].add(m);
+      } else if (n.kind === 'ac_condenser') {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.55, 0.3), am);
+        m.position.set(n.position.x, lvl.elevation + 0.3, n.position.y);
+        m.userData.solid = true;
+        m.castShadow = true;
+        levels[i].add(m);
+      }
+    }
+  });
+
   const box = new THREE.Box3();
   levels.forEach((g) => box.expandByObject(g));
   box.expandByObject(roof);
+  box.expandByObject(site);
 
-  return { levels, roof, edges, materials, box, levelElevations: elevations };
+  return { levels, roof, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
+}
+
+const FURNITURE_H: Record<string, number> = {
+  bed_double: 0.55,
+  bed_single: 0.55,
+  sofa: 0.8,
+  dining_table: 0.75,
+  kitchen_counter: 0.9,
+  desk: 0.75,
+  wc: 0.42,
+  sink: 0.85,
+  shower: 0.04,
+  car: 1.45,
+};
+
+function roofRibColor(model: BuildingProject, clay: boolean): string {
+  if (clay) return '#ECE9E3';
+  const base = ROOF_MATERIAL_OPTIONS.find((o) => o.id === model.roof.material)?.base ?? '#64748b';
+  return tint(base, 0.45);
+}
+
+/** A thin bar of the given width and height lying along a→b, raised off the surface along n. */
+function barBetween(a: THREE.Vector3, b: THREE.Vector3, n: THREE.Vector3, width: number, height: number): THREE.BufferGeometry {
+  const len = a.distanceTo(b);
+  const geo = new THREE.BoxGeometry(width, height, len);
+  const z = new THREE.Vector3().subVectors(b, a).normalize();
+  const y = n.clone().sub(z.clone().multiplyScalar(n.dot(z))).normalize();
+  const x = new THREE.Vector3().crossVectors(y, z).normalize();
+  const m = new THREE.Matrix4().makeBasis(x, y, z);
+  m.setPosition(a.clone().add(b).multiplyScalar(0.5).addScaledVector(y, height / 2));
+  geo.applyMatrix4(m);
+  return geo;
+}
+
+function cylinderBetween(a: THREE.Vector3, b: THREE.Vector3, r: number, mat: THREE.Material): THREE.Mesh {
+  const len = Math.max(0.001, a.distanceTo(b));
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 12), mat);
+  mesh.position.copy(a).add(b).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3().subVectors(b, a).normalize());
+  mesh.castShadow = true;
+  return mesh;
+}
+
+/** Merge non-indexed position/normal geometries into one (keeps draw calls low). */
+function mergeGeos(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  for (const g0 of geos) {
+    const g = g0.index ? g0.toNonIndexed() : g0;
+    pos.push(...(g.getAttribute('position').array as Float32Array));
+    nrm.push(...(g.getAttribute('normal').array as Float32Array));
+    g0.dispose();
+    if (g !== g0) g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  return out;
 }

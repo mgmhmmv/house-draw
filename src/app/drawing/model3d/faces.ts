@@ -9,12 +9,17 @@
  */
 import {
   getDesignConfig,
+  getRoofDrainageConfig,
+  getSolarConfig,
+  GUTTER_PROFILE_META,
+  WATER_COLLECTION_META,
   type BuildingProject,
   type FloorLevel,
   type Opening,
 } from '../../../model/types';
 import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { wallFrame } from '../plan/kernel';
+import { computeSolarArrayLayout } from '../../../engine/geometry';
 
 export interface V3 {
   x: number;
@@ -22,7 +27,7 @@ export interface V3 {
   z: number;
 }
 
-export type FaceKind = 'wall' | 'glass' | 'door' | 'frame' | 'sill' | 'roof' | 'fascia' | 'slab' | 'plinth' | 'reveal';
+export type FaceKind = 'wall' | 'glass' | 'door' | 'frame' | 'sill' | 'roof' | 'fascia' | 'slab' | 'plinth' | 'reveal' | 'gutter' | 'downpipe' | 'tank' | 'solar';
 
 export interface Face {
   kind: FaceKind;
@@ -36,6 +41,8 @@ export interface Face {
   sash?: [V3, V3][];
   /** Opening mark (W1, D2) on the outward face of an exterior opening. */
   tag?: string;
+  /** Raised seams / courses on a roof plane, built as real geometry in 3D. */
+  ribs?: { a: V3; b: V3; width: number; height: number }[];
   fill: string;
   /** Painter's tie-break when depths are equal: higher draws later. */
   order: number;
@@ -50,6 +57,18 @@ export interface BuildingFrame {
   roofPlanes: { pts: V3[] }[];
   /** Material notes for callouts, by surface kind. */
   notes: Partial<Record<FaceKind, string>>;
+  /** Ridge and hip lines, for caps in 3D. */
+  ridgeEdges: [V3, V3][];
+  /** Rainwater goods, for round geometry in 3D (the faces carry the drawing version). */
+  drainage: Drainage | null;
+}
+
+export interface Drainage {
+  color: string;
+  halfRound: boolean;
+  gutters: { a: V3; b: V3; out: { x: number; y: number } }[];
+  downpipes: { top: V3; wall: { x: number; y: number }; out: { x: number; y: number } }[];
+  collection: { mode: string; x: number; y: number; radius: number; height: number } | null;
 }
 
 const v = (x: number, y: number, z: number): V3 => ({ x, y, z });
@@ -281,7 +300,9 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
     let n = v(u.y * w.z - u.z * w.y, u.z * w.x - u.x * w.z, u.x * w.y - u.y * w.x);
     if (n.z < 0) n = v(-n.x, -n.y, -n.z);
     const l = Math.hypot(n.x, n.y, n.z) || 1;
-    faces.push({ kind: 'roof', pts, n: v(n.x / l, n.y / l, n.z / l), fill, order: 2, lines: seamLines(pts, r.material) });
+    const nn = v(n.x / l, n.y / l, n.z / l);
+    const pat = roofPattern(pts, nn, r.material);
+    faces.push({ kind: 'roof', pts, n: nn, fill, order: 2, lines: pat.lines, ribs: pat.ribs });
     planes.push({ pts });
   };
 
@@ -354,31 +375,194 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
   return { faces, ridgeZ: rz, planes };
 }
 
-/** Light seam or course lines across a roof plane, so material reads at a glance. */
-function seamLines(pts: V3[], material: string): [V3, V3][] {
-  if (pts.length < 3) return [];
-  const metal = ['standing_seam', 'corrugated_metal', 'marine_metal'].includes(material);
+/**
+ * Roof covering pattern for one plane. Sheets run straight down the slope and courses run
+ * parallel to the eave, so every line is parallel to an edge of the plane and is clipped to
+ * the plane's outline (never fanned to a point). pts[0]→pts[1] is always the eave.
+ */
+const PATTERN: Record<string, { along?: number; across?: number; rib?: [number, number] }> = {
+  standing_seam: { along: 0.5, rib: [0.035, 0.035] },
+  marine_metal: { along: 0.25, rib: [0.04, 0.018] },
+  corrugated_metal: { along: 0.15, rib: [0.06, 0.012] },
+  clay_tile: { across: 0.32, along: 0.28, rib: [0.06, 0.02] },
+  natural_slate: { across: 0.24 },
+  asphalt_shingle: { across: 0.2 },
+  cedar_shake: { across: 0.22, rib: [0.03, 0.012] },
+  thatch_palm: { along: 0.1, across: 0.45 },
+  green_roof: {},
+  concrete_slab: {},
+};
+
+function roofPattern(pts: V3[], n: V3, material: string): { lines: [V3, V3][]; ribs: { a: V3; b: V3; width: number; height: number }[] } {
+  const spec = PATTERN[material] ?? { along: 0.5 };
+  const p0 = pts[0];
+  const ex = pts[1].x - p0.x;
+  const ey = pts[1].y - p0.y;
+  const el = Math.hypot(ex, ey) || 1;
+  const u = v(ex / el, ey / el, 0); // along the eave
+  // Up-slope direction in the plane: n × u, flipped to climb.
+  let w = v(n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x);
+  if (w.z < 0) w = v(-w.x, -w.y, -w.z);
+  const wl = Math.hypot(w.x, w.y, w.z) || 1;
+  w = v(w.x / wl, w.y / wl, w.z / wl);
+  const loc = pts.map((p) => {
+    const d = v(p.x - p0.x, p.y - p0.y, p.z - p0.z);
+    return [d.x * u.x + d.y * u.y + d.z * u.z, d.x * w.x + d.y * w.y + d.z * w.z] as [number, number];
+  });
+  const at = (s: number, t: number) => v(p0.x + u.x * s + w.x * t, p0.y + u.y * s + w.y * t, p0.z + u.z * s + w.z * t);
+  /** Range of the other coordinate where a constant-coordinate line crosses the (convex) plane. */
+  const span = (axis: 0 | 1, c: number): [number, number] | null => {
+    const hits: number[] = [];
+    for (let i = 0; i < loc.length; i++) {
+      const a = loc[i];
+      const b = loc[(i + 1) % loc.length];
+      if ((a[axis] - c) * (b[axis] - c) <= 0 && a[axis] !== b[axis]) {
+        const t = (c - a[axis]) / (b[axis] - a[axis]);
+        hits.push(a[1 - axis] + (b[1 - axis] - a[1 - axis]) * t);
+      }
+    }
+    return hits.length >= 2 ? [Math.min(...hits), Math.max(...hits)] : null;
+  };
+  const sMin = Math.min(...loc.map((q) => q[0]));
+  const sMax = Math.max(...loc.map((q) => q[0]));
+  const tMax = Math.max(...loc.map((q) => q[1]));
   const lines: [V3, V3][] = [];
-  // Eave edge is pts[0]→pts[1]; run lines from the eave toward the far edge.
-  const a = pts[0];
-  const b = pts[1];
-  const far = pts.length === 4 ? [pts[3], pts[2]] : [pts[2], pts[2]];
-  const n = metal ? Math.max(2, Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 0.6)) : 0;
-  for (let i = 1; i < n; i++) {
-    const t = i / n;
-    const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z };
-    const q = { x: far[0].x + (far[1].x - far[0].x) * t, y: far[0].y + (far[1].y - far[0].y) * t, z: far[0].z };
-    lines.push([p, q]);
-  }
-  if (!metal) {
-    // Tile / shingle courses parallel to the eave.
-    for (let t = 0.12; t < 0.98; t += 0.12) {
-      const p = { x: a.x + (far[0].x - a.x) * t, y: a.y + (far[0].y - a.y) * t, z: a.z + (far[0].z - a.z) * t };
-      const q = { x: b.x + (far[1].x - b.x) * t, y: b.y + (far[1].y - b.y) * t, z: b.z + (far[1].z - b.z) * t };
-      lines.push([p, q]);
+  const ribs: { a: V3; b: V3; width: number; height: number }[] = [];
+
+  // Courses parallel to the eave (tiles, shingles, slate).
+  if (spec.across) {
+    for (let t = spec.across; t < tMax - 0.05; t += spec.across) {
+      const r = span(1, t);
+      if (!r) continue;
+      lines.push([at(r[0], t), at(r[1], t)]);
+      if (spec.rib && material !== 'clay_tile') ribs.push({ a: at(r[0], t), b: at(r[1], t), width: spec.rib[0], height: spec.rib[1] });
     }
   }
-  return lines;
+  // Sheets / tile columns straight down the slope.
+  if (spec.along) {
+    const start = Math.ceil(sMin / spec.along) * spec.along;
+    for (let s = start; s <= sMax - 0.02; s += spec.along) {
+      const r = span(0, s);
+      if (!r || r[1] - r[0] < 0.05) continue;
+      if (material !== 'clay_tile') lines.push([at(s, r[0]), at(s, r[1])]);
+      if (spec.rib) ribs.push({ a: at(s, r[0]), b: at(s, r[1]), width: spec.rib[0], height: spec.rib[1] });
+    }
+  }
+  return { lines, ribs };
+}
+
+/* ── Rainwater goods and solar ─────────────────────────────────────── */
+
+const GUTTER_COLOR: Record<string, string> = { half_round_pvc: '#E9EBEE', k_style_alu: '#4A5361', box_concealed: '#5A6270', copper_half_round: '#B26A2E' };
+
+function drainageFor(model: BuildingProject, top: FloorLevel, eaveZ: number): { faces: Face[]; drainage: Drainage | null } {
+  const r = model.roof;
+  const cfg = getRoofDrainageConfig(r);
+  if (!cfg.gutterEnabled || r.type === 'flat') return { faces: [], drainage: null };
+  const b = levelBounds(top);
+  const oh = r.overhang;
+  const x0 = b.minX - oh, x1 = b.maxX + oh, y0 = b.minY - oh, y1 = b.maxY + oh;
+  const W = x1 - x0, D = y1 - y0;
+  const alongX = W >= D;
+  const color = GUTTER_COLOR[cfg.gutterProfile] ?? '#E9EBEE';
+  const go = 0.09; // gutter centre, outward from the fascia
+  type Edge = { a: V3; b: V3; out: { x: number; y: number } };
+  const edges: Edge[] = [];
+  const zg = eaveZ - 0.09;
+  const N: Edge = { a: v(x0, y0 - go, zg), b: v(x1, y0 - go, zg), out: { x: 0, y: -1 } };
+  const S: Edge = { a: v(x0, y1 + go, zg), b: v(x1, y1 + go, zg), out: { x: 0, y: 1 } };
+  const Wd: Edge = { a: v(x0 - go, y0, zg), b: v(x0 - go, y1, zg), out: { x: -1, y: 0 } };
+  const E: Edge = { a: v(x1 + go, y0, zg), b: v(x1 + go, y1, zg), out: { x: 1, y: 0 } };
+  if (r.type === 'shed') edges.push(S);
+  else if (r.type === 'gable') edges.push(...(alongX ? [N, S] : [Wd, E]));
+  else edges.push(N, S, Wd, E);
+
+  // Downpipes: corners first, then evenly along the longest gutter.
+  const corners = [
+    { gx: x0 + 0.2, gy: y1 + go, wx: b.minX + 0.12, wy: b.maxY + 0.06, out: { x: 0, y: 1 } },
+    { gx: x1 - 0.2, gy: y1 + go, wx: b.maxX - 0.12, wy: b.maxY + 0.06, out: { x: 0, y: 1 } },
+    { gx: x1 - 0.2, gy: y0 - go, wx: b.maxX - 0.12, wy: b.minY - 0.06, out: { x: 0, y: -1 } },
+    { gx: x0 + 0.2, gy: y0 - go, wx: b.minX + 0.12, wy: b.minY - 0.06, out: { x: 0, y: -1 } },
+  ].filter((c) => (r.type === 'shed' ? c.out.y > 0 : r.type === 'gable' && !alongX ? true : true));
+  const count = Math.max(1, Math.min(8, cfg.downpipeCount));
+  const pipes: Drainage['downpipes'] = corners.slice(0, Math.min(count, corners.length)).map((c) => ({ top: v(c.gx, c.gy, zg), wall: { x: c.wx, y: c.wy }, out: c.out }));
+  for (let i = pipes.length; i < count; i++) {
+    const t = (i - corners.length + 1) / (count - corners.length + 1);
+    const x = x0 + W * t;
+    pipes.push({ top: v(x, y1 + go, zg), wall: { x: Math.min(b.maxX, Math.max(b.minX, x)), y: b.maxY + 0.06 }, out: { x: 0, y: 1 } });
+  }
+
+  const faces: Face[] = [];
+  for (const e of edges) {
+    const minx = Math.min(e.a.x, e.b.x) - (e.out.x ? 0.075 : 0);
+    const maxx = Math.max(e.a.x, e.b.x) + (e.out.x ? 0.075 : 0);
+    const miny = Math.min(e.a.y, e.b.y) - (e.out.y ? 0.075 : 0);
+    const maxy = Math.max(e.a.y, e.b.y) + (e.out.y ? 0.075 : 0);
+    faces.push(...box(minx, miny, eaveZ - 0.16, maxx, maxy, eaveZ - 0.03, 'gutter', color, 4));
+  }
+  const pr = 0.045;
+  for (const p of pipes) {
+    // Vertical run down the wall to a shoe just above ground.
+    faces.push(...box(p.wall.x - pr, p.wall.y - pr, 0.12, p.wall.x + pr, p.wall.y + pr, eaveZ - 0.3, 'downpipe', color, 4));
+    // Gooseneck under the soffit back to the gutter.
+    faces.push(...box(Math.min(p.wall.x, p.top.x) - pr, Math.min(p.wall.y, p.top.y) - pr, eaveZ - 0.34, Math.max(p.wall.x, p.top.x) + pr, Math.max(p.wall.y, p.top.y) + pr, eaveZ - 0.24, 'downpipe', color, 4));
+  }
+
+  let collection: Drainage['collection'] = null;
+  const lead = pipes[0];
+  if (lead) {
+    const cx = lead.wall.x + lead.out.x * 0.9;
+    const cy = lead.wall.y + lead.out.y * 0.9 + 0.0;
+    if (cfg.waterCollectionMode === 'harvesting_tank') {
+      const h = 1.8;
+      const radius = Math.min(1.2, Math.max(0.45, Math.sqrt(cfg.harvestingTankLiters / 1000 / (Math.PI * h))));
+      const ty = lead.wall.y + lead.out.y * (radius + 0.25);
+      collection = { mode: cfg.waterCollectionMode, x: lead.wall.x + 0.2, y: ty, radius, height: h };
+      faces.push(...box(lead.wall.x + 0.2 - radius, ty - radius, 0, lead.wall.x + 0.2 + radius, ty + radius, h, 'tank', '#5F7A6A', 4));
+    } else {
+      collection = { mode: cfg.waterCollectionMode, x: cx, y: cy, radius: 0.45, height: 0.06 };
+      faces.push(...box(cx - 0.45, cy - 0.45, 0, cx + 0.45, cy + 0.45, 0.06, 'tank', '#9A968C', 4));
+    }
+  }
+  return { faces, drainage: { color, halfRound: cfg.gutterProfile.includes('half_round'), gutters: edges, downpipes: pipes, collection } };
+}
+
+/** Solar panels sitting on the roof planes, using the engine's array layout. */
+function solarFaces(model: BuildingProject, planes: { pts: V3[] }[]): Face[] {
+  const cfg = getSolarConfig(model);
+  if (!cfg.enabled || !planes.length) return [];
+  const layout = computeSolarArrayLayout(model);
+  const faces: Face[] = [];
+  const inPlan = (pts: V3[], x: number, y: number) => {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+      if (pts[i].y > y !== pts[j].y > y && x < ((pts[j].x - pts[i].x) * (y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
+    return inside;
+  };
+  for (const p of layout.panels) {
+    const plane = planes.find((pl) => inPlan(pl.pts, p.x, p.y)) ?? planes[0];
+    const [a, b, c] = plane.pts;
+    let n = v((b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y), (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z), (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+    if (n.z < 0) n = v(-n.x, -n.y, -n.z);
+    const nl = Math.hypot(n.x, n.y, n.z) || 1;
+    n = v(n.x / nl, n.y / nl, n.z / nl);
+    const zAt = (x: number, y: number) => a.z - (n.x * (x - a.x) + n.y * (y - a.y)) / (n.z || 1) + 0.1;
+    const rot = (p.rotationDeg * Math.PI) / 180;
+    const hw = p.width / 2;
+    const hd = p.depth / 2;
+    const corner = (sx: number, sy: number) => {
+      const x = p.x + sx * Math.cos(rot) - sy * Math.sin(rot);
+      const y = p.y + sx * Math.sin(rot) + sy * Math.cos(rot);
+      return v(x, y, zAt(x, y));
+    };
+    const pts = [corner(-hw, hd), corner(hw, hd), corner(hw, -hd), corner(-hw, -hd)];
+    const lines: [V3, V3][] = [];
+    const lerp = (q: V3, r: V3, t: number) => v(q.x + (r.x - q.x) * t, q.y + (r.y - q.y) * t, q.z + (r.z - q.z) * t);
+    for (let i = 1; i < 3; i++) lines.push([lerp(pts[0], pts[1], i / 3), lerp(pts[3], pts[2], i / 3)]);
+    for (let i = 1; i < 6; i++) lines.push([lerp(pts[0], pts[3], i / 6), lerp(pts[1], pts[2], i / 6)]);
+    faces.push({ kind: 'solar', pts, n, fill: '#23324A', order: 5, lines });
+  }
+  return faces;
 }
 
 export function buildFrame(model: BuildingProject): BuildingFrame {
@@ -408,6 +592,25 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
   const top = model.levels[model.levels.length - 1];
   const roof = roofFaces(model, top, eaveZ);
   faces.push(...roof.faces);
+  const rain = drainageFor(model, top, eaveZ);
+  faces.push(...rain.faces);
+  if (model.roof.type !== 'flat') faces.push(...solarFaces(model, roof.planes));
+
+  // Ridge and hip lines: every roof-plane edge except its eave, de-duplicated.
+  const seen = new Set<string>();
+  const ridgeEdges: [V3, V3][] = [];
+  if (model.roof.type !== 'flat')
+    for (const pl of roof.planes)
+      for (let i = 1; i < pl.pts.length; i++) {
+        const a = pl.pts[i];
+        const b2 = pl.pts[(i + 1) % pl.pts.length];
+        if (Math.abs(a.z - b2.z) < 1e-3 && Math.abs(a.z - eaveZ) < 1e-3) continue; // eave
+        const k = [a, b2].map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`).sort().join('|');
+        if (seen.has(k)) continue;
+        seen.add(k);
+        // Gable verges (edge from eave straight up to the ridge end) are not capped.
+        ridgeEdges.push([a, b2]);
+      }
 
   const all = model.levels.map(levelBounds);
   return {
@@ -422,6 +625,8 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
     ridgeZ: roof.ridgeZ,
     groundFloorZ: first?.elevation ?? 0,
     roofPlanes: roof.planes,
+    ridgeEdges,
+    drainage: rain.drainage,
     notes: {
       roof: model.roof.type === 'flat' ? `${label(ROOF_MATERIAL_OPTIONS, model.roof.material)}, ${model.roof.parapetHeight > 0 ? 'parapet' : 'flat roof'}` : `${label(ROOF_MATERIAL_OPTIONS, model.roof.material)} roofing, ${model.roof.pitchDeg}° pitch`,
       wall: `${label(FACADE_MATERIAL_OPTIONS, design.exteriorFacade)} on ${model.levels[0]?.walls.find((w) => w.isExterior)?.material.replace(/_/g, ' ') ?? 'masonry'} walls`,
@@ -429,6 +634,9 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
       door: `${titleCase(design.doorMaterial)} door`,
       fascia: model.roof.type === 'flat' ? 'Parapet, finished to match walls' : 'Fascia board, painted white',
       plinth: 'Plinth, cement render',
+      gutter: rain.drainage ? `${GUTTER_PROFILE_META[getRoofDrainageConfig(model.roof).gutterProfile]?.shortLabel ?? 'Gutter'} gutter & downpipes` : undefined,
+      solar: getSolarConfig(model).enabled ? `${getSolarConfig(model).panelCount} × ${getSolarConfig(model).panelWattage} Wp solar PV panels` : undefined,
+      tank: rain.drainage?.collection ? WATER_COLLECTION_META[getRoofDrainageConfig(model.roof).waterCollectionMode]?.shortLabel : undefined,
     },
   };
 }

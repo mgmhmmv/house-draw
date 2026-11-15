@@ -130,7 +130,7 @@ const safe = <T,>(fn: () => T, fallback: T): T => {
 
 /** Light comes from the upper left at 45°, the drafting convention for elevation shadows. */
 const SHADOW_MAX = 3;
-const CASTERS = new Set<Face['kind']>(['wall', 'roof', 'fascia', 'sill', 'plinth', 'frame']);
+const CASTERS = new Set<Face['kind']>(['wall', 'roof', 'fascia', 'sill', 'plinth', 'frame', 'gutter', 'downpipe', 'tank']);
 const RECEIVERS = new Set<Face['kind']>(['wall', 'glass', 'door', 'plinth']);
 
 export function project(frame: BuildingFrame, view: View, opts: { section?: boolean } = {}): Drawing {
@@ -235,8 +235,8 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
   // Callout anchors: the largest visible surface of each kind, at a point clear of openings and shadow.
   const targets: Drawing['targets'] = [];
   const nearest = items.length ? Math.min(...items.map((i) => i.depth)) : 0;
-  for (const kind of ['roof', 'fascia', 'wall', 'frame', 'door', 'plinth'] as Face['kind'][]) {
-    const pool = items.filter((i) => i.kind === kind && i.depth - nearest < 4);
+  for (const kind of ['roof', 'solar', 'gutter', 'fascia', 'wall', 'frame', 'door', 'plinth', 'tank'] as Face['kind'][]) {
+    const pool = items.filter((i) => i.kind === kind && i.depth - nearest < (kind === 'roof' ? 12 : 4));
     if (!pool.length) continue;
     const area = (i: Item) => {
       const b = bbox(i.poly);
