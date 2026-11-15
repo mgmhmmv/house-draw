@@ -1291,8 +1291,12 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
   const next: BuildingProject = structuredClone(currentProject);
   const changes: string[] = [];
 
-  // 1. Roof changes
-  if (lower.includes('gable')) {
+  // 1. Roof changes: the type it is changed *to* wins over one merely mentioned ("hip to flat").
+  const roofTo = lower.match(/\bto\s+(?:an?\s+)?(gable|hip|flat|shed)\b/)?.[1];
+  if (roofTo) {
+    next.roof.type = roofTo as RoofType;
+    changes.push(`Changed roof geometry to ${roofTo === 'flat' ? 'Flat Parapet' : roofTo === 'shed' ? 'Shed / Mono-pitch' : roofTo[0].toUpperCase() + roofTo.slice(1)} Roof`);
+  } else if (lower.includes('gable')) {
     next.roof.type = 'gable';
     changes.push('Changed roof geometry to Gable Roof');
   } else if (lower.includes('hip')) {
@@ -1650,16 +1654,12 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
   }
 
   // 4. Add a room extension on East/South
-  if (
-    lower.includes('add') &&
-    (lower.includes('room') ||
-      lower.includes('study') ||
-      lower.includes('office') ||
-      lower.includes('garage') ||
-      lower.includes('porch') ||
-      lower.includes('bedroom') ||
-      lower.includes('bath'))
-  ) {
+  // Only when "add" actually governs the room word ("add a 4 × 3 m study"), not when both words
+  // just appear somewhere in a longer instruction ("…keep the bath, add scuppers…").
+  const addRoom = lower.match(
+    /\b(?:add|build|extend with)\s+(?:an?\s+|one\s+|new\s+|another\s+|extra\s+)*(?:[\d.]+\s*(?:m\s*)?[x×by]+\s*[\d.]+\s*m?\s+)?(?:new\s+|extra\s+|small\s+|large\s+)?(room|study|office|garage|porch|bedroom|bathroom|bath)\b/
+  );
+  if (addRoom) {
     const g = next.levels[0];
     const bb = levelBoundingBox(g);
     const dim = lower.match(/(\d+(?:\.\d+)?)\s*[x×by]+\s*(\d+(?:\.\d+)?)/);
@@ -1668,16 +1668,17 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
 
     let cat: RoomCategory = 'office';
     let rName = 'Study Extension';
-    if (lower.includes('garage')) {
+    const kind = addRoom[1];
+    if (kind === 'garage') {
       cat = 'garage';
       rName = 'Garage Bay';
-    } else if (lower.includes('bedroom')) {
+    } else if (kind === 'bedroom') {
       cat = 'bedroom';
       rName = 'Bedroom Extension';
-    } else if (lower.includes('bath')) {
+    } else if (kind.startsWith('bath')) {
       cat = 'bathroom';
       rName = 'New Bathroom';
-    } else if (lower.includes('porch')) {
+    } else if (kind === 'porch') {
       cat = 'porch';
       rName = 'Covered Porch';
     }
@@ -1750,8 +1751,14 @@ function applyIncrementalBIMEdits(currentProject: BuildingProject, prompt: strin
 export async function runPromptArchitect(
   currentProject: BuildingProject,
   prompt: string,
-  llmConfig?: AILLMConfig
+  llmConfig?: AILLMConfig,
+  /**
+   * The user's own words, for the keyword edit rules. `prompt` may be a long, explained
+   * instruction for Claude, and the keyword rules would act on every word of it.
+   */
+  editPrompt?: string
 ): Promise<PromptResult> {
+  const editText = editPrompt?.trim() || prompt;
   const lower = prompt.toLowerCase().trim();
 
   const wantsNewHouse =
@@ -1774,7 +1781,7 @@ export async function runPromptArchitect(
     try {
       const { plan, modelUsed } = await requestClaudePlan(prompt, currentProject, llmConfig || { provider: 'claude' });
       const isModifyVerb = /\b(move|relocate|shift|put|place|bring|reposition|change|update|modify|route|add)\b/i.test(
-        prompt
+        editText
       );
       const action =
         !wantsNewHouse && isModifyVerb && currentProject.levels[0].walls.length > 0
@@ -1849,13 +1856,16 @@ export async function runPromptArchitect(
       }
 
       // Modify existing project guided by Claude reasoning + incremental solver
-      const { next, changes } = applyIncrementalBIMEdits(currentProject, prompt);
+      const { next, changes } = applyIncrementalBIMEdits(currentProject, editText);
       if (plan.roofType) next.roof.type = plan.roofType;
       if (plan.pitchDeg) next.roof.pitchDeg = Math.max(2, Math.min(45, plan.pitchDeg));
       if (plan.roofMaterial) next.roof.material = plan.roofMaterial;
 
+      // The planner fills in every field; only take materials and finishes the user asked about.
+      const asksMaterials = /facade|fa[cç]ade|plaster|paint|render|cladding|frame|door|material|timber|alumin|finish/i.test(editText);
+      const asksFloors = /floor|finish|tile|porcelain|terrazzo|wood|marble|screed|vinyl|stone/i.test(editText);
       const curDesign = getDesignConfig(next);
-      next.design = {
+      if (asksMaterials) next.design = {
         exteriorFacade: plan.exteriorFacade || curDesign.exteriorFacade,
         interiorWalls: plan.interiorWalls || curDesign.interiorWalls,
         windowFrame: plan.windowFrame || curDesign.windowFrame,
@@ -1917,7 +1927,7 @@ export async function runPromptArchitect(
           changes.push('Updated AI conduit route presets');
         }
       }
-      if (plan.floorFinish) {
+      if (plan.floorFinish && asksFloors) {
         next.levels = next.levels.map((l) => ({
           ...l,
           rooms: l.rooms.map((rm) =>
@@ -1948,7 +1958,7 @@ export async function runPromptArchitect(
       if (wantsNewHouse || currentProject.levels[0].walls.length === 0) {
         return synthesizeParametricHouse(prompt, currentProject.rates, fallbackNote);
       }
-      const { next, changes } = applyIncrementalBIMEdits(currentProject, prompt);
+      const { next, changes } = applyIncrementalBIMEdits(currentProject, editText);
       if (changes.length === 0) {
         next.levels = next.levels.map((l) => {
           const withCols = { ...l, columns: autoPlaceStructuralColumns(l) };
@@ -2006,7 +2016,7 @@ export async function runPromptArchitect(
     return synthesizeParametricHouse(prompt, currentProject.rates);
   }
 
-  const { next, changes } = applyIncrementalBIMEdits(currentProject, prompt);
+  const { next, changes } = applyIncrementalBIMEdits(currentProject, editText);
   if (changes.length === 0) {
     next.levels = next.levels.map((l) => {
       const withCols = { ...l, columns: autoPlaceStructuralColumns(l) };

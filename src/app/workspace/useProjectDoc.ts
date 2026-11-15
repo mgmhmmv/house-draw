@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BuildingProject } from '../../model/types';
-import { api, ApiError, type Project } from '../lib/api';
+import { api, ApiError, type Project, type VersionSource } from '../lib/api';
+import { describeChange } from './describeChange';
 import { summarize } from '../lib/templates';
 import { updateCover } from '../drawing/three/cover';
 
@@ -11,9 +12,19 @@ export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error' | 'conflict';
 const HISTORY_LIMIT = 60;
 const AUTOSAVE_MS = 1200;
 
+/** How a change is recorded in the project history. */
+export interface CommitOptions {
+  /** History label; otherwise one is worked out from what changed. */
+  label?: string;
+  source?: VersionSource;
+  /** Save straight away instead of after the autosave pause (AI changes, restores). */
+  saveNow?: boolean;
+}
+
 /**
  * One open project: the model, its undo history, and autosave to the Worker.
  * Saves carry the version they were based on, so two tabs cannot silently overwrite each other.
+ * Every save becomes a restorable version on the server.
  */
 export function useProjectDoc(projectId: string) {
   const [project, setProject] = useState<Project | null>(null);
@@ -33,6 +44,10 @@ export function useProjectDoc(projectId: string) {
   const savingRef = useRef(false);
   const coverAtRef = useRef(0);
   const coverTimer = useRef<number>();
+  /** The model as last saved, to describe what the next save changes. */
+  const savedRef = useRef<BuildingProject | null>(null);
+  /** Labels and source of the changes waiting to be saved. */
+  const pendingRef = useRef<{ labels: string[]; source: VersionSource }>({ labels: [], source: 'edit' });
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +61,8 @@ export function useProjectDoc(projectId: string) {
         if (!model) throw new ApiError(404, 'model_missing', 'This project’s drawing could not be found.');
         versionRef.current = project.version;
         modelRef.current = model;
+        savedRef.current = model;
+        pendingRef.current = { labels: [], source: 'edit' };
         setProject(project);
         setModel(model);
         coverAtRef.current = project.coverAt ?? 0;
@@ -82,9 +99,14 @@ export function useProjectDoc(projectId: string) {
     dirtyRef.current = false;
     setSaveState('saving');
     const snapshot = modelRef.current;
+    const pending = pendingRef.current;
+    pendingRef.current = { labels: [], source: 'edit' };
+    const labels = [...new Set(pending.labels)];
+    const label = labels.length ? labels.join(' · ').slice(0, 200) : describeChange(savedRef.current, snapshot);
     try {
-      const r = await api.saveModel(projectId, { model: snapshot, summary: summarize(snapshot), baseVersion: versionRef.current });
+      const r = await api.saveModel(projectId, { model: snapshot, summary: summarize(snapshot), baseVersion: versionRef.current, source: pending.source, label });
       versionRef.current = r.version;
+      savedRef.current = snapshot;
       setProject((p) => (p ? { ...p, version: r.version, updatedAt: r.updatedAt, summary: summarize(snapshot) } : p));
       setSaveState(dirtyRef.current ? 'unsaved' : 'saved');
       scheduleCover();
@@ -92,6 +114,11 @@ export function useProjectDoc(projectId: string) {
       // A deleted or inaccessible project will never accept the save: stop retrying.
       const gone = e instanceof ApiError && (e.status === 404 || e.status === 401);
       dirtyRef.current = !gone;
+      // Keep the labels for the retry, ahead of anything changed since.
+      pendingRef.current = {
+        labels: [...pending.labels, ...pendingRef.current.labels],
+        source: pendingRef.current.source !== 'edit' ? pendingRef.current.source : pending.source,
+      };
       setSaveState(e instanceof ApiError && e.code === 'version_conflict' ? 'conflict' : 'error');
     } finally {
       savingRef.current = false;
@@ -110,24 +137,40 @@ export function useProjectDoc(projectId: string) {
   }, [save]);
 
   const apply = useCallback(
-    (next: BuildingProject) => {
+    (next: BuildingProject, opts?: CommitOptions) => {
       modelRef.current = next;
       setModel(next);
+      if (opts?.label) pendingRef.current.labels.push(opts.label);
+      if (opts?.source && opts.source !== 'edit') pendingRef.current.source = opts.source;
       schedule();
+      if (opts?.saveNow) {
+        window.clearTimeout(timerRef.current);
+        // If a save is already running, the finally-block retry picks this up.
+        void save();
+      }
     },
-    [schedule]
+    [schedule, save]
   );
 
-  /** Record a change. Every edit goes through here so it can be undone and saved. */
+  /** Record a change. Every edit goes through here so it can be undone, saved and restored. */
   const commit = useCallback(
-    (next: BuildingProject) => {
+    (next: BuildingProject, opts?: CommitOptions) => {
       const prev = modelRef.current;
       if (prev) pastRef.current = [...pastRef.current.slice(-HISTORY_LIMIT + 1), prev];
       futureRef.current = [];
       bump();
-      apply(next);
+      apply(next, opts);
     },
     [apply]
+  );
+
+  /** Bring back any saved version. It is saved as a new version, so the restore can be undone too. */
+  const restore = useCallback(
+    async (version: number) => {
+      const m = await api.versionModel(projectId, version);
+      commit(m, { label: `Restored version ${version}`, source: 'restore', saveNow: true });
+    },
+    [projectId, commit]
   );
 
   const undo = useCallback(() => {
@@ -197,6 +240,7 @@ export function useProjectDoc(projectId: string) {
     commit,
     undo,
     redo,
+    restore,
     canUndo: pastRef.current.length > 0,
     canRedo: futureRef.current.length > 0,
     saveNow: save,

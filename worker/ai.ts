@@ -69,7 +69,13 @@ When answering:
 - Be practical and specific to this project: sizes, quantities, standards, cost, buildability in the local context.
 - Metric units. Use the project currency for money.
 - Short Markdown: a direct answer first, then a few bullets. No more than about 180 words unless the user asks for detail.
-- If the brief lacks something you need, say what is missing and give a sensible default.`;
+- If the brief lacks something you need, say what is missing and give a sensible default.
+- Room positions are given as x/y extents in metres: x grows to the east, y grows to the south (plan north is up).
+
+When changing the design:
+- Nothing is applied until the user approves. Your "reasoning" is shown to them before they decide, so think the change through first: how it fits the current plan (sizes, where it goes, what it connects to), knock-on effects (structure, roof, services, cost) and any assumption you made.
+- Make the instruction short, imperative and self-contained for the design engine: only what changes, with dimensions, positions relative to existing rooms and materials. Do not restate things that stay the same (the engine reads every word).
+- If the request is ambiguous in a way that matters, ask with "answer" instead of guessing.`;
 
 const ASSIST_TOOLS = [
   {
@@ -89,8 +95,12 @@ const ASSIST_TOOLS = [
       properties: {
         instruction: { type: 'string', description: 'The design change as a precise, self-contained instruction (dimensions, rooms, materials).' },
         summary: { type: 'string', description: 'One short sentence telling the user what will change.' },
+        reasoning: {
+          type: 'string',
+          description: 'Concise Markdown, shown to the user before they approve: why this approach, how it fits the current plan, knock-on effects and assumptions. 2–5 bullets.',
+        },
       },
-      required: ['instruction', 'summary'],
+      required: ['instruction', 'summary', 'reasoning'],
     },
   },
 ];
@@ -127,13 +137,13 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 1500, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
+      body: JSON.stringify({ model, max_tokens: 2000, system: ASSIST_SYSTEM, tools: ASSIST_TOOLS, tool_choice: { type: 'auto' }, messages: merged }),
     });
     if (resp.ok) {
       const data = (await resp.json()) as { content?: { type: string; name?: string; input?: Record<string, string>; text?: string }[] };
       const call = (data.content ?? []).find((c) => c.type === 'tool_use');
       if (call?.name === 'change_design' && call.input?.instruction)
-        return json({ ok: true, kind: 'change', instruction: call.input.instruction, summary: call.input.summary ?? '', modelUsed: model });
+        return json({ ok: true, kind: 'change', instruction: call.input.instruction, summary: call.input.summary ?? '', reasoning: call.input.reasoning ?? '', modelUsed: model });
       const text = call?.input?.text ?? (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
       return json({ ok: true, kind: 'answer', text: text || 'I could not work that out. Could you rephrase it?', modelUsed: model });
     }

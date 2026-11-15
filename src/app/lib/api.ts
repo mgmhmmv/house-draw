@@ -22,6 +22,18 @@ export interface ProjectSummary {
   roof?: string;
 }
 
+export type VersionSource = 'edit' | 'ai' | 'restore' | 'create' | 'import';
+
+/** One saved state of a project; any of them can be restored. */
+export interface ProjectVersion {
+  version: number;
+  createdAt: number;
+  source: VersionSource;
+  label: string;
+  summary: ProjectSummary;
+  size: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -68,7 +80,10 @@ export const api = {
   getProject: (id: string) => request<{ project: Project; model: BuildingProject | null }>('GET', `/api/projects/${id}`),
   updateProject: (id: string, b: Partial<Pick<Project, 'name' | 'client' | 'location' | 'status'>>) =>
     request<{ project: Project }>('PATCH', `/api/projects/${id}`, b),
-  saveModel: (id: string, b: { model: BuildingProject; summary: ProjectSummary; baseVersion: number }) =>
+  saveModel: (id: string, b: { model: BuildingProject; summary: ProjectSummary; baseVersion: number; source?: VersionSource; label?: string }) =>
     request<{ version: number; updatedAt: number }>('PUT', `/api/projects/${id}/model`, b),
+  versions: (id: string, before?: number) =>
+    request<{ current: number; versions: ProjectVersion[] }>('GET', `/api/projects/${id}/versions${before ? `?before=${before}` : ''}`),
+  versionModel: (id: string, v: number) => request<BuildingProject>('GET', `/api/projects/${id}/versions/${v}`),
   deleteProject: (id: string) => request<{ ok: true }>('DELETE', `/api/projects/${id}`),
 };

@@ -1,8 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { ArrowUp, ChevronRight, Cpu, PenLine, Sparkles, Wand2 } from 'lucide-react';
+import { ArrowUp, Check, ChevronRight, Cpu, PenLine, RotateCcw, Sparkles, Wand2, X } from 'lucide-react';
 import type { BuildingProject } from '../../model/types';
 import { runPromptArchitect } from '../../ai/promptEngine';
 import { projectBrief } from './projectBrief';
+import { describeChange } from './describeChange';
+import type { CommitOptions } from './useProjectDoc';
 import { cx, Spinner } from '../ui';
 
 interface Entry {
@@ -16,6 +18,15 @@ interface Entry {
   pending?: boolean;
   /** A conversational reply to a question (no design change). */
   answer?: string;
+  /** A proposed design change waiting for approval. The proposed model itself is kept in memory only. */
+  proposal?: 'pending' | 'applied' | 'discarded' | 'expired';
+  /** What the proposal changes, worked out from the models. */
+  diff?: string;
+}
+
+interface Proposal {
+  base: BuildingProject;
+  next: BuildingProject;
 }
 
 const SUGGESTIONS = [
@@ -34,7 +45,7 @@ export interface AssistantHandle {
 interface Props {
   projectId: string;
   model: BuildingProject;
-  onCommit: (next: BuildingProject) => void;
+  onCommit: (next: BuildingProject, opts?: CommitOptions) => void;
   sketchCount: number;
   onConvertSketch: () => void;
   onSyncEngineering: () => void;
@@ -48,7 +59,8 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
 ) {
   const [entries, setEntries] = useState<Entry[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem(storeKey(projectId)) || '[]');
+      // Proposed models are not stored, so proposals from an earlier visit can't be applied.
+      return (JSON.parse(localStorage.getItem(storeKey(projectId)) || '[]') as Entry[]).map((e) => (e.proposal === 'pending' ? { ...e, proposal: 'expired' } : e));
     } catch {
       return [];
     }
@@ -59,6 +71,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
   const endRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef(model);
   modelRef.current = model;
+  const proposals = useRef(new Map<number, Proposal>());
 
   useEffect(() => {
     try {
@@ -94,21 +107,29 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ prompt, brief: projectBrief(modelRef.current), history }),
       })
-        .then((r) => r.json() as Promise<{ ok: boolean; kind?: 'answer' | 'change'; text?: string; instruction?: string; summary?: string }>)
-        .catch(() => ({ ok: false }) as { ok: false; kind?: undefined; text?: undefined; instruction?: undefined; summary?: undefined });
+        .then((r) => r.json() as Promise<{ ok: boolean; kind?: 'answer' | 'change'; text?: string; instruction?: string; summary?: string; reasoning?: string }>)
+        .catch(() => ({ ok: false }) as { ok: false; kind?: undefined; text?: undefined; instruction?: undefined; summary?: undefined; reasoning?: undefined });
 
       if (routed.ok && routed.kind === 'answer') {
         setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: routed.text, engine: 'claude' } : e)));
         return;
       }
-      // A change (or no AI connection): hand the instruction to the design engine.
+      // A change (or no AI connection): work it out with the design engine, but only propose it.
+      // Nothing touches the project until the user approves.
       const instruction = routed.ok && routed.kind === 'change' && routed.instruction ? routed.instruction : prompt;
-      const res = await runPromptArchitect(modelRef.current, instruction, { provider: 'claude' });
-      onCommit(res.project);
+      const base = modelRef.current;
+      const res = await runPromptArchitect(base, instruction, { provider: 'claude' }, prompt);
+      const diff = describeChange(base, res.project);
+      if (diff === 'Edited' && JSON.stringify(base) === JSON.stringify(res.project)) {
+        setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: `I couldn't turn that into a change to the design. Could you say it another way, with sizes or room names?`, engine: res.engineUsed } : e)));
+        return;
+      }
+      proposals.current.set(id, { base, next: res.project });
+      const reasoning = [routed.ok ? routed.reasoning : '', res.reasoning].filter((x) => x && x.trim()).join('\n\n');
       setEntries((es) =>
         es.map((e) =>
           e.id === id
-            ? { id, prompt, summary: routed.ok && routed.summary ? routed.summary : res.summary, reasoning: res.reasoning, changes: res.changes, engine: res.engineUsed }
+            ? { id, prompt, summary: routed.ok && routed.summary ? routed.summary : res.summary, reasoning, changes: res.changes, engine: res.engineUsed, proposal: 'pending', diff }
             : e
         )
       );
@@ -118,6 +139,23 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
       setBusy(false);
     }
   };
+
+  const setStatus = (id: number, proposal: Entry['proposal']) => setEntries((es) => es.map((e) => (e.id === id ? { ...e, proposal } : e)));
+  const approve = (e: Entry) => {
+    const p = proposals.current.get(e.id);
+    if (!p) return setStatus(e.id, 'expired');
+    // Apply on top of the current design only if it hasn't changed since the proposal was made.
+    if (modelRef.current !== p.base) return setStatus(e.id, 'expired');
+    onCommit(p.next, { label: `AI: ${e.summary || e.prompt}`.slice(0, 200), source: 'ai', saveNow: true });
+    proposals.current.delete(e.id);
+    setStatus(e.id, 'applied');
+  };
+  const discard = (e: Entry) => {
+    proposals.current.delete(e.id);
+    setStatus(e.id, 'discarded');
+  };
+  // A proposal made against an older design can't be applied as is.
+  const stale = (e: Entry) => e.proposal === 'pending' && proposals.current.get(e.id)?.base !== model;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -129,7 +167,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
             </div>
             <h3 className="mt-4 text-[15px] font-semibold">AI Architect</h3>
             <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-              Describe a building or a change. The plan, 3D model, engineering and BOQ update together, and every change can be undone.
+              Ask anything about this project, or describe a change. Changes are shown with the reasoning first and only applied when you approve, and every version can be restored from History.
             </p>
             <div className="mt-5 space-y-2">
               {SUGGESTIONS.map((s) => (
@@ -152,7 +190,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
                 ) : e.error ? (
                   <div className="mr-8 rounded-[14px] rounded-bl-[4px] bg-danger/10 px-3.5 py-2.5 text-[13px] text-danger">{e.error}</div>
                 ) : (
-                  <Reply entry={e} />
+                  <Reply entry={e} stale={stale(e)} busy={busy} onApprove={() => approve(e)} onDiscard={() => discard(e)} onRetry={() => run(e.prompt)} />
                 )}
               </div>
             ))}
@@ -220,12 +258,20 @@ function QuickAction({ icon, children, onClick, highlight }: { icon: React.React
   );
 }
 
-function Reply({ entry }: { entry: Entry }) {
-  const [open, setOpen] = useState(false);
+function Reply({ entry, stale, busy, onApprove, onDiscard, onRetry }: { entry: Entry; stale: boolean; busy: boolean; onApprove: () => void; onDiscard: () => void; onRetry: () => void }) {
+  const isProposal = !!entry.proposal;
+  const [open, setOpen] = useState(isProposal && entry.proposal === 'pending');
   const engine = entry.engine === 'claude' ? 'Claude' : entry.engine === 'tool' ? 'Tool' : entry.engine === 'gemini' ? 'Gemini' : 'Built-in rules';
+  const pending = entry.proposal === 'pending';
   return (
-    <div className="mr-4 rounded-[14px] rounded-bl-[4px] border border-line bg-surface px-3.5 py-3">
+    <div className={cx('mr-4 rounded-[14px] rounded-bl-[4px] border bg-surface px-3.5 py-3', pending ? 'border-accent/50 ring-4 ring-accent/10' : 'border-line')}>
+      {isProposal && (
+        <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-accent">
+          {pending ? 'Proposed change' : entry.proposal === 'applied' ? 'Applied' : entry.proposal === 'discarded' ? 'Discarded' : 'Not applied'}
+        </p>
+      )}
       {entry.answer ? <Markdown text={entry.answer} /> : <p className="text-[13px] leading-relaxed text-ink">{entry.summary}</p>}
+      {entry.diff && entry.diff !== 'Edited' && <p className="mt-1.5 text-[13px] text-ink-2">{entry.diff}</p>}
       {entry.changes && entry.changes.length > 0 && (
         <ul className="mt-2 space-y-1">
           {entry.changes.slice(0, 6).map((c, i) => (
@@ -236,17 +282,40 @@ function Reply({ entry }: { entry: Entry }) {
           ))}
         </ul>
       )}
+      {open && entry.reasoning && (
+        <div className="mt-2.5 border-l-2 border-accent/30 pl-3">
+          <Markdown text={entry.reasoning} />
+        </div>
+      )}
+      {pending && !stale && (
+        <div className="mt-3 flex gap-2">
+          <button onClick={onApprove} className="inline-flex h-8 items-center gap-1.5 rounded-[9px] bg-ink px-3 text-[13px] font-medium text-page hover:opacity-90">
+            <Check className="h-3.5 w-3.5" /> Apply change
+          </button>
+          <button onClick={onDiscard} className="inline-flex h-8 items-center gap-1.5 rounded-[9px] border border-line px-3 text-[13px] font-medium text-ink-2 hover:border-line-strong hover:text-ink">
+            <X className="h-3.5 w-3.5" /> Discard
+          </button>
+        </div>
+      )}
+      {(entry.proposal === 'expired' || (pending && stale)) && (
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-[13px] text-ink-3">{stale ? 'The design changed since this was proposed.' : 'This proposal has expired.'}</span>
+          <button disabled={busy} onClick={onRetry} className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-line px-2.5 text-2xs font-medium text-ink-2 hover:text-ink disabled:opacity-40">
+            <RotateCcw className="h-3 w-3" /> Propose again
+          </button>
+        </div>
+      )}
       <div className="mt-2.5 flex items-center gap-3">
         <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
           <Cpu className="h-3 w-3" /> {engine}
         </span>
         {entry.reasoning && (
           <button onClick={() => setOpen(!open)} className="text-2xs font-medium text-accent hover:underline">
-            {open ? 'Hide reasoning' : 'Why this design'}
+            {open ? 'Hide reasoning' : 'Show reasoning'}
           </button>
         )}
+        {entry.proposal === 'applied' && <span className="text-2xs text-ink-3">Saved as a version · restore it from History</span>}
       </div>
-      {open && entry.reasoning && <p className="mt-2 border-l-2 border-accent/30 pl-3 text-[13px] leading-relaxed text-ink-2">{entry.reasoning}</p>}
     </div>
   );
 }

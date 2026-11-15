@@ -12,6 +12,9 @@ import {
   FileJson,
   FileSpreadsheet,
   FileText,
+  History,
+  Eye,
+  RotateCcw,
   Image as ImageIcon,
   ImagePlus,
   Layers,
@@ -33,6 +36,7 @@ import {
 import {
   getHVACConfig,
   getSolarConfig,
+  type BuildingProject,
   type CADTool,
   type SelectableElementKind,
   type SketchStroke,
@@ -49,11 +53,12 @@ import {
   exportSVGElement,
   exportViewportPNG,
 } from '../../export/exporters';
-import { STAGES, type ProjectStatus } from '../lib/api';
+import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
 import { Button, cx, Dialog, Field, IconButton, Input, Kbd, Menu, MenuItem, Spinner, STATUS_META, StatusPill, toast } from '../ui';
 import { Assistant, type AssistantHandle } from './Assistant';
+import { HistoryPanel } from './HistoryPanel';
 import { Inspector, type Selection } from './Inspector';
 import { SheetView } from './SheetView';
 import { SHEET_GROUPS, SHEETS, sheetBySlug, type SheetDef } from './sheets';
@@ -70,8 +75,8 @@ const TOOLS: { id: CADTool; label: string; key: string; icon: typeof PenTool }[]
   { id: 'sketch_wall', label: 'Sketch', key: 'S', icon: PenLine },
 ];
 
-type Panel = 'properties' | 'assistant';
-type MobileSheet = null | 'sheets' | 'properties' | 'assistant' | 'project';
+type Panel = 'properties' | 'assistant' | 'history';
+type MobileSheet = null | 'sheets' | 'properties' | 'assistant' | 'project' | 'history';
 
 export default function Workspace({ projectId, sheetParam }: { projectId: string; sheetParam?: string }) {
   const doc = useProjectDoc(projectId);
@@ -93,6 +98,10 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const assistantRef = useRef<AssistantHandle>(null);
   const traceInput = useRef<HTMLInputElement>(null);
 
+  /** An older version shown read-only on the canvas, from History. */
+  const [preview, setPreview] = useState<{ version: ProjectVersion; model: BuildingProject } | null>(null);
+  const [restoreArmed, setRestoreArmed] = useState(false);
+
   const model = doc.model;
   const levels = model?.levels ?? [];
   const safeLevel = Math.min(levelIndex, Math.max(0, levels.length - 1));
@@ -112,6 +121,38 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   }, []);
 
   const commit = doc.commit;
+  /** Canvas and inspector edits; blocked while an old version is being previewed. */
+  const edit = useCallback(
+    (next: BuildingProject) => {
+      if (preview) return toast('Previewing an older version · go back to the current one to edit');
+      commit(next);
+    },
+    [preview, commit]
+  );
+
+  const openPreview = useCallback(
+    async (v: ProjectVersion) => {
+      if (preview?.version.version === v.version) return setPreview(null);
+      try {
+        const m = await api.versionModel(projectId, v.version);
+        setPreview({ version: v, model: m });
+        setRestoreArmed(false);
+        setSelection(null);
+        setTool('select');
+        setMobileSheet(null);
+      } catch {
+        toast('Could not load that version.');
+      }
+    },
+    [projectId, preview]
+  );
+  const restoreVersion = useCallback(
+    async (v: number) => {
+      await doc.restore(v);
+      setPreview(null);
+    },
+    [doc]
+  );
 
   /* ── Model actions ─────────────────────────────────────────────── */
 
@@ -142,7 +183,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const convertSketch = useCallback(() => {
     if (!model || !sketch.length) return;
     const res = convertSketchStrokesToBIM(model, safeLevel, sketch);
-    commit(res.project);
+    commit(res.project, { label: `Sketch → ${res.wallsAdded} walls` });
     setSketch([]);
     setTool('select');
     assistantRef.current?.log('Turn sketch into walls', `Made ${res.wallsAdded} walls, ${res.openingsAdded} openings and found ${Math.max(0, res.roomsDetected)} rooms.`);
@@ -156,7 +197,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     const hvac = getHVACConfig(next);
     next.levels = next.levels.map((l) => autoPopulateMEPForLevel({ ...l, columns: autoPlaceStructuralColumns(l) }, solarOn, hvac.enabled, hvac.ceilingFansEnabled));
     next.grid = autoGenerateStructuralGrid(next.levels[0]);
-    commit(next);
+    commit(next, { label: 'Regenerated structure & MEP' });
     assistantRef.current?.log('Regenerate structure & MEP', 'Recalculated the column grid, footings, electrical and solar circuits, cooling units and plumbing.');
     toast('Structure and MEP regenerated');
   }, [model, commit]);
@@ -238,6 +279,13 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   }, []);
 
   useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setPreview(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview]);
+
+  useEffect(() => {
     if (doc.project) document.title = `${doc.project.name} · ArchStudio`;
     return () => {
       document.title = 'ArchStudio';
@@ -267,18 +315,25 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const project = doc.project;
 
   const inspector = (
-    <Inspector model={model} levelIndex={safeLevel} selection={selection} onCommit={commit} onDelete={deleteSelection} />
+    <Inspector model={model} levelIndex={safeLevel} selection={selection} onCommit={edit} onDelete={preview ? () => {} : deleteSelection} />
   );
   const assistant = (
     <Assistant
       ref={assistantRef}
       projectId={projectId}
       model={model}
-      onCommit={commit}
+      onCommit={(next, opts) => {
+        setPreview(null);
+        commit(next, opts);
+      }}
       sketchCount={sketch.length}
       onConvertSketch={convertSketch}
       onSyncEngineering={syncEngineering}
     />
+  );
+
+  const history = (
+    <HistoryPanel projectId={projectId} current={project.version} onRestore={restoreVersion} onPreview={openPreview} previewing={preview?.version.version ?? null} />
   );
 
   const exportMenu = (
@@ -324,16 +379,16 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const canvas = (
     <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[#f8fafc]">
       <SheetView
-        model={model}
+        model={preview?.model ?? model}
         projectId={projectId}
         stage={project.status}
         onStage={(st) => doc.updateMeta({ status: st }).then(() => toast(`Stage: ${STATUS_META[st].label}`)).catch(() => toast('Could not change the stage'))}
         sheet={sheet.id}
-        levelIndex={safeLevel}
+        levelIndex={preview ? Math.min(safeLevel, preview.model.levels.length - 1) : safeLevel}
         tool={tool}
         selectedId={selection?.id ?? null}
         onSelect={onSelect}
-        onCommit={commit}
+        onCommit={edit}
         sketchStrokes={sketch}
         onAddSketchStroke={(s) => setSketch((xs) => [...xs, s])}
         traceImageUrl={trace}
@@ -341,7 +396,37 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         svgRef={svgRef}
       />
 
-      {sheet.plan && (
+      {preview && (
+        <div className="absolute inset-x-3 top-3 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-[14px] border border-accent/40 bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
+          <Eye className="h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium">Previewing v{preview.version.version}</p>
+            <p className="truncate text-2xs text-ink-3">{preview.version.label || 'Edited'} · read-only</p>
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => setPreview(null)}>
+            Back to current
+          </Button>
+          <Button
+            size="sm"
+            variant={restoreArmed ? 'primary' : 'secondary'}
+            icon={<RotateCcw className="h-3.5 w-3.5" />}
+            onClick={() => {
+              if (!restoreArmed) {
+                setRestoreArmed(true);
+                window.setTimeout(() => setRestoreArmed(false), 4000);
+                return;
+              }
+              restoreVersion(preview.version.version)
+                .then(() => toast(`Restored version ${preview.version.version}`))
+                .catch(() => toast('Could not restore that version.'));
+            }}
+          >
+            {restoreArmed ? 'Click to confirm' : 'Restore'}
+          </Button>
+        </div>
+      )}
+
+      {sheet.plan && !preview && (
         <>
           <ToolDock
             tool={tool}
@@ -430,6 +515,20 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             <IconButton label="Redo (⇧⌘Z)" size="sm" disabled={!doc.canRedo} onClick={doc.redo}>
               <Redo2 className="h-4 w-4" />
             </IconButton>
+            <IconButton
+              label="History"
+              size="sm"
+              active={panelOpen && panel === 'history'}
+              onClick={() => {
+                if (panelOpen && panel === 'history') setPanelOpen(false);
+                else {
+                  setPanel('history');
+                  setPanelOpen(true);
+                }
+              }}
+            >
+              <History className="h-4 w-4" />
+            </IconButton>
             <div className="mx-1.5 h-5 w-px bg-line" />
             {exportMenu}
             <Button
@@ -484,9 +583,13 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
                 <PanelTab active={panel === 'assistant'} onClick={() => setPanel('assistant')} icon={<Sparkles className="h-4 w-4" />}>
                   AI Architect
                 </PanelTab>
+                <PanelTab active={panel === 'history'} onClick={() => setPanel('history')} icon={<History className="h-4 w-4" />}>
+                  History
+                </PanelTab>
               </div>
               <div className={cx('min-h-0 flex-1', panel === 'properties' ? 'overflow-y-auto' : 'hidden')}>{inspector}</div>
               <div className={cx('min-h-0 flex-1', panel === 'assistant' ? 'flex flex-col' : 'hidden')}>{assistant}</div>
+              {panel === 'history' && <div className="min-h-0 flex-1 overflow-y-auto p-3">{history}</div>}
             </aside>
           )}
         </div>
@@ -511,6 +614,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} compact />
           </div>
         </button>
+        <IconButton label="History" size="sm" onClick={() => setMobileSheet('history')}>
+          <History className="h-[18px] w-[18px]" />
+        </IconButton>
         <IconButton label="Undo" size="sm" disabled={!doc.canUndo} onClick={doc.undo}>
           <Undo2 className="h-[18px] w-[18px]" />
         </IconButton>
@@ -563,6 +669,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       </BottomSheet>
       <BottomSheet open={mobileSheet === 'project'} onClose={() => setMobileSheet(null)} title="Project">
         <ProjectDetailsForm doc={doc} onDone={() => setMobileSheet(null)} />
+      </BottomSheet>
+      <BottomSheet open={mobileSheet === 'history'} onClose={() => setMobileSheet(null)} title="History" tall>
+        <div className="px-3 pb-6">{history}</div>
       </BottomSheet>
     </div>
   );

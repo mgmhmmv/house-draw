@@ -31,7 +31,19 @@ export function projectBrief(model: BuildingProject) {
       floorLevel_m: l.elevation,
       floorToFloor_m: l.floorToFloorHeight,
       slab_mm: Math.round(l.slabThickness * 1000),
-      rooms: l.rooms.map((r) => ({ name: r.name, use: r.category, area_m2: r1(polygonArea(r.polygon)), ceiling_m: r.ceilingHeight, floor: r.finish })),
+      rooms: l.rooms.map((r) => {
+        const xs = r.polygon.map((p) => p.x);
+        const ys = r.polygon.map((p) => p.y);
+        return {
+          name: r.name,
+          use: r.category,
+          area_m2: r1(polygonArea(r.polygon)),
+          x_m: `${r1(Math.min(...xs))}–${r1(Math.max(...xs))}`,
+          y_m: `${r1(Math.min(...ys))}–${r1(Math.max(...ys))}`,
+          ceiling_m: r.ceilingHeight,
+          floor: r.finish,
+        };
+      }),
       walls: [...groups.entries()].map(([k, g]) => `${k}: ${g.count} walls, ${r1(g.length)} m run`),
       doors: l.openings.filter((o) => o.kind === 'door').map((o) => `${o.label ?? ''} ${o.style} ${Math.round(o.width * 1000)}×${Math.round(o.height * 1000)}mm`.trim()),
       windows: l.openings.filter((o) => o.kind === 'window').map((o) => `${o.label ?? ''} ${o.style} ${Math.round(o.width * 1000)}×${Math.round(o.height * 1000)}mm sill ${Math.round(o.sillHeight * 1000)}`.trim()),
@@ -43,6 +55,7 @@ export function projectBrief(model: BuildingProject) {
   return {
     project: { title: model.meta.title, client: model.meta.client, location: model.meta.location, currency: model.meta.currency, code: model.meta.projectCode },
     grossFloorArea_m2: r1(computeTotalFloorArea(model)),
+    planAxes: 'x grows east, y grows south (plan north up); metres',
     levels,
     roof: { type: model.roof.type, pitch_deg: model.roof.pitchDeg, overhang_m: model.roof.overhang, covering: model.roof.material, parapet_m: model.roof.parapetHeight },
     rainwater: rain,
