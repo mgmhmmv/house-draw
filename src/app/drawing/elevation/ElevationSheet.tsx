@@ -42,12 +42,17 @@ interface Placed extends Annot {
   drawing: Drawing;
   /** Elevations: the 3D model seen square-on, as vector drawing. */
   vector?: VectorDrawing | null;
+  /** Sections: walls cut on the ground floor (for footings) and the roof line (for trusses). */
+  cutWalls?: { u: number; t: number; bearing: boolean }[];
+  roofLine?: { a: { u: number; z: number }; b: { u: number; z: number } }[];
+  plate?: number;
+  plateSpan?: [number, number];
   section: boolean;
   ox: number;
   oy: number;
 }
 
-const GAP_X = 13;
+const GAP_X = 17;
 
 /** Line weights by surface: openings and texture lighter than walls; the profile is drawn separately. */
 const FACE_STROKE: Record<string, { color: string; w: number }> = {
@@ -77,7 +82,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
   const [choice, setChoice] = useState(() => (wide ? 'all' : options[1]?.id ?? 'all'));
 
   const drawings = useMemo(() => {
-    const out: ({ key: string; title: string; drawing: Drawing; section: boolean; vector?: VectorDrawing | null } & Annot)[] = [];
+    const out: ({ key: string; title: string; drawing: Drawing; section: boolean; vector?: VectorDrawing | null; cutWalls?: Placed['cutWalls']; roofLine?: Placed['roofLine']; plate?: number; plateSpan?: [number, number] } & Annot)[] = [];
     const b0 = levelBounds(model.levels[0]);
     const corners = [
       { x: b0.minX, y: b0.minY },
@@ -123,10 +128,66 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
       parts.materials.forEach((m) => m.dispose());
       figureMats.dispose();
     } else {
+      // The 3D model beyond each cut, plus what the cut needs (walls for footings, roof for trusses).
+      const parts = buildScene(model, false);
+      // The roof is shown by its cut band and the trusses; its far slopes would only hide them.
+      const roots: THREE.Object3D[] = [...parts.levels, parts.site];
       for (const s of sections) {
         if (choice !== 'all' && choice !== s.id) continue;
-        out.push({ key: s.id, title: `Section ${s.label}`, drawing: sectionDrawing(model, frame, s).drawing, section: true, grid: [], width: null });
+        const { view, drawing } = sectionDrawing(model, frame, s);
+        const vector = vectorElevation(roots, view, { clip: true });
+        const look = view.look;
+        const depth = (p: { x: number; y: number }) => (p.x - view.origin.x) * look.x + (p.y - view.origin.y) * look.y;
+        const cuts = (lvl: BuildingProject['levels'][number]) =>
+          lvl.walls.flatMap((w) => {
+            const da = depth(w.start);
+            const db = depth(w.end);
+            if ((da >= 0) === (db >= 0) || Math.abs(da - db) < 1e-6) return [];
+            const t = da / (da - db);
+            const p = { x: w.start.x + (w.end.x - w.start.x) * t, y: w.start.y + (w.end.y - w.start.y) * t };
+            // Thickness along the cut grows when the wall crosses at an angle.
+            const len = Math.hypot(w.end.x - w.start.x, w.end.y - w.start.y) || 1;
+            const across = Math.abs(((w.end.x - w.start.x) * look.x + (w.end.y - w.start.y) * look.y) / len);
+            return [{ u: uAt(view, p), t: w.thickness / Math.max(0.2, across), bearing: w.isExterior || w.isLoadBearing }];
+          });
+        const top = model.levels[model.levels.length - 1];
+        const topCuts = cuts(top);
+        const roofLine: NonNullable<Placed['roofLine']> = [];
+        for (const pl of frame.roofPlanes) {
+          const pts: { u: number; z: number }[] = [];
+          for (let i = 0; i < pl.pts.length; i++) {
+            const a = pl.pts[i];
+            const b = pl.pts[(i + 1) % pl.pts.length];
+            const da = depth(a);
+            const db = depth(b);
+            if ((da >= 0) !== (db >= 0)) {
+              const tt = da / (da - db);
+              pts.push({ u: uAt(view, { x: a.x + (b.x - a.x) * tt, y: a.y + (b.y - a.y) * tt }), z: a.z + (b.z - a.z) * tt });
+            }
+          }
+          if (pts.length >= 2) roofLine.push({ a: pts[0], b: pts[1] });
+        }
+        const d2 = vector ? { ...drawing, uMin: Math.min(drawing.uMin, vector.uMin + 0.2), uMax: Math.max(drawing.uMax, vector.uMax - 0.2), zMax: Math.max(drawing.zMax, vector.zMax) } : drawing;
+        out.push({
+          key: s.id,
+          title: `Section ${s.label}`,
+          drawing: d2,
+          vector,
+          section: true,
+          grid: [],
+          width: null,
+          cutWalls: cuts(model.levels[0]),
+          roofLine,
+          plate: top.elevation + Math.max(...top.walls.map((w) => w.height), 2.4),
+          plateSpan: topCuts.length >= 2 ? [Math.min(...topCuts.map((c) => c.u)), Math.max(...topCuts.map((c) => c.u))] : undefined,
+        });
       }
+      [...roots, parts.roof].forEach((r) =>
+        r.traverse((o) => {
+          if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();
+        })
+      );
+      parts.materials.forEach((m) => m.dispose());
     }
     return out;
   }, [mode, choice, frame, sections, model]);
@@ -144,7 +205,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
     const rows = Math.ceil(drawings.length / cols);
     return {
       placed,
-      bounds: { minX: -3.5, minY: -1, maxX: cols * colW + (cols - 1) * GAP_X + (mode === 'elevations' ? 16 : 6.5), maxY: rows * (rowH + GAP_Y) - GAP_Y + 3 },
+      bounds: { minX: -7.5, minY: -1, maxX: cols * colW + (cols - 1) * GAP_X + (mode === 'elevations' ? 16 : 6.5), maxY: rows * (rowH + GAP_Y) - GAP_Y + (mode === 'elevations' ? 3 : 4.5) },
     };
   }, [drawings, mode, wide]);
 
@@ -196,6 +257,18 @@ function Surface({
         <defs>
           <pattern id="as-earth" width={0.25} height={0.25} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1={0} y1={0} x2={0} y2={0.25} stroke={INK_3} strokeWidth={0.02} />
+          </pattern>
+          <pattern id="as-conc" width={0.14} height={0.14} patternUnits="userSpaceOnUse">
+            <circle cx={0.03} cy={0.04} r={0.007} fill={INK_3} />
+            <circle cx={0.1} cy={0.1} r={0.006} fill={INK_3} />
+            <path d="M0.09 0.02 l0.018 0.03 h-0.036 Z" fill="none" stroke={INK_3} strokeWidth={0.005} />
+          </pattern>
+          <pattern id="as-hardcore" width={0.18} height={0.12} patternUnits="userSpaceOnUse">
+            <ellipse cx={0.05} cy={0.06} rx={0.035} ry={0.025} fill="none" stroke={INK_3} strokeWidth={0.008} />
+            <ellipse cx={0.135} cy={0.035} rx={0.03} ry={0.02} fill="none" stroke={INK_3} strokeWidth={0.008} />
+          </pattern>
+          <pattern id="as-block" width={0.1} height={0.1} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={0.1} stroke={INK_2} strokeWidth={0.01} />
           </pattern>
         </defs>
         <g transform={`translate(${tx} ${ty}) scale(${k})`}>
@@ -250,11 +323,13 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
   const stops = [0, ...datums.map((x) => x.z)].sort((a, b) => a - b).filter((z, i, a) => i === 0 || z - a[i - 1] > 0.05);
   const textSize = fs(0.2, 10);
   const titleSize = fs(0.42, 15);
+  // Notes and labels only when they can sit at (close to) paper size; zoomed far out they would pile up.
+  const detail = textSize <= 0.34;
 
   return (
     <g>
       {/* Ground */}
-      {p.section && <rect x={u0 - 1.5} y={0} width={u1 - u0 + 3} height={0.7} fill="url(#as-earth)" />}
+      {p.section && <rect x={u0 - 1.5} y={0} width={u1 - u0 + 3} height={1.15} fill="url(#as-earth)" />}
       {/* Faces, each followed by the shadow that falls on it */}
       {p.vector ? (
         <g>
@@ -311,6 +386,9 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
         </g>
       )}
 
+      {/* Section: below-ground build-up, footings and roof trusses, then the cut on top */}
+      {p.section && <SectionDetails p={p} info={info} textSize={textSize} notes={detail} />}
+
       {/* Section cut */}
       {p.section && (
         <>
@@ -348,7 +426,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
         })}
 
       {/* Material notes with leaders, in a column to the right */}
-      {!p.section && (
+      {!p.section && detail && (
         <Notes
           d={d}
           info={info}
@@ -359,17 +437,17 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
         />
       )}
 
-      {/* Level datums */}
-      {datums.map((dt, i) => (
+      {/* Level datums: dashed right across, named on the left, value marker on the right */}
+      {[{ name: 'Natural ground', z: 0 }, ...datums.filter((dt) => Math.abs(dt.z) > 0.01)].map((dt, i) => (
         <g key={i}>
-          <line x1={u1 + 0.15} y1={-dt.z} x2={datumX + 1.6} y2={-dt.z} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="6 3" />
+          <line x1={dimX - 0.25} y1={-dt.z} x2={datumX + 1.6} y2={-dt.z} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="6 3" opacity={0.8} />
+          <text x={dimX - 0.45} y={-dt.z - textSize * 0.35} textAnchor="end" fontSize={textSize * 0.92} fontWeight={700} fill={INK} letterSpacing={textSize * 0.04} display={detail ? undefined : 'none'}>
+            {`${dt.name.toUpperCase()}${/level|ground/i.test(dt.name) ? '' : ' LEVEL'}`}
+          </text>
           <path d={`M${datumX} ${-dt.z}l${-0.16} ${-0.24}h0.32Z`} fill={INK} />
-          <text x={datumX + 0.3} y={-dt.z - 0.1} fontSize={textSize} fontWeight={600} fill={INK}>
-            {dt.name}
-            <tspan dx={textSize * 0.5} fontWeight={400} fill={INK_3} style={{ fontVariantNumeric: 'tabular-nums' }}>
-              {dt.z >= 0 ? '+' : ''}
-              {dt.z.toFixed(2)}
-            </tspan>
+          <text x={datumX + 0.3} y={-dt.z - 0.1} fontSize={textSize} fontWeight={600} fill={INK_2} style={{ fontVariantNumeric: 'tabular-nums' }}>
+            {dt.z > 0.0005 ? '+' : dt.z < -0.0005 ? '' : '±'}
+            {dt.z.toFixed(3)}
           </text>
         </g>
       ))}
@@ -401,13 +479,22 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       </g>
 
       {/* Title */}
-      <g transform={`translate(${u0} ${(p.section ? 0.7 : p.width ? 1.3 : 0) + titleSize * 2})`}>
-        <text fontSize={titleSize} fontWeight={600} fill={INK}>
-          {p.title}
+      <g transform={`translate(${u0} ${(p.section ? 1.25 : p.width ? 1.3 : 0) + titleSize * 2})`}>
+        <text fontSize={titleSize} fontWeight={700} fill={INK} letterSpacing={titleSize * 0.03}>
+          {p.title.toUpperCase()}
         </text>
-        <text y={titleSize * 1.15} fontSize={titleSize * 0.62} fill={INK_3}>
-          Scale 1:100
-        </text>
+        <line x1={0} y1={titleSize * 0.35} x2={p.title.length * titleSize * 0.66} y2={titleSize * 0.35} stroke={INK} strokeWidth={1.2} />
+        {/* Graphical scale: 0–5 m */}
+        <g transform={`translate(0 ${titleSize * 1.05})`}>
+          {[0, 1, 2, 3, 4].map((m) => (
+            <rect key={m} x={m} y={0} width={1} height={0.09} fill={m % 2 ? '#fff' : INK} stroke={INK} strokeWidth={0.6} />
+          ))}
+          {[0, 1, 2, 3, 4, 5].map((m) => (
+            <text key={m} x={m} y={0.09 + textSize * 1.05} textAnchor="middle" fontSize={textSize * 0.75} fill={INK_2}>
+              {m === 5 ? '5 m' : m}
+            </text>
+          ))}
+        </g>
       </g>
     </g>
   );
@@ -492,4 +579,149 @@ function scaleFigures(b: { minX: number; maxX: number; minY: number; maxY: numbe
   place('person_child', halfWidth - 1.1);
   g.updateMatrixWorld(true);
   return g;
+}
+
+/**
+ * What a section shows besides the cut itself, the way sections are issued for approval:
+ * the ground-floor build-up under the slab (DPM, hardcore, blinding, compacted earth) with a
+ * note stack, strip footings under bearing walls, and the roof trusses with ceiling, joists and
+ * roof notes.
+ */
+function SectionDetails({ p, info, textSize, notes: showNotes }: { p: Placed; info: Info; textSize: number; notes: boolean }) {
+  const g0 = info.model.levels[0];
+  const ffl = g0.elevation;
+  const slab = g0.slabThickness || 0.15;
+  const walls = p.cutWalls ?? [];
+  const bearing = walls.filter((w) => w.bearing);
+  const outer: [number, number] | null = walls.length >= 2 ? [Math.min(...walls.map((w) => w.u)), Math.max(...walls.map((w) => w.u))] : null;
+  const y = (z: number) => -z;
+  const out: React.ReactNode[] = [];
+
+  if (outer) {
+    const [uL, uR] = outer;
+    const sb = ffl - slab; // underside of slab
+    const hc = 0.15;
+    const bl = 0.05;
+    // Fill between slab and natural ground (when the floor is raised), then the layers.
+    if (sb - hc - bl > 0.01) out.push(<rect key="fill" x={uL} y={y(sb - hc - bl)} width={uR - uL} height={sb - hc - bl} fill="url(#as-conc)" opacity={0.6} />);
+    out.push(<rect key="hc" x={uL} y={y(sb)} width={uR - uL} height={hc} fill="#fff" />);
+    out.push(<rect key="hc2" x={uL} y={y(sb)} width={uR - uL} height={hc} fill="url(#as-hardcore)" stroke={INK_3} strokeWidth={0.4} />);
+    out.push(<rect key="bl" x={uL} y={y(sb - hc)} width={uR - uL} height={bl} fill="url(#as-conc)" stroke={INK_3} strokeWidth={0.4} />);
+    out.push(<line key="dpm" x1={uL} y1={y(sb)} x2={uR} y2={y(sb)} stroke={INK} strokeWidth={0.8} strokeDasharray="5 2" />);
+
+    // Strip footings with block stems under bearing walls.
+    for (const [i, w] of bearing.entries()) {
+      const fw = Math.max(0.6, w.t * 2.6);
+      const fb = -0.9;
+      const ft = -0.65;
+      out.push(
+        <g key={`ft${i}`}>
+          <rect x={w.u - fw / 2} y={y(ft)} width={fw} height={ft - fb} fill="#fff" stroke={INK} strokeWidth={0.8} />
+          <rect x={w.u - fw / 2} y={y(ft)} width={fw} height={ft - fb} fill="url(#as-conc)" />
+          <rect x={w.u - w.t / 2} y={y(sb)} width={w.t} height={sb - ft} fill="#fff" stroke={INK} strokeWidth={0.8} />
+          <rect x={w.u - w.t / 2} y={y(sb)} width={w.t} height={sb - ft} fill="url(#as-block)" />
+        </g>
+      );
+    }
+
+    // Build-up note stack with arrows to a vertical leader.
+    const um = uL + (uR - uL) * 0.42;
+    const notes = [
+      { t: 'Floor finish to interior specs', z: ffl },
+      { t: `${Math.round(slab * 1000)} mm reinforced concrete slab`, z: ffl - slab / 2 },
+      { t: 'Damp-proof membrane (DPM)', z: sb },
+      { t: '150 mm compacted hardcore bed', z: sb - hc / 2 },
+      { t: '50 mm blinding layer', z: sb - hc - bl / 2 },
+      { t: 'Compacted earth', z: Math.min(0, sb - hc - bl) - 0.2 },
+    ];
+    const top = 1.45;
+    const gap = textSize * 1.55;
+    if (!showNotes) notes.length = 0;
+    const yLast = top + gap * (notes.length - 1);
+    if (notes.length) out.push(<line key="nl" x1={um} y1={y(ffl)} x2={um} y2={yLast} stroke={INK_2} strokeWidth={0.6} />);
+    notes.forEach((n, i) => {
+      const ty = top + gap * i;
+      out.push(
+        <g key={`n${i}`}>
+          <circle cx={um} cy={y(n.z)} r={0.035} fill={INK} />
+          <line x1={um + 0.08} y1={ty} x2={um + 0.5} y2={ty} stroke={INK_2} strokeWidth={0.5} />
+          <path d={`M${um + 0.02} ${ty} l0.12 -0.045 v0.09 Z`} fill={INK_2} />
+          <text x={um + 0.58} y={ty + textSize * 0.34} fontSize={textSize} fill={INK}>
+            {n.t}
+          </text>
+        </g>
+      );
+    });
+  }
+
+  // Roof trusses between the outermost walls of the top floor.
+  const line = p.roofLine ?? [];
+  const plate = p.plate ?? 0;
+  const span = p.plateSpan;
+  const roofAt = (u: number) => {
+    let best = -Infinity;
+    for (const s of line) {
+      const a = s.a.u <= s.b.u ? s.a : s.b;
+      const b = s.a.u <= s.b.u ? s.b : s.a;
+      if (u < a.u - 1e-6 || u > b.u + 1e-6 || b.u - a.u < 1e-6) continue;
+      best = Math.max(best, a.z + ((u - a.u) / (b.u - a.u)) * (b.z - a.z));
+    }
+    return best;
+  };
+  if (span && line.length && info.model.roof.type !== 'flat') {
+    const [wl, wr] = span;
+    const chord = (u: number) => roofAt(u) - 0.2;
+    const peak = Math.max(...[wl, (wl + wr) / 2, wr].map(chord));
+    if (peak - plate > 0.4) {
+      const n = Math.max(2, Math.round((wr - wl) / 1.25));
+      const xs = Array.from({ length: n + 1 }, (_, i) => wl + ((wr - wl) * i) / n);
+      const tops = xs.map((x) => Math.max(plate, chord(x)));
+      const mid = (wl + wr) / 2;
+      const webs: string[] = [];
+      xs.forEach((x, i) => {
+        if (i > 0 && i < n && tops[i] - plate > 0.05) webs.push(`M${x} ${y(plate)}L${x} ${y(tops[i])}`);
+        if (i < n) {
+          const x2 = xs[i + 1];
+          // Diagonals lean towards the ridge (Howe-type panels).
+          if (x2 <= mid + 1e-6) webs.push(`M${x} ${y(plate)}L${x2} ${y(tops[i + 1])}`);
+          else webs.push(`M${x} ${y(tops[i])}L${x2} ${y(plate)}`);
+        }
+      });
+      const topChord = xs.map((x, i) => `${i ? 'L' : 'M'}${x} ${y(tops[i])}`).join('');
+      out.push(
+        <g key="truss" fill="none" strokeLinejoin="round">
+          <path d={webs.join('')} stroke={INK_2} strokeWidth={0.55} />
+          <path d={topChord} stroke={INK_2} strokeWidth={0.9} />
+          <line x1={wl} y1={y(plate)} x2={wr} y2={y(plate)} stroke={INK_2} strokeWidth={0.9} />
+          {/* Ceiling board under the joists */}
+          <line x1={wl} y1={y(plate - 0.06)} x2={wr} y2={y(plate - 0.06)} stroke={INK} strokeWidth={1.1} />
+          {Array.from({ length: Math.floor((wr - wl) / 0.6) }, (_, i) => (
+            <rect key={i} x={wl + 0.3 + i * 0.6 - 0.025} y={y(plate - 0.01)} width={0.05} height={0.05} fill={INK_2} />
+          ))}
+        </g>
+      );
+      // Roof and ceiling notes with leaders, above the drawing.
+      const ridge = Math.max(...line.flatMap((s) => [s.a.z, s.b.z]));
+      const notes = [
+        { t: info.notes.roof ?? 'Roof covering to specification', at: { u: wl + (mid - wl) * 0.35, z: roofAt(wl + (mid - wl) * 0.35) }, side: -1, row: 1 },
+        { t: '50 × 50 mm treated softwood ceiling joists', at: { u: wl + (mid - wl) * 0.6, z: plate }, side: -1, row: 0 },
+        { t: 'Prefabricated steel trusses (to structural details)', at: { u: mid + (wr - mid) * 0.45, z: (plate + chord(mid + (wr - mid) * 0.45)) / 2 }, side: 1, row: 1 },
+        { t: 'Gypsum ceiling board fixed to joists with screws', at: { u: mid + (wr - mid) * 0.7, z: plate - 0.06 }, side: 1, row: 0 },
+      ];
+      for (const [i, nt] of (showNotes ? notes : []).entries()) {
+        const ly = y(ridge + 0.75 + nt.row * textSize * 1.9);
+        const lx = mid + nt.side * 0.4;
+        out.push(
+          <g key={`rn${i}`}>
+            <path d={`M${lx} ${ly}L${nt.at.u} ${ly}L${nt.at.u} ${y(nt.at.z)}`} fill="none" stroke={INK_3} strokeWidth={0.5} />
+            <circle cx={nt.at.u} cy={y(nt.at.z)} r={0.035} fill={INK} />
+            <text x={lx + nt.side * -0.1} y={ly - textSize * 0.3} textAnchor={nt.side < 0 ? 'end' : 'start'} fontSize={textSize} fill={INK}>
+              {nt.t}
+            </text>
+          </g>
+        );
+      }
+    }
+  }
+  return <g>{out}</g>;
 }

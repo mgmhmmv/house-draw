@@ -44,7 +44,7 @@ function shadeOf(mat: THREE.Material, n: THREE.Vector3, light: THREE.Vector3): {
  * Draw `roots` as seen along `view.look`. Objects are added to a temporary scene for the depth
  * render; callers pass objects made for this purpose.
  */
-export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxPerM?: number } = {}): VectorDrawing | null {
+export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxPerM?: number; clip?: boolean } = {}): VectorDrawing | null {
   const look = new THREE.Vector3(view.look.x, 0, view.look.y).normalize();
   const right = new THREE.Vector3(-view.look.y, 0, view.look.x);
   const camPos = new THREE.Vector3(view.origin.x, 0, view.origin.y);
@@ -168,7 +168,10 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
       return;
     }
     zMax = Math.max(zMax, pa.h, pb.h, pc.h);
-    tris.push({ d: `M${f(pa.u)} ${f(-pa.h)}L${f(pb.u)} ${f(-pb.h)}L${f(pc.u)} ${f(-pc.h)}Z`, ...sh, z: (pa.z + pb.z + pc.z) / 3 });
+    // A piece still only partly visible at the finest size goes underneath everything: it fills
+    // hairline gaps but never paints over a surface that is wholly visible in front of it.
+    const zz = (pa.z + pb.z + pc.z) / 3;
+    tris.push({ d: `M${f(pa.u)} ${f(-pa.h)}L${f(pb.u)} ${f(-pb.h)}L${f(pc.u)} ${f(-pc.h)}Z`, ...sh, z: vis < all ? 1e6 + zz : zz });
   };
 
   for (const root of roots)
@@ -211,7 +214,11 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
         if (!sh) continue;
         // Keep only the visible parts: wholly visible triangles stay whole, wholly hidden ones
         // go, and partly hidden ones are split until each piece is one or the other.
-        emit(pa, pb, pc, sh, 0);
+        if (opts.clip) {
+          // Sections: only what lies beyond the cutting plane (z >= 0).
+          const poly = clipZ([pa, pb, pc]);
+          for (let k = 1; k + 1 < poly.length; k++) emit(poly[0], poly[k], poly[k + 1], sh, 0);
+        } else emit(pa, pb, pc, sh, 0);
       }
 
       // Visible edges.
@@ -225,8 +232,17 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
       for (let i = 0; i < ep.count; i += 2) {
         a.fromBufferAttribute(ep, i).applyMatrix4(mw);
         b.fromBufferAttribute(ep, i + 1).applyMatrix4(mw);
-        const p0 = proj(a);
-        const p1 = proj(b);
+        let p0 = proj(a);
+        let p1 = proj(b);
+        if (opts.clip) {
+          if (p0.z < 0 && p1.z < 0) continue;
+          if (p0.z < 0 || p1.z < 0) {
+            const t = p0.z / (p0.z - p1.z);
+            const q = { u: p0.u + (p1.u - p0.u) * t, h: p0.h + (p1.h - p0.h) * t, z: 0 };
+            if (p0.z < 0) p0 = q;
+            else p1 = q;
+          }
+        }
         const L = Math.hypot(p1.u - p0.u, p1.h - p0.h);
         if (L < px * 0.5) continue;
         const steps = Math.max(1, Math.ceil(L / (px * 1.5)));
@@ -259,4 +275,19 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
     else fills.push({ d: t.d, fill: t.fill, opacity: t.opacity });
   }
   return { fills, edges: edgeParts.join(''), uMin, uMax, zMax };
+}
+
+/** Clip a polygon to the far side of the section plane (z >= 0). */
+function clipZ(poly: { u: number; h: number; z: number }[]) {
+  const out: { u: number; h: number; z: number }[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    if (a.z >= 0) out.push(a);
+    if ((a.z >= 0) !== (b.z >= 0)) {
+      const t = a.z / (a.z - b.z);
+      out.push({ u: a.u + (b.u - a.u) * t, h: a.h + (b.h - a.h) * t, z: 0 });
+    }
+  }
+  return out;
 }
