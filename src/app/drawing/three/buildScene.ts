@@ -209,7 +209,10 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   }
 
   // Ridge and hip caps.
-  const capGeo = frame.ridgeEdges.map(([a, b]) => barBetween(T(a), T(b), new THREE.Vector3(0, 1, 0), 0.16, 0.06));
+  // A cap straddles two slopes that fall away from its line; make it deep enough to bed into
+  // both (as a folded cap does), so no gap shows underneath it from any side.
+  const fall = 0.08 * Math.tan((Math.min(60, Math.max(2, model.roof.pitchDeg)) * Math.PI) / 180) + 0.012;
+  const capGeo = frame.ridgeEdges.map(([a, b]) => barBetween(T(a), T(b), new THREE.Vector3(0, 1, 0), 0.16, 0.05 + fall, 0.05 - (0.05 + fall) / 2));
   if (capGeo.length) {
     const m = new THREE.Mesh(mergeGeos(capGeo), metalMat(clay ? '#E2DED7' : ribColor.clone().multiplyScalar(0.85)));
     m.castShadow = true;
@@ -320,14 +323,14 @@ function roofRibColor(model: BuildingProject, clay: boolean): string {
 }
 
 /** A thin bar of the given width and height lying along a→b, raised off the surface along n. */
-function barBetween(a: THREE.Vector3, b: THREE.Vector3, n: THREE.Vector3, width: number, height: number): THREE.BufferGeometry {
+function barBetween(a: THREE.Vector3, b: THREE.Vector3, n: THREE.Vector3, width: number, height: number, lift = height / 2): THREE.BufferGeometry {
   const len = a.distanceTo(b);
   const geo = new THREE.BoxGeometry(width, height, len);
   const z = new THREE.Vector3().subVectors(b, a).normalize();
   const y = n.clone().sub(z.clone().multiplyScalar(n.dot(z))).normalize();
   const x = new THREE.Vector3().crossVectors(y, z).normalize();
   const m = new THREE.Matrix4().makeBasis(x, y, z);
-  m.setPosition(a.clone().add(b).multiplyScalar(0.5).addScaledVector(y, height / 2));
+  m.setPosition(a.clone().add(b).multiplyScalar(0.5).addScaledVector(y, lift));
   geo.applyMatrix4(m);
   return geo;
 }

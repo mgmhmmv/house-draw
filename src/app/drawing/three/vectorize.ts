@@ -12,6 +12,7 @@
  * Output is in metres: u along the picture plane (viewer's right), y = -height.
  */
 import * as THREE from 'three';
+import polygonClipping, { type Polygon } from 'polygon-clipping';
 import type { View } from '../model3d/project';
 
 export interface VectorDrawing {
@@ -116,8 +117,6 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
 
   // Surfaces.
   const light = new THREE.Vector3().addScaledVector(look, -0.55).addScaledVector(right, -0.35).add(new THREE.Vector3(0, 0.75, 0)).normalize();
-  type Tri = { d: string; fill: string; opacity: number; z: number };
-  const tris: Tri[] = [];
   const edgeParts: string[] = [];
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
@@ -127,52 +126,8 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
   let zMax = 0;
 
   type P = { u: number; h: number; z: number };
-  const mid = (p: P, q: P): P => ({ u: (p.u + q.u) / 2, h: (p.h + q.h) / 2, z: (p.z + q.z) / 2 });
-  // Fills: one pixel is enough (edges use the neighbourhood test above).
-  const seen = (u: number, h: number, z: number) => z <= depthAt(u, h) + tol;
-  let budget = 120000; // pieces; a safety net for very detailed scenes
-  const emit = (pa: P, pb: P, pc: P, sh: { fill: string; opacity: number }, depth: number) => {
-    const lab = Math.hypot(pa.u - pb.u, pa.h - pb.h);
-    const lbc = Math.hypot(pb.u - pc.u, pb.h - pc.h);
-    const lca = Math.hypot(pc.u - pa.u, pc.h - pa.h);
-    const size = Math.max(lab, lbc, lca);
-    // Sample the triangle on a grid fine enough not to miss thin visible strips.
-    const n = Math.max(2, Math.min(8, Math.ceil(size / (px * 5))));
-    let vis = 0;
-    let all = 0;
-    for (let i = 0; i <= n; i++)
-      for (let j = 0; j <= n - i; j++) {
-        const wa = (i + 0.15) / (n + 0.45);
-        const wb = (j + 0.15) / (n + 0.45);
-        const wc = 1 - wa - wb;
-        all++;
-        if (seen(pa.u * wa + pb.u * wb + pc.u * wc, pa.h * wa + pb.h * wb + pc.h * wc, pa.z * wa + pb.z * wb + pc.z * wc)) vis++;
-      }
-    if (vis === 0) return;
-    if (vis < all && depth < 16 && size > px * 3 && budget > 0) {
-      // Split across the longest edge: two pieces, so long thin parts don't explode.
-      budget--;
-      if (lab >= lbc && lab >= lca) {
-        const m = mid(pa, pb);
-        emit(pa, m, pc, sh, depth + 1);
-        emit(m, pb, pc, sh, depth + 1);
-      } else if (lbc >= lca) {
-        const m = mid(pb, pc);
-        emit(pa, pb, m, sh, depth + 1);
-        emit(pa, m, pc, sh, depth + 1);
-      } else {
-        const m = mid(pc, pa);
-        emit(pa, pb, m, sh, depth + 1);
-        emit(m, pb, pc, sh, depth + 1);
-      }
-      return;
-    }
-    zMax = Math.max(zMax, pa.h, pb.h, pc.h);
-    // A piece still only partly visible at the finest size goes underneath everything: it fills
-    // hairline gaps but never paints over a surface that is wholly visible in front of it.
-    const zz = (pa.z + pb.z + pc.z) / 3;
-    tris.push({ d: `M${f(pa.u)} ${f(-pa.h)}L${f(pb.u)} ${f(-pb.h)}L${f(pc.u)} ${f(-pc.h)}Z`, ...sh, z: vis < all ? 1e6 + zz : zz });
-  };
+  /** Every front-facing triangle (sections: only the part beyond the cut), before visibility. */
+  const raw: { a: P; b: P; c: P; fill: string; opacity: number }[] = [];
 
   for (const root of roots)
     root.traverse((o) => {
@@ -212,13 +167,11 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
         if (area2 < 1e-6) continue;
         const sh = shadeOf(mat, n, light);
         if (!sh) continue;
-        // Keep only the visible parts: wholly visible triangles stay whole, wholly hidden ones
-        // go, and partly hidden ones are split until each piece is one or the other.
         if (opts.clip) {
           // Sections: only what lies beyond the cutting plane (z >= 0).
           const poly = clipZ([pa, pb, pc]);
-          for (let k = 1; k + 1 < poly.length; k++) emit(poly[0], poly[k], poly[k + 1], sh, 0);
-        } else emit(pa, pb, pc, sh, 0);
+          for (let k = 1; k + 1 < poly.length; k++) raw.push({ a: poly[0], b: poly[k], c: poly[k + 1], ...sh });
+        } else raw.push({ a: pa, b: pb, c: pc, ...sh });
       }
 
       // Visible edges.
@@ -265,15 +218,8 @@ export function vectorElevation(roots: THREE.Object3D[], view: View, opts: { pxP
       }
     });
 
-  // Far to near (boundary pieces can still overlap a little, so order matters); neighbouring
-  // pieces of one colour share a path.
-  tris.sort((x, y) => y.z - x.z);
-  const fills: VectorDrawing['fills'] = [];
-  for (const t of tris) {
-    const last = fills[fills.length - 1];
-    if (last && last.fill === t.fill && last.opacity === t.opacity) last.d += t.d;
-    else fills.push({ d: t.d, fill: t.fill, opacity: t.opacity });
-  }
+  const fills = exactFills(raw, renderer, { uMin, uMax, hMin, hMax, W, H });
+  for (const t of raw) zMax = Math.max(zMax, t.a.h, t.b.h, t.c.h);
   return { fills, edges: edgeParts.join(''), uMin, uMax, zMax };
 }
 
@@ -290,4 +236,176 @@ function clipZ(poly: { u: number; h: number; z: number }[]) {
     }
   }
   return out;
+}
+
+const ID_VS = `attribute vec3 aId; varying vec3 vId; void main() { vId = aId; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+const ID_FS = `varying vec3 vId; void main() { gl_FragColor = vec4(vId, 1.0); }`;
+
+/**
+ * Exact visible surfaces. The GPU draws every triangle in its own ID colour, so each pixel
+ * says which triangle is in front there. A triangle with no pixels of its own is hidden; for
+ * the rest, any other triangle that wins a pixel inside it (and really is nearer there) is an
+ * occluder, and the visible shape is the triangle minus its occluders, by polygon clipping.
+ * Edges therefore stay geometrically straight; no sampling guesses.
+ */
+function exactFills(
+  raw: { a: { u: number; h: number; z: number }; b: { u: number; h: number; z: number }; c: { u: number; h: number; z: number }; fill: string; opacity: number }[],
+  renderer: THREE.WebGLRenderer,
+  box: { uMin: number; uMax: number; hMin: number; hMax: number; W: number; H: number }
+): VectorDrawing['fills'] {
+  const { uMin, uMax, hMin, hMax, W, H } = box;
+  const N = raw.length;
+  if (!N) return [];
+
+  // ID pass in picture-plane coordinates: (u, h, -z), so nearer = larger z = drawn on top.
+  const pos = new Float32Array(N * 9);
+  const ids = new Float32Array(N * 9);
+  raw.forEach((t, i) => {
+    const id = i + 1;
+    const r = (id & 255) / 255;
+    const g = ((id >> 8) & 255) / 255;
+    const b = ((id >> 16) & 255) / 255;
+    [t.a, t.b, t.c].forEach((p, k) => {
+      pos.set([p.u, p.h, -p.z], i * 9 + k * 3);
+      ids.set([r, g, b], i * 9 + k * 3);
+    });
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aId', new THREE.BufferAttribute(ids, 3));
+  const mat = new THREE.ShaderMaterial({ vertexShader: ID_VS, fragmentShader: ID_FS, side: THREE.DoubleSide });
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(geo, mat));
+  const cam = new THREE.OrthographicCamera(uMin, uMax, hMax, hMin, -1, 1000);
+  cam.position.set(0, 0, 0);
+  cam.lookAt(0, 0, -1);
+  cam.updateMatrixWorld(true);
+  const target = new THREE.WebGLRenderTarget(W, H, { depthBuffer: true });
+  renderer.setRenderTarget(target);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear();
+  renderer.render(scene, cam);
+  const px = new Uint8Array(W * H * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, W, H, px);
+  renderer.setRenderTarget(null);
+  target.dispose();
+  geo.dispose();
+  mat.dispose();
+
+  // Depth plane of each triangle: z = A·u + B·h + C.
+  const planes = raw.map((t) => {
+    const { a, b, c } = t;
+    const det = (b.u - a.u) * (c.h - a.h) - (c.u - a.u) * (b.h - a.h);
+    if (Math.abs(det) < 1e-12) return null;
+    const A = ((b.z - a.z) * (c.h - a.h) - (c.z - a.z) * (b.h - a.h)) / det;
+    const B = ((c.z - a.z) * (b.u - a.u) - (b.z - a.z) * (c.u - a.u)) / det;
+    return { A, B, C: a.z - A * a.u - B * a.h };
+  });
+  const sx = (uMax - uMin) / W;
+  const sy = (hMax - hMin) / H;
+  const EPS = 0.004;
+
+  const out: { d: string; fill: string; opacity: number; z: number }[] = [];
+  const f = (v: number) => v.toFixed(3);
+  for (let i = 0; i < N; i++) {
+    const t = raw[i];
+    const pl = planes[i];
+    if (!pl) continue;
+    const { a, b, c } = t;
+    const x0 = Math.max(0, Math.floor((Math.min(a.u, b.u, c.u) - uMin) / sx));
+    const x1 = Math.min(W - 1, Math.ceil((Math.max(a.u, b.u, c.u) - uMin) / sx));
+    const y0 = Math.max(0, Math.floor((Math.min(a.h, b.h, c.h) - hMin) / sy));
+    const y1 = Math.min(H - 1, Math.ceil((Math.max(a.h, b.h, c.h) - hMin) / sy));
+    const det = (b.u - a.u) * (c.h - a.h) - (c.u - a.u) * (b.h - a.h);
+    let own = 0;
+    const occ = new Set<number>();
+    for (let y = y0; y <= y1; y++) {
+      const hh = hMin + (y + 0.5) * sy;
+      for (let x = x0; x <= x1; x++) {
+        const u = uMin + (x + 0.5) * sx;
+        // Inside the triangle? (barycentric signs)
+        const w1 = ((u - a.u) * (c.h - a.h) - (c.u - a.u) * (hh - a.h)) / det;
+        const w2 = ((b.u - a.u) * (hh - a.h) - (u - a.u) * (b.h - a.h)) / det;
+        if (w1 < 0 || w2 < 0 || w1 + w2 > 1) continue;
+        const k = (y * W + x) * 4;
+        const id = px[k] | (px[k + 1] << 8) | (px[k + 2] << 16);
+        if (id === i + 1) {
+          own++;
+          continue;
+        }
+        if (!id) continue;
+        const j = id - 1;
+        const pj = planes[j];
+        if (!pj || occ.has(j)) continue;
+        // Really nearer here (not just a neighbour on the same surface)?
+        if (pj.A * u + pj.B * hh + pj.C < pl.A * u + pl.B * hh + pl.C - EPS) occ.add(j);
+      }
+    }
+    if (!own) {
+      // No pixel of its own: hidden, or just thinner than a pixel (hip caps, edges seen at a
+      // grazing angle). Look at its centre and corners: keep it unless something nearer is
+      // there at every one of them.
+      const cu = (a.u + b.u + c.u) / 3;
+      const ch = (a.h + b.h + c.h) / 3;
+      let seen = false;
+      for (const [u, hh] of [[cu, ch], ...[a, b, c].map((p) => [p.u + (cu - p.u) * 0.1, p.h + (ch - p.h) * 0.1])]) {
+        const x = Math.floor((u - uMin) / sx);
+        const y = Math.floor((hh - hMin) / sy);
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const k = (y * W + x) * 4;
+        const id = px[k] | (px[k + 1] << 8) | (px[k + 2] << 16);
+        const pj = id ? planes[id - 1] : null;
+        if (!pj || pj.A * u + pj.B * hh + pj.C >= pl.A * u + pl.B * hh + pl.C - EPS) seen = true;
+        else occ.add(id - 1);
+      }
+      if (!seen) continue;
+    }
+    const tri: Polygon = [[[a.u, -a.h], [b.u, -b.h], [c.u, -c.h], [a.u, -a.h]]];
+    let vis: [number, number][][][] = [tri as [number, number][][]];
+    if (occ.size) {
+      try {
+        // Subtract each occluder only where it really is in front: two planes' depth difference
+        // is linear on the picture plane, so that region is a half-plane. (Crossing surfaces —
+        // caps bedded into a roof, a wall through a slab — would otherwise cut holes.)
+        const cut: Polygon[] = [];
+        for (const j of occ) {
+          const o = raw[j];
+          const pj = planes[j]!;
+          const dA = pj.A - pl.A;
+          const dB = pj.B - pl.B;
+          const dC = pj.C - pl.C + EPS;
+          const inFront = (p: { u: number; h: number }) => dA * p.u + dB * p.h + dC < 0;
+          const ring: { u: number; h: number }[] = [];
+          const pts = [o.a, o.b, o.c];
+          for (let q = 0; q < 3; q++) {
+            const p0 = pts[q];
+            const p1 = pts[(q + 1) % 3];
+            const f0 = dA * p0.u + dB * p0.h + dC;
+            const f1 = dA * p1.u + dB * p1.h + dC;
+            if (f0 < 0) ring.push(p0);
+            if ((f0 < 0) !== (f1 < 0)) {
+              const tt = f0 / (f0 - f1);
+              ring.push({ u: p0.u + (p1.u - p0.u) * tt, h: p0.h + (p1.h - p0.h) * tt });
+            }
+          }
+          if (ring.length >= 3 && ring.some(inFront)) cut.push([[...ring.map((p) => [p.u, -p.h] as [number, number]), [ring[0].u, -ring[0].h]]]);
+        }
+        if (cut.length) vis = polygonClipping.difference(tri, ...cut) as [number, number][][][];
+      } catch {
+        /* keep the whole triangle */
+      }
+    }
+    let d = '';
+    for (const poly of vis) for (const ring of poly) if (ring.length >= 3) d += 'M' + ring.map(([x, yv]) => `${f(x)} ${f(yv)}`).join('L') + 'Z';
+    if (d) out.push({ d, fill: t.fill, opacity: t.opacity, z: (a.z + b.z + c.z) / 3 });
+  }
+  // Pieces no longer overlap; far-to-near order only matters for see-through ones.
+  out.sort((x, y) => y.z - x.z);
+  const fills: VectorDrawing['fills'] = [];
+  for (const t of out) {
+    const last = fills[fills.length - 1];
+    if (last && last.fill === t.fill && last.opacity === t.opacity) last.d += t.d;
+    else fills.push({ d: t.d, fill: t.fill, opacity: t.opacity });
+  }
+  return fills;
 }
