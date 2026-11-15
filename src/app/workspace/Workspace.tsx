@@ -54,8 +54,8 @@ import {
   exportProjectToJSON,
   triggerDownload,
 } from '../../export/exporters';
-import { sheetsHTML } from '../../export/sheet';
-import { composePages, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
+import { downloadSheetsPDF } from '../../export/pdf';
+import { composePages, numberSheets, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
 import type { SheetInfo } from '../../export/sheet';
 import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
@@ -300,22 +300,15 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const [printing, setPrinting] = useState<string | null>(null);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  /** Open (or fall back to downloading) a print-ready page of A3 sheets. */
-  const showSheets = (win: Window | null, title: string, svgs: string[]) => {
-    const html = sheetsHTML(title, svgs);
-    if (win && !win.closed) {
-      win.document.open();
-      win.document.write(html);
-      win.document.close();
-    } else void triggerDownload(`${title.replace(/[^\w-]+/g, '_')}.html`, html, 'text/html');
+  /** Write A3 sheets to a vector PDF file and download it. */
+  const showSheets = async (title: string, svgs: string[]) => {
+    await downloadSheetsPDF(svgs, `${title.replace(/[^\w-]+/g, '_')}.pdf`, (i, n) => setPrinting(`Writing PDF · page ${i + 1} of ${n}`));
+    toast(`PDF saved · ${svgs.length} sheet${svgs.length === 1 ? '' : 's'}`);
   };
 
   const runExport = async (kind: 'json' | 'dxf' | 'obj' | 'csv' | 'report' | 'sheet-pdf' | 'sheet-svg' | 'set-pdf') => {
     if (!model || !doc.project) return;
     const project = doc.project;
-    // Print windows must open in the click itself, or the browser blocks them.
-    const win = kind === 'sheet-pdf' || kind === 'set-pdf' ? window.open('', '_blank') : null;
-    win?.document.write('<p style="font:14px system-ui;padding:24px">Preparing sheets…</p>');
     try {
       if (kind === 'json') await exportProjectToJSON(model);
       else if (kind === 'dxf') await exportLevelToDXF(model, safeLevel);
@@ -330,7 +323,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         if (kind === 'sheet-svg')
           for (const [i, svg] of pages.entries())
             await triggerDownload(`${project.name.replace(/[^\w-]+/g, '_')}_${sheet.code}${pages.length > 1 ? `-${i + 1}` : ''}.svg`, `<?xml version="1.0" encoding="UTF-8"?>\n${svg}`, 'image/svg+xml');
-        else showSheets(win, `${project.name} · ${sheet.code}`, pages);
+        else await showSheets(`${project.name} ${sheet.code}`, pages);
       } else if (kind === 'set-pdf') {
         // Visit each drawing sheet (every level for the plans), capture it, then come back.
         const back = { sheet, level: safeLevel };
@@ -353,11 +346,10 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         }
         navigate(`/p/${projectId}/${back.sheet.slug}`, { replace: true });
         setLevelIndex(back.level);
-        showSheets(win, `${project.name} · drawing set`, svgs);
+        await showSheets(`${project.name} drawing set`, numberSheets(svgs));
       }
       if (kind !== 'sheet-pdf' && kind !== 'set-pdf') toast('Download started');
     } catch {
-      win?.close();
       toast('Export failed');
     } finally {
       setPrinting(null);

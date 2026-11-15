@@ -16,7 +16,7 @@ import { cx } from '../../ui';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
 import { usePrintMode } from '../printMode';
-import { chooseScale, composeSheet, DRAWING_AREA, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
+import { composeSheet, placeDrawing, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
 import { RoofPlan, roofPlanBounds, SewagePlan, sewerLayout } from './sheetPlans';
 import { assetFor, type AssetDef } from '../assets/catalog';
 import { assetPlan, isOverhead, mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
@@ -139,13 +139,10 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
   // On paper: the plan at a true scale on the A3 sheet.
   const layout = useMemo(() => {
     if (!paper) return null;
-    const e = fitBounds;
-    // 1:100 like the elevations and sections (one scale through the set), smaller only if it must be.
-    const scale = Math.max(100, chooseScale(e.maxX - e.minX, e.maxY - e.minY, DRAWING_AREA.w, DRAWING_AREA.h));
-    const m = 1000 / scale;
-    const x0 = DRAWING_AREA.x + (DRAWING_AREA.w - (e.maxX - e.minX) * m) / 2 - e.minX * m;
-    const y0 = DRAWING_AREA.y + (DRAWING_AREA.h - (e.maxY - e.minY) * m) / 2 - e.minY * m;
-    const frame = composeSheet(null, paper, { scale }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+    // 1:100 like the elevations and sections (one scale through the set), with the legend beside it.
+    const pl = placeDrawing(fitBounds, paper.legend, 100);
+    const { m, x0, y0 } = pl;
+    const frame = composeSheet(null, paper, { scale: pl.scale, key: pl.key }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
     return { m, x0, y0, frame };
   }, [paper, fitBounds]);
   const vp = useViewport(surfaceRef, layout ? SHEET_BOUNDS : fitBounds, layout ? 24 : 72, layout ? { kMin: 0.25, kMax: 80 } : {});

@@ -16,7 +16,7 @@ import { buildFrame } from '../model3d/faces';
 import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
 import { levelBounds } from '../model3d/faces';
 import { fmtMM } from '../plan/kernel';
-import { chooseScale, composeSheet, DRAWING_AREA, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
+import { composeSheet, placeDrawing, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
 
 interface Props {
   model: BuildingProject;
@@ -277,27 +277,23 @@ function Surface({
       // level values and the notes column on the right, grid bubbles above, title below.
       return { minX: d.uMin - 4.2, maxX: d.uMax + (p.section ? 3 : 8.2), minY: -(d.zMax + 1.6), maxY: p.section ? 3.3 : 2.9 };
     };
-    const scale = Math.max(...placed.map((p) => {
-      const e = extent(p);
-      return chooseScale(e.maxX - e.minX, e.maxY - e.minY, DRAWING_AREA.w, DRAWING_AREA.h);
-    }));
-    const m = 1000 / scale;
+    // One scale for the set (the one the largest drawing needs with its legend beside it).
+    const scale = Math.max(100, ...placed.map((p) => placeDrawing(extent(p), paper.legend).scale));
     const pages = placed.map((p, i) => {
-      const e = extent(p);
-      const x0 = DRAWING_AREA.x + (DRAWING_AREA.w - (e.maxX - e.minX) * m) / 2 - e.minX * m;
-      const y0 = DRAWING_AREA.y + (DRAWING_AREA.h - (e.maxY - e.minY) * m) / 2 - e.minY * m;
+      const pl = placeDrawing(extent(p), paper.legend, scale);
+      const x0 = pl.x0;
+      const y0 = pl.y0;
       const info: SheetInfo = {
         ...paper,
         title: p.title,
         subtitle: undefined,
-        legend: [],
         drawingNumber: placed.length > 1 ? `${paper.drawingNumber}-${i + 1}` : paper.drawingNumber,
         sheetOf: `${i + 1} of ${placed.length}`,
       };
-      const frame = composeSheet(null, info, { scale, footerBar: false }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      const frame = composeSheet(null, info, { scale, footerBar: false, key: pl.key }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
       return { p, x0, y0, frame, top: i * (SHEET.h + PAGE_GAP) };
     });
-    return { scale, m, pages };
+    return { scale, m: 1000 / scale, pages };
   }, [paper, placed]);
   const sheetBounds = { minX: 0, minY: 0, maxX: SHEET.w, maxY: Math.max(1, placed.length) * (SHEET.h + PAGE_GAP) - PAGE_GAP };
   const vp = useViewport(ref, paper ? sheetBounds : bounds, paper ? 24 : 48, paper ? { kMin: 0.25, kMax: 80 } : {});

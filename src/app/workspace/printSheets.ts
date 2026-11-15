@@ -7,21 +7,162 @@ import type { Project } from '../lib/api';
 import { billing } from '../lib/islepos';
 import { getStudio, DEFAULT_NOTES } from '../lib/studio';
 import { nextPaint, setPrintMode } from '../drawing/printMode';
-import { composeSheet, type LegendKind, type SheetContent, type SheetInfo, type Stage } from '../../export/sheet';
+import { composeSheet, type LegendEntry, type SheetContent, type SheetInfo, type Stage } from '../../export/sheet';
+import { MEP_COLOR } from '../drawing/style';
+import { sewerLayout } from '../drawing/plan/sheetPlans';
+import { getSolarConfig, getRoofDrainageConfig } from '../../model/types';
 
-const SHEET_META: Record<string, { title: string; discipline: string; legend: LegendKind[]; north: boolean }> = {
-  'A-101': { title: 'Floor plan', discipline: 'Architectural', legend: ['wall', 'door', 'window', 'room'], north: true },
-  '3D-VIEW': { title: '3D view', discipline: 'Architectural', legend: [], north: false },
-  'A-201': { title: 'Elevations', discipline: 'Architectural', legend: [], north: false },
-  'A-301': { title: 'Sections', discipline: 'Architectural', legend: ['wall'], north: false },
-  'S-101': { title: 'Structural plan', discipline: 'Structural', legend: ['wall', 'column', 'grid'], north: true },
-  'R-101': { title: 'Roof plan', discipline: 'Architectural', legend: ['roof', 'gutter', 'solar'], north: true },
-  'M-101': { title: 'Water & electrical plan', discipline: 'MEP', legend: ['wall', 'power', 'lighting', 'water', 'hotwater'], north: true },
-  'D-101': { title: 'Sewage plan', discipline: 'Plumbing', legend: ['wall', 'soil', 'waste', 'chamber'], north: true },
-  'H-101': { title: 'HVAC & cooling', discipline: 'Mechanical', legend: ['hvac'], north: false },
-  'E-101': { title: 'Electrical single-line', discipline: 'Electrical', legend: ['power', 'lighting', 'solar'], north: false },
-  'P-101': { title: 'Plumbing riser', discipline: 'Plumbing', legend: ['water', 'drain'], north: false },
+const SHEET_META: Record<string, { title: string; discipline: string; north: boolean }> = {
+  'A-101': { title: 'Floor plan', discipline: 'Architectural', north: true },
+  '3D-VIEW': { title: '3D view', discipline: 'Architectural', north: false },
+  'A-201': { title: 'Elevations', discipline: 'Architectural', north: false },
+  'A-301': { title: 'Sections', discipline: 'Architectural', north: false },
+  'S-101': { title: 'Structural plan', discipline: 'Structural', north: true },
+  'R-101': { title: 'Roof plan', discipline: 'Architectural', north: true },
+  'M-101': { title: 'Water & electrical plan', discipline: 'MEP', north: true },
+  'D-101': { title: 'Sewage plan', discipline: 'Plumbing', north: true },
+  'H-101': { title: 'HVAC & cooling', discipline: 'Mechanical', north: false },
+  'E-101': { title: 'Electrical single-line', discipline: 'Electrical', north: false },
+  'P-101': { title: 'Plumbing riser', discipline: 'Plumbing', north: false },
 };
+
+/** What each services symbol on the water & electrical plan stands for. */
+const MEP_KEY: Record<string, { tag?: string; sym?: LegendEntry['sym']; color: string; label: string }> = {
+  mdb: { tag: 'DB', color: MEP_COLOR.power, label: 'Main distribution board' },
+  sub_db: { tag: 'SDB', color: MEP_COLOR.power, label: 'Sub-distribution board' },
+  utility_meter: { tag: 'M', color: MEP_COLOR.power, label: 'Utility electricity meter' },
+  light_ceiling: { sym: 'light', color: MEP_COLOR.lighting, label: 'Ceiling light point' },
+  switch_1g: { tag: 'S', color: MEP_COLOR.lighting, label: 'Light switch' },
+  outlet_duplex: { sym: 'outlet', color: MEP_COLOR.power, label: 'Twin power socket outlet' },
+  ac_split: { tag: 'AC', color: MEP_COLOR.hvac, label: 'Split air-conditioner, indoor unit' },
+  ac_condenser: { tag: 'CU', color: MEP_COLOR.hvac, label: 'Air-conditioner condenser (outdoor unit)' },
+  ceiling_fan: { tag: 'F', color: MEP_COLOR.hvac, label: 'Ceiling fan' },
+  water_main: { tag: 'WM', color: MEP_COLOR.plumbingCold, label: 'Water main / meter connection' },
+  water_heater: { tag: 'WH', color: MEP_COLOR.plumbingHot, label: 'Water heater' },
+  plumb_wc: { tag: 'WC', color: MEP_COLOR.drain, label: 'WC, cold water supply' },
+  plumb_basin: { tag: 'B', color: MEP_COLOR.plumbingCold, label: 'Wash basin' },
+  plumb_sink: { tag: 'K', color: MEP_COLOR.plumbingCold, label: 'Kitchen sink' },
+  plumb_shower: { tag: 'SH', color: MEP_COLOR.plumbingCold, label: 'Shower' },
+  solar_pv: { tag: 'PV', color: MEP_COLOR.solar, label: 'Solar PV array (on roof)' },
+  solar_inv: { tag: 'INV', color: MEP_COLOR.solar, label: 'Solar inverter' },
+  solar_bess: { tag: 'BAT', color: MEP_COLOR.solar, label: 'Battery storage' },
+};
+const CIRCUIT_KEY: Record<string, LegendEntry> = {
+  electrical_submain: { sym: 'line', color: MEP_COLOR.power, label: 'Sub-main cable', weight: 0.5 },
+  electrical_power: { sym: 'line', color: MEP_COLOR.power, label: 'Power circuit (concealed, routed on site)' },
+  electrical_light: { sym: 'line', color: MEP_COLOR.lighting, dash: '1.4 0.8', label: 'Lighting circuit' },
+  electrical_hvac: { sym: 'line', color: MEP_COLOR.hvac, dash: '0.6 0.8', label: 'Air-conditioning power circuit' },
+  plumbing_cold: { sym: 'line', color: MEP_COLOR.plumbingCold, label: 'Cold water pipe, Ø25 PPR PN20' },
+  plumbing_hot: { sym: 'line', color: MEP_COLOR.plumbingHot, label: 'Hot water pipe, PPR PN20 insulated' },
+};
+
+/** The legend for a sheet: every symbol and reference on it, and what it means. */
+export function legendFor(sheetId: string, model: BuildingProject, levelIndex = 0): LegendEntry[] {
+  const level = model.levels[levelIndex] ?? model.levels[0];
+  const dims: LegendEntry = { sym: 'dim', label: 'Dimension in millimetres, between wall faces / grid' };
+  switch (sheetId) {
+    case 'A-101': {
+      const out: LegendEntry[] = [
+        { sym: 'wall', label: 'Wall, cut at window height (poché)' },
+        { sym: 'door', label: 'Door and its swing' },
+        { sym: 'window', label: 'Window' },
+        { sym: 'ring', color: '#1A1917', tag: 'D1', label: 'Door mark (see door schedule)' },
+        { sym: 'mark', tag: 'W1', label: 'Window mark (see window schedule)' },
+        { sym: 'room', label: 'Room name and floor area (m²)' },
+        dims,
+      ];
+      if (level.columns.length) out.push({ sym: 'column', label: 'Reinforced concrete column' });
+      if (level.mepNodes.some((n) => n.model || n.kind === 'ac_split' || n.kind === 'ceiling_fan')) out.push({ sym: 'dashed', color: '#8A857D', label: 'Overhead fitting (AC unit, fan, light), dashed' });
+      if (model.sections.length) out.push({ sym: 'section', tag: model.sections[0].label?.[0] ?? 'A', label: 'Section line and mark, see sections sheet A-301' });
+      return out;
+    }
+    case 'S-101':
+      return [
+        { sym: 'wallGrey', label: 'Wall (structure shown in outline)' },
+        { sym: 'column', tag: 'C1', label: 'RC column with its mark (see column schedule)' },
+        { sym: 'footing', label: 'Pad footing below column, dashed' },
+        { sym: 'bubble', tag: 'A', label: 'Structural grid line: letters one way, numbers the other' },
+        dims,
+      ];
+    case 'R-101': {
+      const out: LegendEntry[] = [
+        { sym: 'ridge', label: 'Ridge and hip lines (capped)' },
+        { sym: 'arrow', tag: `${model.roof.pitchDeg}°`, label: 'Roof falls in the direction of the arrow, at the pitch shown' },
+        { sym: 'dashed', color: '#8A857D', label: 'External walls below the roof, dashed' },
+        { sym: 'datum', tag: 'RIDGE', label: 'Levels in metres above natural ground' },
+      ];
+      if (getRoofDrainageConfig(model.roof).gutterEnabled && model.roof.type !== 'flat') {
+        out.push({ sym: 'line', color: '#57534E', weight: 0.7, label: 'Gutter along the eaves' });
+        out.push({ sym: 'ring', color: INK_HEX, tag: 'RWP', label: 'Rainwater pipe Ø100 uPVC, numbered RWP1, RWP2…' });
+        out.push({ sym: 'tank', label: 'Rainwater tank / soakaway at the foot of RWP1' });
+      }
+      if (getSolarConfig(model).enabled) out.push({ sym: 'solar', label: 'Solar PV panel' });
+      out.push(dims);
+      return out;
+    }
+    case 'M-101': {
+      const out: LegendEntry[] = [];
+      const kinds = new Set(level.mepNodes.map((n) => n.kind));
+      for (const [k, v] of Object.entries(MEP_KEY)) if (kinds.has(k as never)) out.push(v.sym ? { sym: v.sym, color: v.color, label: v.label } : { sym: 'chip', tag: v.tag, color: v.color, label: v.label });
+      const systems = new Set(level.mepCircuits.map((c) => c.system));
+      for (const [k, v] of Object.entries(CIRCUIT_KEY)) if (systems.has(k as never)) out.push(v);
+      if (!out.length) out.push({ sym: 'text', tag: '—', label: 'No services on this level yet' });
+      return out;
+    }
+    case 'D-101': {
+      const lay = sewerLayout(model, level);
+      const out: LegendEntry[] = [
+        { sym: 'line', color: MEP_COLOR.drain, weight: 0.55, label: 'Soil pipe Ø110 uPVC Class-B, 1:60 min. fall' },
+        { sym: 'line', color: MEP_COLOR.drain, weight: 0.35, dash: '1.4 0.8', label: 'Waste pipe Ø50 uPVC from basins, sinks, showers, traps' },
+      ];
+      const tags: Record<string, string> = { WC: 'WC (water closet)', WHB: 'Wash hand basin', KS: 'Kitchen sink', SHR: 'Shower', FT: 'Floor trap', BATH: 'Bath' };
+      for (const tg of [...new Set(lay.fittings.map((f) => f.tag))]) out.push({ sym: 'ring', color: MEP_COLOR.drain, tag: tg, label: tags[tg] ?? tg });
+      if (lay.chambers.length) {
+        out.push({ sym: 'chamber', label: 'IC: inspection chamber 600×600 (main 900×900), numbered IC1, IC2…' });
+        out.push({ sym: 'text', tag: 'IL', label: 'Invert level: depth of pipe bottom below ground (m)' });
+      }
+      if (lay.stacks.length) out.push({ sym: 'ring', color: MEP_COLOR.drain, tag: 'SVP', label: 'Soil and vent pipe Ø110 down the outside wall to an IC' });
+      if (lay.septic) out.push({ sym: 'septic', label: 'Septic tank, two chambers (position indicative)' });
+      if (lay.soak) out.push({ sym: 'soak', label: 'Soakaway pit, perforated rings (position indicative)' });
+      return out;
+    }
+    case 'A-201':
+      return [
+        { sym: 'datum', tag: '+3.000', label: 'Level datum: metres above natural ground' },
+        { sym: 'bubble', tag: 'A', label: 'Grid line, matches the plans' },
+        { sym: 'mark', tag: 'W1', label: 'Window / door mark (see schedule)' },
+        { sym: 'note', tag: 'Finish', label: 'Material and finish callout' },
+        { sym: 'dim', tag: '2 700', label: 'Height in millimetres' },
+        { sym: 'text', tag: '1:100', label: 'People shown for scale (adult approx. 1.7 m)' },
+      ];
+    case 'A-301':
+      return [
+        { sym: 'wall', label: 'Wall cut by the section (solid)' },
+        { sym: 'conc', label: 'Reinforced concrete: slab, footing, beam' },
+        { sym: 'hardcore', label: 'Compacted hardcore fill under slab' },
+        { sym: 'earth', label: 'Natural ground / compacted earth' },
+        ...(model.roof.type !== 'flat' ? [{ sym: 'truss', label: 'Roof truss (timber or light-gauge steel)' } as LegendEntry] : []),
+        { sym: 'datum', tag: '+0.450', label: 'Level datum: metres above natural ground' },
+        { sym: 'note', tag: 'Build-up', label: 'Construction build-up note, top to bottom' },
+        { sym: 'dim', tag: '2 700', label: 'Height in millimetres' },
+      ];
+    case 'E-101':
+      return [
+        { sym: 'line', color: MEP_COLOR.power, label: 'Power' },
+        { sym: 'line', color: MEP_COLOR.lighting, dash: '1.4 0.8', label: 'Lighting' },
+        ...(getSolarConfig(model).enabled ? [{ sym: 'line', color: MEP_COLOR.solar, label: 'Solar PV' } as LegendEntry] : []),
+      ];
+    case 'P-101':
+      return [
+        { sym: 'line', color: MEP_COLOR.plumbingCold, label: 'Cold water' },
+        { sym: 'line', color: MEP_COLOR.plumbingHot, label: 'Hot water' },
+        { sym: 'line', color: MEP_COLOR.drain, weight: 0.55, label: 'Soil and waste' },
+      ];
+    default:
+      return [];
+  }
+}
+const INK_HEX = '#1A1917';
 
 /** Sheets that have a drawing worth printing, in set order. */
 export const PRINTABLE = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301', 'E-101', 'P-101', '3D-VIEW'];
@@ -97,7 +238,7 @@ export interface SheetContext {
 /** Everything the title block needs, from the project, the studio profile and billing. */
 export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
   const studio = await getStudio();
-  const meta = SHEET_META[c.sheetId] ?? { title: c.sheetCode, discipline: 'Architectural', legend: [], north: false };
+  const meta = SHEET_META[c.sheetId] ?? { title: c.sheetCode, discipline: 'Architectural', north: false };
   let quotation = '';
   try {
     const b = await billing.get(c.project.id);
@@ -134,7 +275,7 @@ export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
     projectRef: code,
     quotation,
     sheetOf: c.sheetOf ?? '',
-    legend: meta.legend,
+    legend: legendFor(c.sheetId, c.model, c.levelIndex ?? 0),
     north: meta.north,
   };
 }
@@ -148,6 +289,11 @@ export function paperSheets(): string[] {
     (pg) =>
       `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297" font-family="Inter, Helvetica, Arial, sans-serif"><style>.as-w * { vector-effect: non-scaling-stroke; }</style><defs>${defs}</defs>${pg.innerHTML}</svg>`
   );
+}
+
+/** Number a set of composed sheets "1 of n" in the title block's Sheet box. */
+export function numberSheets(svgs: string[]) {
+  return svgs.map((svg, i) => svg.replace(/(>SHEET<\/text><text[^>]*>)[^<]*(<\/text>)/, `$1${i + 1} of ${svgs.length}$2`));
 }
 
 /** All sheets for the current view: the paper view's pages, or one composed sheet. */

@@ -26,28 +26,24 @@ export const STAGES: { id: Stage; label: string }[] = [
   { id: 'asbuilt', label: 'AS-BUILT' },
 ];
 
-export type LegendKind = 'wall' | 'door' | 'window' | 'room' | 'column' | 'grid' | 'power' | 'lighting' | 'water' | 'hotwater' | 'drain' | 'soil' | 'waste' | 'chamber' | 'roof' | 'gutter' | 'hvac' | 'solar' | 'section';
-export const LEGEND_LABEL: Record<LegendKind, string> = {
-  wall: 'Wall',
-  door: 'Door and its swing',
-  window: 'Window',
-  room: 'Room, with its floor area',
-  column: 'RC column',
-  grid: 'Structural grid',
-  power: 'Power',
-  lighting: 'Lighting',
-  water: 'Water supply',
-  hotwater: 'Hot water',
-  drain: 'Drainage',
-  soil: 'Soil pipe Ø110 uPVC',
-  waste: 'Waste pipe Ø50 uPVC',
-  chamber: 'Inspection chamber',
-  roof: 'Roof slope (falls to arrow)',
-  gutter: 'Gutter & rainwater pipe',
-  hvac: 'Cooling',
-  solar: 'Solar PV',
-  section: 'Section line',
-};
+/** A symbol in a sheet's key; most draw like the thing on the drawing. */
+export type LegendSym =
+  | 'wall' | 'wallGrey' | 'door' | 'window' | 'room' | 'mark' | 'dim' | 'section' | 'bubble' | 'dashed' | 'column' | 'footing'
+  | 'line' | 'chip' | 'ring' | 'light' | 'outlet' | 'chamber' | 'septic' | 'soak' | 'tank' | 'arrow' | 'ridge' | 'solar'
+  | 'datum' | 'note' | 'block' | 'conc' | 'hardcore' | 'earth' | 'truss' | 'text';
+
+/** One line of a sheet's legend: the symbol as drawn, and what it means. */
+export interface LegendEntry {
+  sym: LegendSym;
+  label: string;
+  /** Letters drawn in the symbol (D1, WC, IC, A). */
+  tag?: string;
+  color?: string;
+  /** Dashed line style for `line`. */
+  dash?: string;
+  /** Line weight (mm) for `line`. */
+  weight?: number;
+}
 
 export interface SheetInfo {
   title: string; // FLOOR PLAN
@@ -68,7 +64,7 @@ export interface SheetInfo {
   projectRef: string;
   quotation: string;
   sheetOf: string; // 1 of 9
-  legend: LegendKind[];
+  legend: LegendEntry[];
   north: boolean;
 }
 
@@ -117,11 +113,89 @@ export function chooseScale(widthM: number, heightM: number, areaW: number, area
 /** Where the drawing goes on the sheet (mm). */
 export const DRAWING_AREA = { x: M + 4, y: M + HEAD + 4, w: SX - M - 8, h: PAPER.h - 2 * M - HEAD - FOOT - 8 };
 
+const KEY_ROW = 4.4;
+const KEY_W = 74;
+const keyLines = (e: LegendEntry) => wrap(e.label, 44).length;
+/** Size of the legend box for these entries (mm), or null if there are none. */
+export function keySize(entries: LegendEntry[]) {
+  if (!entries.length) return null;
+  const rows = entries.reduce((n, e) => n + Math.max(1, keyLines(e) * 0.72), 0);
+  return { w: KEY_W, h: 8 + rows * KEY_ROW + 1.5 };
+}
+
+export interface Placement {
+  scale: number;
+  /** mm per drawing unit (metre). */
+  m: number;
+  /** Translation that puts the drawing (in metres) on the sheet. */
+  x0: number;
+  y0: number;
+  key: { x: number; y: number; w: number; h: number } | null;
+}
+
+/**
+ * Place a drawing (extent in metres) at a true scale with its legend beside it, never over it:
+ * centred with the key in a free corner, or shifted aside to make room, or the next scale down.
+ */
+export function placeDrawing(e: { minX: number; minY: number; maxX: number; maxY: number }, entries: LegendEntry[], minScale = 1): Placement {
+  const A = DRAWING_AREA;
+  const k = keySize(entries);
+  const W = e.maxX - e.minX;
+  const H = e.maxY - e.minY;
+  const gap = 5;
+  for (const scale of SCALES) {
+    if (scale < minScale) continue;
+    const m = 1000 / scale;
+    const dw = W * m;
+    const dh = H * m;
+    if (dw > A.w || dh > A.h) continue;
+    const at = (x: number, y: number, key: Placement['key']): Placement => ({ scale, m, x0: x - e.minX * m, y0: y - e.minY * m, key });
+    const cx = A.x + (A.w - dw) / 2;
+    const cy = A.y + (A.h - dh) / 2;
+    if (!k) return at(cx, cy, null);
+    if (k.h > A.h) continue;
+    // Centred, key in a corner clear of the drawing.
+    const corners = [
+      { x: A.x + A.w - k.w, y: A.y + A.h - k.h },
+      { x: A.x + A.w - k.w, y: A.y },
+      { x: A.x, y: A.y + A.h - k.h },
+      { x: A.x, y: A.y },
+    ];
+    const clear = (c: { x: number; y: number }, x: number, y: number) => c.x >= x + dw + gap || c.x + k.w <= x - gap || c.y >= y + dh + gap || c.y + k.h <= y - gap;
+    const free = corners.find((c) => clear(c, cx, cy));
+    if (free) return at(cx, cy, { ...free, ...k });
+    // Drawing to the left, key on the right.
+    if (A.w - dw >= k.w + gap) return at(A.x + (A.w - k.w - gap - dw) / 2, cy, { x: A.x + A.w - k.w, y: A.y + A.h - k.h, ...k });
+    // Drawing above, key below.
+    if (A.h - dh >= k.h + gap) return at(cx, A.y + (A.h - k.h - gap - dh) / 2, { x: A.x + A.w - k.w, y: A.y + A.h - k.h, ...k });
+  }
+  const scale = SCALES[SCALES.length - 1];
+  return { scale, m: 1000 / scale, x0: A.x - e.minX * (1000 / scale), y0: A.y - e.minY * (1000 / scale), key: null };
+}
+
+/** The legend box: every symbol on the sheet and what it refers to. */
+export function drawKey(entries: LegendEntry[], box: { x: number; y: number; w: number; h: number }) {
+  const parts: string[] = [];
+  parts.push(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="#fff" stroke="${INK}" stroke-width="0.3"/>`);
+  parts.push(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="6" fill="#F1F2F4" stroke="${INK}" stroke-width="0.3"/>`);
+  parts.push(t(box.x + 3, box.y + 4.1, 'LEGEND & REFERENCES', 2.1, { w: 700, ls: 0.2 }));
+  let y = box.y + 8;
+  for (const e of entries) {
+    const lines = wrap(e.label, 44);
+    const h = Math.max(1, lines.length * 0.72) * KEY_ROW;
+    const cy = y + h / 2;
+    parts.push(legendSymbol(e, box.x + 3, cy));
+    lines.forEach((ln, i) => parts.push(t(box.x + 17, cy + 0.7 - ((lines.length - 1) * 3.1) / 2 + i * 3.1, ln, 2.0, { c: INK2 })));
+    y += h;
+  }
+  return parts.join('');
+}
+
 /**
  * Compose one A3 sheet as an SVG document (mm units). With no content, `opts.scale` still sets
  * the scale bar and title block (the live paper view draws the drawing itself).
  */
-export function composeSheet(content: SheetContent | null, info: SheetInfo, opts: { scale?: number; footerBar?: boolean } = {}): { svg: string; scale: number | null } {
+export function composeSheet(content: SheetContent | null, info: SheetInfo, opts: { scale?: number; footerBar?: boolean; key?: Placement['key'] } = {}): { svg: string; scale: number | null } {
   const parts: string[] = [];
   const area = DRAWING_AREA;
 
@@ -138,25 +212,38 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
 
   // The drawing.
   let scale: number | null = opts.scale ?? null;
+  let key = opts.key ?? null;
   if (content) {
     const [vx, vy, vw, vh] = content.vb;
     let w = area.w;
     let h = area.h;
+    let x: number;
+    let y: number;
     if (content.metres) {
-      scale = chooseScale(vw, vh, area.w, area.h);
-      w = (vw * 1000) / scale;
-      h = (vh * 1000) / scale;
+      const pl = placeDrawing({ minX: vx, minY: vy, maxX: vx + vw, maxY: vy + vh }, info.legend);
+      scale = pl.scale;
+      w = vw * pl.m;
+      h = vh * pl.m;
+      x = pl.x0 + vx * pl.m;
+      y = pl.y0 + vy * pl.m;
+      key = pl.key;
     } else {
-      const k = Math.min(area.w / vw, area.h / vh);
+      // Diagrams fit the area beside the key.
+      const ks = keySize(info.legend);
+      const aw = ks ? area.w - ks.w - 5 : area.w;
+      const k = Math.min(aw / vw, area.h / vh);
       w = vw * k;
       h = vh * k;
+      x = area.x + (aw - w) / 2;
+      y = area.y + (area.h - h) / 2;
+      if (ks) key = { x: area.x + area.w - ks.w, y: area.y + area.h - ks.h, ...ks };
     }
-    const x = area.x + (area.w - w) / 2;
-    const y = area.y + (area.h - h) / 2;
     parts.push(
       `<svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="${vx} ${vy} ${vw} ${vh}" overflow="visible" preserveAspectRatio="xMidYMid meet">${content.fixedStrokes ? '<style>.as-w * { vector-effect: non-scaling-stroke; }</style>' : ''}${content.defs ? `<defs>${content.defs}</defs>` : ''}<g class="as-w">${content.inner}</g></svg>`
     );
   }
+
+  if (key) parts.push(drawKey(info.legend, key));
 
   // North arrow (plans).
   if (info.north) {
@@ -186,13 +273,7 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
     parts.push(t(fx, fy + 0.4, 'Not to scale', 2.3, { w: 600 }));
     fx += 26;
   }
-  for (const k of info.legend) {
-    const sym = legendSymbol(k, fx, fy);
-    parts.push(sym);
-    parts.push(t(fx + 8, fy + 0.6, LEGEND_LABEL[k], 2.1, { c: INK2 }));
-    fx += 10 + LEGEND_LABEL[k].length * 1.05 + 4;
-    if (fx > SX - 20) break;
-  }
+  parts.push(t(fx, fy + 0.4, 'Dimensions in millimetres · levels in metres above natural ground · do not scale; use figured dimensions', 2.0, { c: INK2 }));
 
   // ── Sidebar ─────────────────────────────────────────────────────────
   const L = SX + 4;
@@ -331,37 +412,78 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
   return { svg, scale };
 }
 
-function legendSymbol(k: LegendKind, x: number, y: number) {
-  const c = { power: '#C2781B', lighting: '#B8860B', water: '#2F6FD4', hotwater: '#C9473B', drain: '#6B5B4B', hvac: '#2A8C8C', solar: '#D1A21F' } as Record<string, string>;
-  switch (k) {
-    case 'soil':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="#6B5B4B" stroke-width="0.6"/>`;
-    case 'waste':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="#6B5B4B" stroke-width="0.35" stroke-dasharray="1.2 0.6"/>`;
-    case 'chamber':
-      return `<rect x="${x + 1.6}" y="${y - 1.4}" width="2.8" height="2.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 1.6}" y1="${y - 1.4}" x2="${x + 4.4}" y2="${y + 1.4}" stroke="${INK}" stroke-width="0.2"/>`;
-    case 'roof':
-      return `<line x1="${x}" y1="${y}" x2="${x + 5}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><path d="M${x + 6} ${y} l-1.4 -0.7 v1.4 Z" fill="${INK}"/>`;
-    case 'gutter':
-      return `<line x1="${x}" y1="${y}" x2="${x + 4.4}" y2="${y}" stroke="${INK2}" stroke-width="0.5"/><circle cx="${x + 5.4}" cy="${y}" r="0.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/>`;
-    case 'solar':
-      return `<rect x="${x}" y="${y - 1.2}" width="6" height="2.4" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.25"/><line x1="${x + 3}" y1="${y - 1.2}" x2="${x + 3}" y2="${y + 1.2}" stroke="#3D5A80" stroke-width="0.15"/>`;
+function legendSymbol(e: LegendEntry, x: number, y: number) {
+  const c = e.color ?? INK;
+  const tag = (tx: number, size = 1.8, col = INK, w = 700) => (e.tag ? t(tx, y + size * 0.36, e.tag, size, { w, c: col, a: 'middle' }) : '');
+  const mid = x + 6;
+  switch (e.sym) {
     case 'wall':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK}" stroke-width="0.9"/>`;
+      return `<rect x="${x}" y="${y - 0.9}" width="12" height="1.8" fill="${INK}"/>`;
+    case 'wallGrey':
+      return `<rect x="${x}" y="${y - 0.9}" width="12" height="1.8" fill="#E4E1DA" stroke="${INK2}" stroke-width="0.2"/>`;
     case 'door':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK}" stroke-width="0.3" stroke-dasharray="1 0.7"/>`;
+      return `<rect x="${x}" y="${y + 0.6}" width="2" height="1.2" fill="${INK}"/><rect x="${x + 10}" y="${y + 0.6}" width="2" height="1.2" fill="${INK}"/><line x1="${x + 2}" y1="${y + 1.2}" x2="${x + 2}" y2="${y - 6.8 + 6}" stroke="${INK}" stroke-width="0.35"/><path d="M${x + 2} ${y - 0.8} A8 8 0 0 1 ${x + 10} ${y + 1.2}" fill="none" stroke="${INK2}" stroke-width="0.15"/>`;
     case 'window':
-      return `<rect x="${x}" y="${y - 0.8}" width="6" height="1.6" fill="#fff" stroke="${INK}" stroke-width="0.25"/><line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK}" stroke-width="0.2"/>`;
+      return `<rect x="${x}" y="${y - 0.9}" width="2" height="1.8" fill="${INK}"/><rect x="${x + 10}" y="${y - 0.9}" width="2" height="1.8" fill="${INK}"/><rect x="${x + 2}" y="${y - 0.9}" width="8" height="1.8" fill="#fff" stroke="${INK}" stroke-width="0.2"/><line x1="${x + 2}" y1="${y}" x2="${x + 10}" y2="${y}" stroke="${INK}" stroke-width="0.15"/>`;
     case 'room':
-      return `<rect x="${x}" y="${y - 1.4}" width="6" height="2.8" fill="#EEF2F7" stroke="${RULE}" stroke-width="0.25"/>`;
-    case 'column':
-      return `<rect x="${x + 2}" y="${y - 1.2}" width="2.4" height="2.4" fill="${INK}"/>`;
-    case 'grid':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK2}" stroke-width="0.2" stroke-dasharray="2 0.6 0.4 0.6"/>`;
+      return `<rect x="${x}" y="${y - 1.8}" width="12" height="3.6" fill="#F4EEE3"/>${t(mid, y - 0.1, 'Bedroom', 1.3, { w: 700, a: 'middle' })}${t(mid, y + 1.3, '12.5 m²', 1.0, { c: INK3, a: 'middle' })}`;
+    case 'mark':
+      return `<rect x="${mid - 2.6}" y="${y - 1.3}" width="5.2" height="2.6" rx="0.5" fill="#fff" stroke="${INK}" stroke-width="0.2"/>${tag(mid, 1.5)}`;
+    case 'dim':
+      return `<line x1="${x}" y1="${y + 0.6}" x2="${x + 12}" y2="${y + 0.6}" stroke="${INK2}" stroke-width="0.15"/><line x1="${x - 0.5}" y1="${y + 1.1}" x2="${x + 0.5}" y2="${y + 0.1}" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 11.5}" y1="${y + 1.1}" x2="${x + 12.5}" y2="${y + 0.1}" stroke="${INK}" stroke-width="0.3"/>${t(mid, y - 0.2, e.tag ?? '3 600', 1.4, { a: 'middle' })}`;
     case 'section':
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK}" stroke-width="0.35" stroke-dasharray="2.4 0.8 0.4 0.8"/>`;
+      return `<line x1="${x}" y1="${y}" x2="${x + 9}" y2="${y}" stroke="${INK}" stroke-width="0.35" stroke-dasharray="2.4 0.8 0.4 0.8"/><circle cx="${x + 10.5}" cy="${y}" r="1.6" fill="#fff" stroke="${INK}" stroke-width="0.25"/>${t(x + 10.5, y + 0.55, e.tag ?? 'A', 1.5, { w: 700, a: 'middle' })}`;
+    case 'bubble':
+      return `<line x1="${x}" y1="${y}" x2="${x + 8.6}" y2="${y}" stroke="${INK2}" stroke-width="0.15" stroke-dasharray="2 0.6 0.4 0.6"/><circle cx="${x + 10.4}" cy="${y}" r="1.8" fill="#fff" stroke="${INK}" stroke-width="0.25"/>${t(x + 10.4, y + 0.6, e.tag ?? 'A', 1.6, { w: 700, a: 'middle' })}`;
+    case 'dashed':
+      return `<rect x="${x + 1}" y="${y - 1.5}" width="10" height="3" fill="none" stroke="${c}" stroke-width="0.2" stroke-dasharray="1 0.6"/>`;
+    case 'column':
+      return `<rect x="${mid - 1.3}" y="${y - 1.3}" width="2.6" height="2.6" fill="${INK}"/>${e.tag ? t(mid + 2.2, y - 1.2, e.tag, 1.4, { w: 600, c: INK2 }) : ''}`;
+    case 'footing':
+      return `<rect x="${mid - 2.6}" y="${y - 2.2}" width="5.2" height="4.4" fill="none" stroke="${INK3}" stroke-width="0.2" stroke-dasharray="0.8 0.5"/><rect x="${mid - 0.8}" y="${y - 0.8}" width="1.6" height="1.6" fill="${INK}"/>`;
+    case 'line':
+      return `<line x1="${x}" y1="${y}" x2="${x + 12}" y2="${y}" stroke="${c}" stroke-width="${e.weight ?? 0.45}"${e.dash ? ` stroke-dasharray="${e.dash}"` : ''}/>`;
+    case 'chip':
+      return `<rect x="${mid - 2.9}" y="${y - 1.5}" width="5.8" height="3" rx="0.6" fill="${c}"/>${tag(mid, (e.tag?.length ?? 0) > 2 ? 1.25 : 1.55, '#fff')}`;
+    case 'ring':
+      return `<circle cx="${x + 2}" cy="${y}" r="1.1" fill="#fff" stroke="${c}" stroke-width="0.3"/>${e.tag ? t(x + 4, y + 0.55, e.tag, 1.5, { w: 700, c: INK2 }) : ''}`;
+    case 'light':
+      return `<circle cx="${mid}" cy="${y}" r="1.4" fill="#fff" stroke="${c}" stroke-width="0.3"/><line x1="${mid - 1}" y1="${y - 1}" x2="${mid + 1}" y2="${y + 1}" stroke="${c}" stroke-width="0.25"/><line x1="${mid + 1}" y1="${y - 1}" x2="${mid - 1}" y2="${y + 1}" stroke="${c}" stroke-width="0.25"/>`;
+    case 'outlet':
+      return `<path d="M${mid - 1.5} ${y + 0.7} A1.5 1.5 0 0 1 ${mid + 1.5} ${y + 0.7} Z" fill="#fff" stroke="${c}" stroke-width="0.3"/>`;
+    case 'chamber':
+      return `<rect x="${mid - 1.5}" y="${y - 1.5}" width="3" height="3" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${mid - 1.5}" y1="${y - 1.5}" x2="${mid + 1.5}" y2="${y + 1.5}" stroke="${INK}" stroke-width="0.15"/>`;
+    case 'septic':
+      return `<rect x="${x + 1}" y="${y - 1.5}" width="10" height="3" fill="#F4F1EA" stroke="${INK}" stroke-width="0.35"/><line x1="${x + 7.5}" y1="${y - 1.5}" x2="${x + 7.5}" y2="${y + 1.5}" stroke="${INK}" stroke-width="0.2"/>`;
+    case 'soak':
+      return `<circle cx="${mid}" cy="${y}" r="2" fill="#F4F1EA" stroke="${INK}" stroke-width="0.35"/><circle cx="${mid}" cy="${y}" r="1.3" fill="none" stroke="${INK3}" stroke-width="0.15" stroke-dasharray="0.6 0.4"/>`;
+    case 'tank':
+      return `<circle cx="${mid}" cy="${y}" r="2" fill="none" stroke="${INK2}" stroke-width="0.25" stroke-dasharray="1 0.5"/>`;
+    case 'arrow':
+      return `<line x1="${x}" y1="${y}" x2="${x + 10.5}" y2="${y}" stroke="${INK}" stroke-width="0.25"/><path d="M${x + 12} ${y} l-1.8 -0.8 v1.6 Z" fill="${INK}"/>${t(x + 4, y - 0.8, e.tag ?? '22°', 1.4, { w: 600, c: INK2 })}`;
+    case 'ridge':
+      return `<line x1="${x}" y1="${y + 1.2}" x2="${x + 6}" y2="${y - 1.2}" stroke="${INK}" stroke-width="0.45"/><line x1="${x + 6}" y1="${y - 1.2}" x2="${x + 12}" y2="${y - 1.2}" stroke="${INK}" stroke-width="0.45"/>`;
+    case 'solar':
+      return `<rect x="${x + 1}" y="${y - 1.4}" width="10" height="2.8" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.25"/><line x1="${x + 4.33}" y1="${y - 1.4}" x2="${x + 4.33}" y2="${y + 1.4}" stroke="#3D5A80" stroke-width="0.12"/><line x1="${x + 7.66}" y1="${y - 1.4}" x2="${x + 7.66}" y2="${y + 1.4}" stroke="#3D5A80" stroke-width="0.12"/>`;
+    case 'datum':
+      return `<line x1="${x}" y1="${y + 0.9}" x2="${x + 12}" y2="${y + 0.9}" stroke="${INK3}" stroke-width="0.15" stroke-dasharray="1.2 0.6"/><path d="M${x + 3} ${y + 0.9} l-0.8 -1.2 h1.6 Z" fill="${INK}"/>${t(x + 4.4, y + 0.1, e.tag ?? '+3.000', 1.3, { w: 600, c: INK2 })}`;
+    case 'note':
+      return `<line x1="${x}" y1="${y + 1}" x2="${x + 4}" y2="${y - 0.6}" stroke="${INK2}" stroke-width="0.15"/><circle cx="${x}" cy="${y + 1}" r="0.35" fill="${INK2}"/><line x1="${x + 4}" y1="${y - 0.6}" x2="${x + 12}" y2="${y - 0.6}" stroke="${INK2}" stroke-width="0.15"/>${t(x + 4.3, y - 1, e.tag ?? 'Note', 1.2, { c: INK2 })}`;
+    case 'block': {
+      const h = [0, 2, 4, 6, 8].map((d) => `<line x1="${x + 1 + d}" y1="${y + 1.5}" x2="${x + 1 + d + 2}" y2="${y - 1.5}" stroke="${INK2}" stroke-width="0.12"/>`).join('');
+      return `<rect x="${x + 1}" y="${y - 1.5}" width="10" height="3" fill="#D8D5CE" stroke="${INK}" stroke-width="0.3"/>${h}`;
+    }
+    case 'conc':
+      return `<rect x="${x + 1}" y="${y - 1.5}" width="10" height="3" fill="#EEEDE9" stroke="${INK}" stroke-width="0.25"/>${[[2.5, -0.6], [5, 0.7], [7.5, -0.4], [9.4, 0.8], [3.8, 0.9]].map(([dx, dy]) => `<circle cx="${x + dx}" cy="${y + dy}" r="0.2" fill="${INK3}"/>`).join('')}<path d="M${x + 6} ${y - 0.9} l0.5 0.8 h-1 Z" fill="none" stroke="${INK3}" stroke-width="0.1"/>`;
+    case 'hardcore':
+      return `<rect x="${x + 1}" y="${y - 1.5}" width="10" height="3" fill="#fff" stroke="${INK}" stroke-width="0.25"/>${[[3, 0], [6, -0.4], [9, 0.4]].map(([dx, dy]) => `<ellipse cx="${x + dx}" cy="${y + dy}" rx="1" ry="0.6" fill="none" stroke="${INK3}" stroke-width="0.15"/>`).join('')}`;
+    case 'earth':
+      return `<line x1="${x + 1}" y1="${y - 1.5}" x2="${x + 11}" y2="${y - 1.5}" stroke="${INK}" stroke-width="0.3"/>${[0, 2, 4, 6, 8].map((d) => `<line x1="${x + 1 + d}" y1="${y + 1.5}" x2="${x + 3 + d}" y2="${y - 1.4}" stroke="${INK3}" stroke-width="0.15"/>`).join('')}`;
+    case 'truss':
+      return `<path d="M${x} ${y + 1.4} L${mid} ${y - 1.6} L${x + 12} ${y + 1.4} Z M${mid} ${y - 1.6} L${mid} ${y + 1.4} M${x + 3} ${y + 1.4} L${mid} ${y - 0.4} M${x + 9} ${y + 1.4} L${mid} ${y - 0.4}" fill="none" stroke="${INK}" stroke-width="0.22"/>`;
+    case 'text':
     default:
-      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${c[k] ?? INK}" stroke-width="0.6"/>`;
+      return t(mid, y + 0.6, e.tag ?? '', 1.7, { w: 700, a: 'middle' });
   }
 }
 
