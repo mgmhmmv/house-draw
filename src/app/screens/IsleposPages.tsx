@@ -83,6 +83,9 @@ export function IsleposSettings() {
   );
 }
 
+/** Set once any customer from IslePOS carries `street`, i.e. the API takes structured addresses. */
+let structuredApi = false;
+
 const SELECT =
   'h-11 w-full rounded-ctl border border-line bg-surface px-3 text-[15px] text-ink focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15 disabled:opacity-50 sm:text-sm';
 
@@ -111,6 +114,7 @@ export function ClientsPage() {
       islepos
         .customers(search)
         .then((r) => {
+          if (r.data.some((c) => 'street' in c)) structuredApi = true;
           setList(r.data);
           setTotal(r.total ?? r.data.length);
         })
@@ -277,8 +281,16 @@ export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleC
     setError('');
     try {
       const body: Record<string, string> = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim()]));
-      // IslePOS keeps both: the structured street / island / atoll, and the flat "street, island, atoll".
-      body.address = [body.street, body.island, body.atoll].filter(Boolean).join(', ');
+      // Newer IslePOS APIs take street / island / atoll (and refuse a flat address alongside them);
+      // older ones only take the flat "street, island, atoll". The record tells us which: newer
+      // APIs return a `street` field.
+      const structured = client ? 'street' in client : structuredApi;
+      if (!structured) {
+        body.address = [body.street, body.island, body.atoll].filter(Boolean).join(', ');
+        delete body.street;
+        delete body.island;
+        delete body.atoll;
+      }
       const c = client ? await islepos.updateCustomer(client.id, body) : await islepos.createCustomer({ ...body, name: body.name });
       onSaved(c);
       onClose();
