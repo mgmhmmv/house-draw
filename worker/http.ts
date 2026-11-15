@@ -5,6 +5,13 @@ export interface Env {
   ANTHROPIC_API_KEY?: string;
   /** Encrypts merchants' IslePOS keys at rest. */
   ISLEPOS_KEY_SECRET?: string;
+  /** Google OAuth client (Web application) for sign-in. */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  /** Comma-separated emails allowed to sign in. Nobody else can, and there is no sign-up. */
+  ALLOWED_EMAILS?: string;
+  /** Public origin, if it differs from the request URL (behind a proxy). */
+  APP_ORIGIN?: string;
 }
 
 export class HttpError extends Error {

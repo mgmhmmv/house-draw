@@ -35,7 +35,7 @@ function Routes() {
   }, [ready, user, isAuthRoute, navigate]);
 
   if (!ready) return <FullPageSpinner />;
-  if (!user) return <AuthScreen mode={path === '/signup' ? 'signup' : 'login'} />;
+  if (!user) return <AuthScreen />;
 
   const ws = matchPath('/p/:id/:sheet?', path);
   if (ws) {

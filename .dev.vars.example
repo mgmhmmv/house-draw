@@ -1,2 +1,5 @@
 ANTHROPIC_API_KEY=sk-ant-...
 ISLEPOS_KEY_SECRET=change-me-to-a-long-random-string
+ALLOWED_EMAILS=you@example.com
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

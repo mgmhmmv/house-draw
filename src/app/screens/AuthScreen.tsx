@@ -1,89 +1,57 @@
-import { useState, type FormEvent } from 'react';
-import { ArrowRight, Sparkles } from 'lucide-react';
-import { api, ApiError } from '../lib/api';
-import { useAuth } from '../lib/auth';
-import { Link, useRouter } from '../lib/router';
-import { Button, Field, Input, Logo } from '../ui';
+import { Sparkles } from 'lucide-react';
+import { Logo } from '../ui';
 
-export function AuthScreen({ mode }: { mode: 'login' | 'signup' }) {
-  const { setUser } = useAuth();
-  const { navigate } = useRouter();
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const isSignup = mode === 'signup';
+const ERRORS: Record<string, string> = {
+  not_allowed: 'That Google account isn’t allowed into this studio.',
+  cancelled: 'Sign-in was cancelled.',
+  expired: 'The sign-in took too long or was opened in another tab. Try again.',
+  google: 'Google couldn’t confirm the sign-in. Try again.',
+  not_configured: 'Google sign-in isn’t set up on this server yet.',
+};
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setBusy(true);
-    try {
-      const { user } = isSignup ? await api.signup({ name, email, password }) : await api.login({ email, password });
-      setUser(user);
-      navigate('/', { replace: true });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not reach ArchStudio. Check your connection.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
+export function AuthScreen() {
+  const error = new URLSearchParams(window.location.search).get('error');
   return (
     <div className="grid min-h-screen-safe lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <div className="flex flex-col px-6 py-8 sm:px-12 lg:px-16">
         <Logo />
         <div className="flex flex-1 items-center">
-          <form onSubmit={submit} className="mx-auto w-full max-w-sm py-12 animate-fade-up">
-            <h1 className="text-[28px] font-semibold leading-tight tracking-tight">
-              {isSignup ? 'Create your studio' : 'Welcome back'}
-            </h1>
-            <p className="mt-2 text-[15px] text-ink-2">
-              {isSignup ? 'Design, document and cost buildings in one place.' : 'Sign in to pick up where you left off.'}
-            </p>
+          <div className="mx-auto w-full max-w-sm py-12 animate-fade-up">
+            <h1 className="text-[28px] font-semibold leading-tight tracking-tight">Sign in to your studio</h1>
+            <p className="mt-2 text-[15px] text-ink-2">Design, document and cost buildings in one place.</p>
 
-            <div className="mt-8 space-y-4">
-              {isSignup && (
-                <Field label="Your name">
-                  <Input autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
-                </Field>
-              )}
-              <Field label="Email">
-                <Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus={!isSignup} />
-              </Field>
-              <Field label="Password" hint={isSignup ? 'At least 8 characters.' : undefined}>
-                <Input
-                  type="password"
-                  autoComplete={isSignup ? 'new-password' : 'current-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  minLength={isSignup ? 8 : undefined}
-                  required
-                />
-              </Field>
-            </div>
+            {error && (
+              <p className="mt-6 rounded-ctl bg-danger/10 px-3.5 py-2.5 text-sm text-danger" role="alert">
+                {ERRORS[error] ?? 'Sign-in failed. Try again.'}
+              </p>
+            )}
 
-            {error && <p className="mt-4 rounded-ctl bg-danger/10 px-3.5 py-2.5 text-sm text-danger" role="alert">{error}</p>}
-
-            <Button type="submit" variant="primary" size="lg" loading={busy} className="mt-6 w-full">
-              {isSignup ? 'Create account' : 'Sign in'}
-              {!busy && <ArrowRight className="h-4 w-4" />}
-            </Button>
-
-            <p className="mt-6 text-center text-sm text-ink-2">
-              {isSignup ? 'Already have an account? ' : 'New to ArchStudio? '}
-              <Link to={isSignup ? '/login' : '/signup'} className="font-medium text-accent hover:underline">
-                {isSignup ? 'Sign in' : 'Create an account'}
-              </Link>
-            </p>
-          </form>
+            <a
+              href="/api/auth/google"
+              className="mt-8 flex h-12 w-full items-center justify-center gap-3 rounded-ctl border border-line bg-surface text-[15px] font-medium text-ink shadow-card transition-colors hover:border-line-strong hover:bg-raised"
+            >
+              <GoogleMark />
+              Continue with Google
+            </a>
+            <p className="mt-6 text-center text-[13px] text-ink-3">Access is by invitation only.</p>
+          </div>
         </div>
         <p className="text-2xs text-ink-3">© {new Date().getFullYear()} ArchStudio</p>
       </div>
 
       <AuthArt />
     </div>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+      <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    </svg>
   );
 }
 

@@ -53,9 +53,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   me: () => request<{ user: User | null }>('GET', '/api/auth/me'),
-  signup: (b: { name: string; email: string; password: string }) => request<{ user: User }>('POST', '/api/auth/signup', b),
-  login: (b: { email: string; password: string }) => request<{ user: User }>('POST', '/api/auth/login', b),
   logout: () => request<{ ok: true }>('POST', '/api/auth/logout'),
+  logoutAll: () => request<{ ok: true }>('POST', '/api/auth/logout-all'),
 
   listProjects: () => request<{ projects: Project[] }>('GET', '/api/projects'),
   createProject: (b: { name: string; client: string; location: string; template: string; summary: ProjectSummary; model: BuildingProject }) =>
