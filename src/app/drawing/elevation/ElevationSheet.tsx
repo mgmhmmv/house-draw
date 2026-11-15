@@ -6,7 +6,8 @@ import { useMediaQuery } from '../../lib/hooks';
 import { INK, INK_2, INK_3, PAPER, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
 import { buildFrame } from '../model3d/faces';
-import { defaultSections, ELEVATIONS, project, sectionDrawing, type Drawing } from '../model3d/project';
+import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
+import { levelBounds } from '../model3d/faces';
 import { fmtMM } from '../plan/kernel';
 
 interface Props {
@@ -15,7 +16,13 @@ interface Props {
   svgRef: RefObject<SVGSVGElement | null>;
 }
 
-interface Placed {
+interface Annot {
+  grid: { label: string; u: number }[];
+  /** Wall-to-wall extent along the picture plane. */
+  width: [number, number] | null;
+}
+
+interface Placed extends Annot {
   key: string;
   title: string;
   drawing: Drawing;
@@ -25,7 +32,21 @@ interface Placed {
 }
 
 const GAP_X = 6;
-const GAP_Y = 6.5;
+
+/** Line weights by surface: openings and texture lighter than walls; the profile is drawn separately. */
+const FACE_STROKE: Record<string, { color: string; w: number }> = {
+  wall: { color: INK_2, w: 0.7 },
+  plinth: { color: INK_2, w: 0.7 },
+  roof: { color: INK_2, w: 0.7 },
+  fascia: { color: INK_2, w: 0.6 },
+  frame: { color: INK, w: 0.5 },
+  glass: { color: 'none', w: 0 },
+  door: { color: INK_2, w: 0.5 },
+  sill: { color: INK_2, w: 0.5 },
+  reveal: { color: INK_3, w: 0.4 },
+  slab: { color: INK_2, w: 0.6 },
+};
+const GAP_Y = 7.5;
 
 export function ElevationSheet({ model, mode, svgRef }: Props) {
   const frame = useMemo(() => buildFrame(model), [model]);
@@ -36,19 +57,36 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
   const [choice, setChoice] = useState(() => (wide ? 'all' : options[1]?.id ?? 'all'));
 
   const drawings = useMemo(() => {
-    const out: { key: string; title: string; drawing: Drawing; section: boolean }[] = [];
+    const out: ({ key: string; title: string; drawing: Drawing; section: boolean } & Annot)[] = [];
+    const b0 = levelBounds(model.levels[0]);
+    const corners = [
+      { x: b0.minX, y: b0.minY },
+      { x: b0.maxX, y: b0.minY },
+      { x: b0.maxX, y: b0.maxY },
+      { x: b0.minX, y: b0.maxY },
+    ];
     if (mode === 'elevations') {
       const cxm = (frame.bounds.minX + frame.bounds.maxX) / 2;
       const cym = (frame.bounds.minY + frame.bounds.maxY) / 2;
       for (const e of ELEVATIONS) {
         if (choice !== 'all' && choice !== e.id) continue;
         const origin = { x: cxm - e.look.x * 60, y: cym - e.look.y * 60 };
-        out.push({ key: e.id, title: e.name, drawing: project(frame, { look: e.look, origin }), section: false });
+        const view = { look: e.look, origin };
+        const us = corners.map((c) => uAt(view, c));
+        const axes = e.look.y !== 0 ? model.grid.xAxes.map((a) => ({ label: a.label, p: { x: a.coord, y: 0 } })) : model.grid.yAxes.map((a) => ({ label: a.label, p: { x: 0, y: a.coord } }));
+        out.push({
+          key: e.id,
+          title: e.name,
+          drawing: project(frame, view),
+          section: false,
+          grid: axes.map((a) => ({ label: a.label, u: uAt(view, a.p) })),
+          width: [Math.min(...us), Math.max(...us)],
+        });
       }
     } else {
       for (const s of sections) {
         if (choice !== 'all' && choice !== s.id) continue;
-        out.push({ key: s.id, title: `Section ${s.label}`, drawing: sectionDrawing(model, frame, s).drawing, section: true });
+        out.push({ key: s.id, title: `Section ${s.label}`, drawing: sectionDrawing(model, frame, s).drawing, section: true, grid: [], width: null });
       }
     }
     return out;
@@ -58,7 +96,7 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
   const { placed, bounds } = useMemo(() => {
     const cols = wide && mode === 'elevations' && drawings.length > 1 ? 2 : 1;
     const colW = Math.max(...drawings.map((d) => d.drawing.uMax - d.drawing.uMin), 8);
-    const rowH = Math.max(...drawings.map((d) => d.drawing.zMax), 4);
+    const rowH = Math.max(...drawings.map((d) => d.drawing.zMax), 4) + 1.6;
     const placed: Placed[] = drawings.map((d, i) => {
       const c = i % cols;
       const r = Math.floor(i / cols);
@@ -177,13 +215,52 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
     <g>
       {/* Ground */}
       {p.section && <rect x={u0 - 1.5} y={0} width={u1 - u0 + 3} height={0.7} fill="url(#as-earth)" />}
-      {/* Faces */}
-      {d.faces.map((f, i) => (
-        <g key={i}>
-          <path d={f.d} fill={f.fill} fillRule="evenodd" stroke={f.kind === 'glass' || f.kind === 'door' ? INK_2 : INK} strokeWidth={f.kind === 'reveal' ? WEIGHT.hair : WEIGHT.light} strokeLinejoin="round" />
-          {f.lines && <path d={f.lines} fill="none" stroke={f.kind === 'roof' ? INK_3 : INK_2} strokeWidth={WEIGHT.hair} opacity={f.kind === 'roof' ? 0.55 : 0.9} />}
+      {/* Faces, each followed by the shadow that falls on it */}
+      {d.faces.map((f, i) => {
+        const st = FACE_STROKE[f.kind] ?? FACE_STROKE.wall;
+        return (
+          <g key={i}>
+            <path d={f.d} fill={f.fill} fillRule="evenodd" stroke={st.color} strokeWidth={st.w} strokeLinejoin="round" />
+            {f.shadow && <path d={f.shadow} fill="rgba(38, 34, 28, 0.17)" fillRule="evenodd" stroke="none" />}
+            {f.lines && <path d={f.lines} fill="none" stroke={f.kind === 'roof' ? INK_3 : INK_2} strokeWidth={f.kind === 'roof' ? 0.35 : WEIGHT.hair} opacity={f.kind === 'roof' ? 0.7 : 0.85} />}
+            {f.sash && <path d={f.sash} fill="none" stroke={INK_2} strokeWidth={0.5} strokeDasharray="4 3" />}
+          </g>
+        );
+      })}
+      {/* Profile: the building's outline, heaviest line after the ground */}
+      <path d={d.profile} fill="none" stroke={INK} strokeWidth={1.7} strokeLinejoin="round" />
+
+      {/* Grid bubbles */}
+      {p.grid.map((g) => {
+        const top = d.zMax + 1.0;
+        const r = Math.max(0.28, 9 / k);
+        return (
+          <g key={g.label}>
+            <line x1={g.u} y1={0} x2={g.u} y2={-top + r} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="10 3 2 3" opacity={0.7} />
+            <circle cx={g.u} cy={-top} r={r} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.light} />
+            <text x={g.u} y={-top + r * 0.36} textAnchor="middle" fontSize={r * 0.95} fontWeight={600} fill={INK}>
+              {g.label}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Overall width */}
+      {p.width && (
+        <g stroke={INK_2} strokeWidth={WEIGHT.hair}>
+          <line x1={p.width[0]} y1={0.9} x2={p.width[1]} y2={0.9} />
+          {p.width.map((u, i) => (
+            <g key={i}>
+              <line x1={u} y1={0.25} x2={u} y2={1.05} />
+              <line x1={u - 0.09} y1={0.99} x2={u + 0.09} y2={0.81} strokeWidth={WEIGHT.medium} />
+            </g>
+          ))}
+          <text x={(p.width[0] + p.width[1]) / 2} y={0.9 - textSize * 0.45} textAnchor="middle" fontSize={textSize} fill={INK_2} stroke="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+            {fmtMM(p.width[1] - p.width[0])}
+          </text>
         </g>
-      ))}
+      )}
+
       {/* Section cut */}
       {p.section && (
         <>
@@ -196,7 +273,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
           ))}
         </>
       )}
-      <line x1={u0 - 1.5} y1={0} x2={u1 + 1.5} y2={0} stroke={INK} strokeWidth={2.4} strokeLinecap="square" />
+      <line x1={u0 - 1.5} y1={0} x2={u1 + 1.5} y2={0} stroke={INK} strokeWidth={2.8} strokeLinecap="square" />
 
       {/* Level datums */}
       {datums.map((dt, i) => (
@@ -232,7 +309,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       </g>
 
       {/* Title */}
-      <g transform={`translate(${u0} ${(p.section ? 0.7 : 0) + titleSize * 2})`}>
+      <g transform={`translate(${u0} ${(p.section ? 0.7 : p.width ? 1.3 : 0) + titleSize * 2})`}>
         <text fontSize={titleSize} fontWeight={600} fill={INK}>
           {p.title}
         </text>

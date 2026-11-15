@@ -65,7 +65,9 @@ export function useProjectDoc(projectId: string) {
       setProject((p) => (p ? { ...p, version: r.version, updatedAt: r.updatedAt, summary: summarize(snapshot) } : p));
       setSaveState(dirtyRef.current ? 'unsaved' : 'saved');
     } catch (e) {
-      dirtyRef.current = true;
+      // A deleted or inaccessible project will never accept the save: stop retrying.
+      const gone = e instanceof ApiError && (e.status === 404 || e.status === 401);
+      dirtyRef.current = !gone;
       setSaveState(e instanceof ApiError && e.code === 'version_conflict' ? 'conflict' : 'error');
     } finally {
       savingRef.current = false;

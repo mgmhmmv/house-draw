@@ -22,7 +22,7 @@ export interface V3 {
   z: number;
 }
 
-export type FaceKind = 'wall' | 'glass' | 'door' | 'roof' | 'fascia' | 'slab' | 'plinth' | 'reveal';
+export type FaceKind = 'wall' | 'glass' | 'door' | 'frame' | 'sill' | 'roof' | 'fascia' | 'slab' | 'plinth' | 'reveal';
 
 export interface Face {
   kind: FaceKind;
@@ -32,6 +32,8 @@ export interface Face {
   n: V3;
   /** Extra linework that belongs to the face (window mullions, panel lines). */
   lines?: [V3, V3][];
+  /** Dashed opening-direction lines (casement sashes, door swings). */
+  sash?: [V3, V3][];
   fill: string;
   /** Painter's tie-break when depths are equal: higher draws later. */
   order: number;
@@ -57,9 +59,7 @@ export function tint(hex: string, toWhite: number): string {
 }
 
 const GLASS = '#D3DEE6';
-const DOOR = '#C9B49A';
 const PLINTH = '#D9D5CC';
-const SLAB = '#E6E3DC';
 
 export function levelBounds(level: FloorLevel) {
   const xs: number[] = [];
@@ -84,7 +84,33 @@ function box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: num
   ];
 }
 
-function openingFaces(level: FloorLevel, o: Opening, wallFill: string): Face[] {
+interface Palette {
+  wall: string;
+  frame: string;
+  door: string;
+}
+
+const FRAME_COLOR: Record<string, string> = {
+  anthracite: '#3A3F44',
+  bronze: '#6B5640',
+  silver_anodized: '#A3A9AF',
+  timber_oak: '#9C7A54',
+  matte_black: '#26282A',
+};
+const DOOR_COLOR: Record<string, string> = {
+  walnut: '#7A5A44',
+  oak: '#B8925E',
+  matte_black: '#3A3B3D',
+  frosted_glass: '#DCE3E7',
+  white_lacquer: '#F1F0EC',
+};
+
+/** A flat rectangle in the wall's frame (s along the wall, z up) at offset `off` from the centreline. */
+function wallRect(P: (s: number, off: number, z: number) => V3, s0: number, s1: number, z0: number, z1: number, off: number, side: number) {
+  return side > 0 ? [P(s0, off, z0), P(s1, off, z0), P(s1, off, z1), P(s0, off, z1)] : [P(s1, off, z0), P(s0, off, z0), P(s0, off, z1), P(s1, off, z1)];
+}
+
+function openingFaces(level: FloorLevel, o: Opening, pal: Palette): Face[] {
   const w = level.walls.find((x) => x.id === o.wallId);
   if (!w) return [];
   const f = wallFrame(w);
@@ -96,41 +122,99 @@ function openingFaces(level: FloorLevel, o: Opening, wallFill: string): Face[] {
   const s1 = c + o.width / 2;
   const t = w.thickness / 2;
   const faces: Face[] = [];
-  // Glass or door leaf sits in the middle of the wall, so the reveal reads as depth.
+  const fw = o.kind === 'window' ? 0.055 : 0.07; // frame width
+  const bar = 0.04; // mullion / transom
+
   for (const side of [1, -1]) {
-    const off = side * 0.02;
     const n = v(f.n.x * side, f.n.y * side, 0);
-    const pts = side > 0 ? [P(s0, off, z0), P(s1, off, z0), P(s1, off, z1), P(s0, off, z1)] : [P(s1, off, z0), P(s0, off, z0), P(s0, off, z1), P(s1, off, z1)];
-    const lines: [V3, V3][] = [];
-    const fw = 0.05; // frame width
-    // Frame inset outline
-    lines.push([P(s0 + fw, off, z0 + fw), P(s1 - fw, off, z0 + fw)], [P(s1 - fw, off, z0 + fw), P(s1 - fw, off, z1 - fw)]);
-    lines.push([P(s1 - fw, off, z1 - fw), P(s0 + fw, off, z1 - fw)], [P(s0 + fw, off, z1 - fw), P(s0 + fw, off, z0 + fw)]);
+    const back = side * 0.02; // glass / leaf plane, set back in the reveal
+    const front = side * 0.035; // frame plane, just proud of the glass
+    const R = (a0: number, a1: number, b0: number, b1: number, off: number) => wallRect(P, a0, a1, b0, b1, off, side);
+
     if (o.kind === 'window') {
-      if (o.style === 'casement' || o.style === 'sliding') lines.push([P(c, off, z0 + fw), P(c, off, z1 - fw)]);
-      if (o.style === 'casement' && o.height > 1.2) lines.push([P(s0 + fw, off, z1 - 0.45), P(s1 - fw, off, z1 - 0.45)]);
-      // A single reflection stroke keeps glass from reading as a flat panel.
-      lines.push([P(s0 + o.width * 0.18, off, z0 + o.height * 0.3), P(s0 + o.width * 0.32, off, z0 + o.height * 0.62)]);
+      faces.push({ kind: 'glass', pts: R(s0, s1, z0, z1, back), n, fill: GLASS, order: 1 });
+      // Frame: outer rectangle with the daylight opening cut out, plus mullion and transom bars.
+      const holes: V3[][] = [];
+      const panes: [number, number, number, number][] = [];
+      const split = o.style === 'casement' || o.style === 'sliding' ? 2 : o.style === 'bay' ? 3 : 1;
+      const transom = o.style === 'casement' && o.height > 1.25 ? z1 - fw - 0.42 : null;
+      const inner0 = s0 + fw;
+      const inner1 = s1 - fw;
+      const paneW = (inner1 - inner0 - bar * (split - 1)) / split;
+      for (let i = 0; i < split; i++) {
+        const a0 = inner0 + i * (paneW + bar);
+        const a1 = a0 + paneW;
+        if (transom !== null) {
+          panes.push([a0, a1, z0 + fw, transom], [a0, a1, transom + bar, z1 - fw]);
+        } else panes.push([a0, a1, z0 + fw, z1 - fw]);
+      }
+      for (const [a0, a1, b0, b1] of panes) holes.push(R(a0, a1, b0, b1, front));
+      // Casement sashes: dashed lines meeting at the hinge side (the conventional opening mark).
+      const sash: [V3, V3][] = [];
+      if (o.style === 'casement') {
+        const lower = panes.filter((p) => p[2] === z0 + fw);
+        lower.forEach(([a0, a1, b0, b1], i) => {
+          const hingeAtLeft = (i === 0) === (side > 0);
+          const hx = hingeAtLeft ? a0 : a1;
+          const ox = hingeAtLeft ? a1 : a0;
+          sash.push([P(ox, front, b0), P(hx, front, (b0 + b1) / 2)], [P(hx, front, (b0 + b1) / 2), P(ox, front, b1)]);
+        });
+      }
+      faces.push({ kind: 'frame', pts: R(s0, s1, z0, z1, front), holes, n, fill: pal.frame, order: 2, sash });
+      // Sill: a slim projecting ledge under the window.
+      const sz = z0 - 0.06;
+      faces.push({ kind: 'sill', pts: R(s0 - 0.06, s1 + 0.06, sz, z0, side * (t + 0.05)), n, fill: '#F4F3EF', order: 3 });
     } else {
-      if (o.style === 'double' || o.style === 'sliding') lines.push([P(c, off, z0), P(c, off, z1 - fw)]);
-      if (o.style === 'garage') for (let z = z0 + 0.3; z < z1 - 0.1; z += 0.3) lines.push([P(s0 + fw, off, z), P(s1 - fw, off, z)]);
-      const hx = o.style === 'double' ? c - 0.08 : s1 - 0.12;
-      lines.push([P(hx, off, z0 + 1.0), P(hx, off, z0 + 1.12)]);
+      // Door frame (head + jambs) and leaf.
+      faces.push({ kind: 'frame', pts: R(s0, s1, z0, z1, front), holes: [R(s0 + fw, s1 - fw, z0, z1 - fw, front)], n, fill: pal.frame, order: 2 });
+      const lines: [V3, V3][] = [];
+      const lz1 = z1 - fw;
+      if (o.style === 'garage') {
+        for (let z = z0 + 0.25; z < lz1 - 0.05; z += 0.25) lines.push([P(s0 + fw, back, z), P(s1 - fw, back, z)]);
+      } else {
+        if (o.style === 'double' || o.style === 'sliding') lines.push([P(c, back, z0), P(c, back, lz1)]);
+        // Recessed panels on each leaf.
+        const leaves = o.style === 'double' || o.style === 'sliding' ? [[s0 + fw, c], [c, s1 - fw]] : [[s0 + fw, s1 - fw]];
+        for (const [a0, a1] of leaves) {
+          const m = 0.12;
+          const pz0 = z0 + 0.15;
+          const pz1 = lz1 - 0.15;
+          const mid = (pz0 + pz1) / 2;
+          for (const [b0, b1] of [[pz0, mid - 0.05], [mid + 0.05, pz1]])
+            lines.push([P(a0 + m, back, b0), P(a1 - m, back, b0)], [P(a1 - m, back, b0), P(a1 - m, back, b1)], [P(a1 - m, back, b1), P(a0 + m, back, b1)], [P(a0 + m, back, b1), P(a0 + m, back, b0)]);
+        }
+        const hx = o.style === 'double' ? c - 0.1 : s1 - fw - 0.1;
+        lines.push([P(hx, back, z0 + 0.98), P(hx, back, z0 + 1.12)]);
+      }
+      faces.push({ kind: 'door', pts: R(s0 + fw, s1 - fw, z0, lz1, back), n, fill: pal.door, order: 1, lines });
     }
-    faces.push({ kind: o.kind === 'window' ? 'glass' : 'door', pts, n, lines, fill: o.kind === 'window' ? GLASS : DOOR, order: 1 });
   }
-  // Reveals (jambs, head, sill) from wall face to glass.
+  // Reveals from the wall face back to the glass.
   for (const side of [1, -1]) {
     const a = side * t;
     const b = side * 0.02;
-    faces.push({ kind: 'reveal', fill: tint(wallFill, 0.1), order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(s0, a, z0), P(s0, b, z0), P(s0, b, z1), P(s0, a, z1)] });
-    faces.push({ kind: 'reveal', fill: tint(wallFill, 0.1), order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(s1, b, z0), P(s1, a, z0), P(s1, a, z1), P(s1, b, z1)] });
-    faces.push({ kind: 'reveal', fill: wallFill, order: 0, n: v(0, 0, -1), pts: [P(s0, a, z1), P(s1, a, z1), P(s1, b, z1), P(s0, b, z1)] });
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(s0, a, z0), P(s0, b, z0), P(s0, b, z1), P(s0, a, z1)] });
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(s1, b, z0), P(s1, a, z0), P(s1, a, z1), P(s1, b, z1)] });
   }
   return faces;
 }
 
-function wallFaces(level: FloorLevel, wallFill: string): Face[] {
+/** True when a wall end meets another wall (so its end cap is buried and must not be drawn). */
+function endIsJoined(level: FloorLevel, wallId: string, p: { x: number; y: number }): boolean {
+  for (const o of level.walls) {
+    if (o.id === wallId) continue;
+    const f = wallFrame(o);
+    if (f.length < 1e-3) continue;
+    const rx = p.x - o.start.x;
+    const ry = p.y - o.start.y;
+    const s = rx * f.dir.x + ry * f.dir.y;
+    const d = Math.abs(rx * f.n.x + ry * f.n.y);
+    if (s >= -o.thickness && s <= f.length + o.thickness && d <= o.thickness / 2 + 0.02) return true;
+  }
+  return false;
+}
+
+function wallFaces(level: FloorLevel, pal: Palette): Face[] {
   const faces: Face[] = [];
   for (const w of level.walls) {
     const f = wallFrame(w);
@@ -143,24 +227,24 @@ function wallFaces(level: FloorLevel, wallFill: string): Face[] {
     const z1 = z0 + w.height;
     const P = (s: number, off: number, z: number) => v(w.start.x + f.dir.x * s + f.n.x * off, w.start.y + f.dir.y * s + f.n.y * off, z);
     const openings = level.openings.filter((o) => o.wallId === w.id);
+    const fill = w.isExterior ? pal.wall : '#F2F0EB';
     for (const side of [1, -1]) {
       const off = side * t;
       const n = v(f.n.x * side, f.n.y * side, 0);
-      const outer = side > 0 ? [P(sA, off, z0), P(sB, off, z0), P(sB, off, z1), P(sA, off, z1)] : [P(sB, off, z0), P(sA, off, z0), P(sA, off, z1), P(sB, off, z1)];
       const holes = openings.map((o) => {
         const c = o.offset * f.length;
         const oz0 = z0 + (o.kind === 'door' ? 0 : o.sillHeight);
-        const oz1 = oz0 + o.height;
-        return [P(c - o.width / 2, off, oz0), P(c + o.width / 2, off, oz0), P(c + o.width / 2, off, oz1), P(c - o.width / 2, off, oz1)];
+        return wallRect(P, c - o.width / 2, c + o.width / 2, oz0, oz0 + o.height, off, side);
       });
-      faces.push({ kind: 'wall', pts: outer, holes, n, fill: w.isExterior ? wallFill : '#F2F0EB', order: 0 });
+      faces.push({ kind: 'wall', pts: wallRect(P, sA, sB, z0, z1, off, side), holes, n, fill, order: 0 });
     }
-    // Wall top
-    faces.push({ kind: 'wall', fill: wallFill, order: 0, n: v(0, 0, 1), pts: [P(sA, -t, z1), P(sB, -t, z1), P(sB, t, z1), P(sA, t, z1)] });
-    // End caps
-    faces.push({ kind: 'wall', fill: wallFill, order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(sA, t, z0), P(sA, -t, z0), P(sA, -t, z1), P(sA, t, z1)] });
-    faces.push({ kind: 'wall', fill: wallFill, order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(sB, -t, z0), P(sB, t, z0), P(sB, t, z1), P(sB, -t, z1)] });
-    for (const o of openings) faces.push(...openingFaces(level, o, wallFill));
+    faces.push({ kind: 'wall', fill, order: 0, n: v(0, 0, 1), pts: [P(sA, -t, z1), P(sB, -t, z1), P(sB, t, z1), P(sA, t, z1)] });
+    // End caps only where the wall stops freely; buried caps would draw false seams.
+    if (!endIsJoined(level, w.id, w.start))
+      faces.push({ kind: 'wall', fill, order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(sA, t, z0), P(sA, -t, z0), P(sA, -t, z1), P(sA, t, z1)] });
+    if (!endIsJoined(level, w.id, w.end))
+      faces.push({ kind: 'wall', fill, order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(sB, -t, z0), P(sB, t, z0), P(sB, t, z1), P(sB, -t, z1)] });
+    for (const o of openings) faces.push(...openingFaces(level, o, pal));
   }
   return faces;
 }
@@ -291,6 +375,8 @@ function seamLines(pts: V3[], material: string): [V3, V3][] {
 export function buildFrame(model: BuildingProject): BuildingFrame {
   const facade = FACADE_MATERIAL_OPTIONS.find((o) => o.id === getDesignConfig(model).exteriorFacade)?.base ?? '#eef2f6';
   const wallFill = tint(facade, 0.35);
+  const design = getDesignConfig(model);
+  const pal: Palette = { wall: wallFill, frame: FRAME_COLOR[design.windowFrame] ?? '#3A3F44', door: tint(DOOR_COLOR[design.doorMaterial] ?? '#B8925E', 0.12) };
   const faces: Face[] = [];
   const first = model.levels[0];
   const b0 = levelBounds(first);
@@ -300,12 +386,13 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
 
   let eaveZ = 3;
   model.levels.forEach((lvl, i) => {
-    faces.push(...wallFaces(lvl, wallFill));
+    faces.push(...wallFaces(lvl, pal));
     const top = lvl.elevation + Math.max(...lvl.walls.map((w) => w.height), 2.8);
     eaveZ = Math.max(eaveZ, top);
     if (i > 0) {
       const lb = levelBounds(lvl);
-      faces.push(...box(lb.minX, lb.minY, lvl.elevation - lvl.slabThickness, lb.maxX, lb.maxY, lvl.elevation, 'slab', SLAB));
+      // Slab edge is finished like the wall, so it merges into one facade with a single floor line.
+      faces.push(...box(lb.minX, lb.minY, lvl.elevation - lvl.slabThickness, lb.maxX, lb.maxY, lvl.elevation, 'wall', wallFill));
     }
   });
 

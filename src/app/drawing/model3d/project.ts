@@ -7,7 +7,8 @@
  * poché for whatever the plane passes through.
  */
 import type { BuildingProject, FloorLevel, SectionLine } from '../../../model/types';
-import { wallFrame } from '../plan/kernel';
+import polygonClipping, { type MultiPolygon, type Polygon as PCPolygon, type Ring } from 'polygon-clipping';
+import { multiPolygonPath, wallFrame } from '../plan/kernel';
 import { levelBounds, tint, type BuildingFrame, type Face, type V3 } from './faces';
 
 export interface View {
@@ -26,10 +27,15 @@ export interface Projected {
   kind: Face['kind'];
   depth: number;
   lines: string;
+  sash: string;
+  /** Cast shadow falling on this face, if any. */
+  shadow: string;
 }
 
 export interface Drawing {
   faces: Projected[];
+  /** Outline of everything visible: drawn as the heavy profile line. */
+  profile: string;
   /** Cut poché (sections only), as SVG path data. */
   cut: string;
   /** Roof cut band (sections only). */
@@ -63,18 +69,64 @@ function clipFront(v: View, poly: V3[]): V3[] {
   return out;
 }
 
-const ringPath = (v: View, ring: V3[]) =>
-  ring.map((p, i) => `${i ? 'L' : 'M'}${uOf(v, p).toFixed(3)} ${(-p.z).toFixed(3)}`).join('') + 'Z';
+/** Working record while projecting: polygons stay as numbers until the end. */
+interface Item {
+  poly: PCPolygon; // [outer, ...holes] in (u, -z)
+  fill: string;
+  kind: Face['kind'];
+  depth: number;
+  minDepth: number;
+  planar: boolean;
+  lines: string;
+  sash: string;
+  shadow: MultiPolygon;
+}
+
+const ring2 = (v: View, ring: V3[]): Ring => {
+  const r = ring.map((p) => [uOf(v, p), -p.z] as [number, number]);
+  r.push(r[0]);
+  return r;
+};
+const segPath = (v: View, segs: [V3, V3][] | undefined, section: boolean) =>
+  (segs ?? [])
+    .filter(([a, b]) => !section || (depthOf(v, a) >= 0 && depthOf(v, b) >= 0))
+    .map(([a, b]) => `M${uOf(v, a).toFixed(3)} ${(-a.z).toFixed(3)}L${uOf(v, b).toFixed(3)} ${(-b.z).toFixed(3)}`)
+    .join('');
+
+const bbox = (p: PCPolygon) => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of p[0]) {
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  return { x0, y0, x1, y1 };
+};
+const shift = (p: PCPolygon, d: number): PCPolygon => p.map((r) => r.map(([x, y]) => [x + d, y + d] as [number, number]));
+const safe = <T,>(fn: () => T, fallback: T): T => {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+};
+
+/** Light comes from the upper left at 45°, the drafting convention for elevation shadows. */
+const SHADOW_MAX = 3;
+const CASTERS = new Set<Face['kind']>(['wall', 'roof', 'fascia', 'sill', 'plinth', 'frame']);
+const RECEIVERS = new Set<Face['kind']>(['wall', 'glass', 'door', 'plinth']);
 
 export function project(frame: BuildingFrame, view: View, opts: { section?: boolean } = {}): Drawing {
-  const items: Projected[] = [];
+  let items: Item[] = [];
   let uMin = Infinity;
   let uMax = -Infinity;
   let zMax = 0;
 
   for (const f of frame.faces) {
     // Back-face cull: keep faces whose normal points toward the viewer.
-    if (f.n.x * view.look.x + f.n.y * view.look.y > -1e-4) continue;
+    const facing = f.n.x * view.look.x + f.n.y * view.look.y;
+    if (facing > -1e-4) continue;
     let pts = f.pts;
     let holes = f.holes ?? [];
     if (opts.section) {
@@ -83,25 +135,66 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
       holes = holes.map((h) => clipFront(view, h)).filter((h) => h.length >= 3);
     }
     let dsum = 0;
+    let dmin = Infinity;
     for (const p of pts) {
       const u = uOf(view, p);
       uMin = Math.min(uMin, u);
       uMax = Math.max(uMax, u);
       zMax = Math.max(zMax, p.z);
-      dsum += depthOf(view, p);
+      const d = depthOf(view, p);
+      dsum += d;
+      dmin = Math.min(dmin, d);
     }
-    const lines = (f.lines ?? [])
-      .filter(([a, b]) => !opts.section || (depthOf(view, a) >= 0 && depthOf(view, b) >= 0))
-      .map(([a, b]) => `M${uOf(view, a).toFixed(3)} ${(-a.z).toFixed(3)}L${uOf(view, b).toFixed(3)} ${(-b.z).toFixed(3)}`)
-      .join('');
     items.push({
-      d: ringPath(view, pts) + holes.map((h) => ringPath(view, h)).join(''),
+      poly: [ring2(view, pts), ...holes.map((h) => ring2(view, h))],
       fill: f.fill,
       kind: f.kind,
       depth: dsum / pts.length - f.order * 0.002,
-      lines,
+      minDepth: dmin,
+      planar: facing < -0.995,
+      lines: segPath(view, f.lines, !!opts.section),
+      sash: segPath(view, f.sash, !!opts.section),
+      shadow: [],
     });
   }
+
+  // Merge coplanar wall faces of the same finish into one surface: no seams at junctions.
+  const groups = new Map<string, Item[]>();
+  const rest: Item[] = [];
+  for (const it of items) {
+    if (it.kind === 'wall' && it.planar) {
+      const key = `${it.fill}|${it.depth.toFixed(3)}`;
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push(it);
+    } else rest.push(it);
+  }
+  for (const g of groups.values()) {
+    if (g.length === 1) {
+      rest.push(g[0]);
+      continue;
+    }
+    const merged = safe(() => polygonClipping.union(g[0].poly, ...g.slice(1).map((x) => x.poly)), g.map((x) => x.poly));
+    for (const poly of merged)
+      rest.push({ ...g[0], poly, lines: g.map((x) => x.lines).join(''), minDepth: Math.min(...g.map((x) => x.minDepth)) });
+  }
+  items = rest;
+
+  // Cast shadows: each caster nearer than a receiver throws its outline down-right by the depth gap.
+  const boxes = items.map((it) => bbox(it.poly));
+  items.forEach((r, ri) => {
+    if (!r.planar || !RECEIVERS.has(r.kind)) return;
+    const rb = boxes[ri];
+    const shifted: PCPolygon[] = [];
+    items.forEach((c, ci) => {
+      if (ci === ri || !CASTERS.has(c.kind)) return;
+      const gap = r.depth - c.minDepth;
+      if (gap < 0.015 || gap > SHADOW_MAX) return;
+      const cb = boxes[ci];
+      if (cb.x1 + gap < rb.x0 || cb.x0 + gap > rb.x1 || cb.y1 + gap < rb.y0 || cb.y0 + gap > rb.y1) return;
+      shifted.push(shift(c.poly, gap));
+    });
+    if (!shifted.length) return;
+    r.shadow = safe(() => polygonClipping.intersection([r.poly], polygonClipping.union(shifted[0], ...shifted.slice(1))), []);
+  });
 
   // Far to near.
   items.sort((a, b) => b.depth - a.depth);
@@ -113,11 +206,33 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
     const span = Math.max(1, dFar - dNear);
     for (const it of items) {
       const f = (it.depth - dNear) / span;
-      if (it.fill.startsWith('#')) it.fill = tint(it.fill, f * 0.45);
+      if (it.fill.startsWith('#')) it.fill = tint(it.fill, f * 0.4);
     }
   }
 
-  return { faces: items, cut: '', roofCut: '', uMin, uMax, zMax, rooms: [] };
+  const profile = safe(() => {
+    const outers = items.map((i) => [i.poly[0]] as PCPolygon);
+    return outers.length ? multiPolygonPath(polygonClipping.union(outers[0], ...outers.slice(1)).map((p) => [p[0]])) : '';
+  }, '');
+
+  return {
+    faces: items.map((it) => ({
+      d: multiPolygonPath([it.poly]),
+      fill: it.fill,
+      kind: it.kind,
+      depth: it.depth,
+      lines: it.lines,
+      sash: it.sash,
+      shadow: it.shadow.length ? multiPolygonPath(it.shadow) : '',
+    })),
+    profile,
+    cut: '',
+    roofCut: '',
+    uMin,
+    uMax,
+    zMax,
+    rooms: [],
+  };
 }
 
 /* ── Sections ──────────────────────────────────────────────────────── */
@@ -264,3 +379,6 @@ export const ELEVATIONS: { id: 'north' | 'south' | 'east' | 'west'; name: string
   { id: 'east', name: 'East elevation', look: { x: -1, y: 0 } },
   { id: 'west', name: 'West elevation', look: { x: 1, y: 0 } },
 ];
+
+/** Position across the picture plane of a plan point, for grid bubbles and dimensions. */
+export const uAt = (view: View, p: { x: number; y: number }) => uOf(view, p);
