@@ -42,6 +42,7 @@ export function useProjectDoc(projectId: string) {
   const modelRef = useRef<BuildingProject | null>(null);
   const timerRef = useRef<number>();
   const savingRef = useRef(false);
+  const conflictRef = useRef(false);
   const coverAtRef = useRef(0);
   const coverTimer = useRef<number>();
   /** The model as last saved, to describe what the next save changes. */
@@ -93,8 +94,12 @@ export function useProjectDoc(projectId: string) {
     }, wait);
   }, [projectId]);
 
-  const save = useCallback(async () => {
-    if (savingRef.current || !dirtyRef.current || !modelRef.current) return;
+  /**
+   * Save the current model. Resolves true once it is stored. `force` skips the version check:
+   * safe because the other tab's save stays in the history.
+   */
+  const save = useCallback(async (force = false): Promise<boolean> => {
+    if (savingRef.current || !dirtyRef.current || !modelRef.current) return !dirtyRef.current && !savingRef.current;
     savingRef.current = true;
     dirtyRef.current = false;
     setSaveState('saving');
@@ -104,12 +109,14 @@ export function useProjectDoc(projectId: string) {
     const labels = [...new Set(pending.labels)];
     const label = labels.length ? labels.join(' · ').slice(0, 200) : describeChange(savedRef.current, snapshot);
     try {
-      const r = await api.saveModel(projectId, { model: snapshot, summary: summarize(snapshot), baseVersion: versionRef.current, source: pending.source, label });
+      const r = await api.saveModel(projectId, { model: snapshot, summary: summarize(snapshot), baseVersion: force ? undefined : versionRef.current, source: pending.source, label });
       versionRef.current = r.version;
       savedRef.current = snapshot;
+      conflictRef.current = false;
       setProject((p) => (p ? { ...p, version: r.version, updatedAt: r.updatedAt, summary: summarize(snapshot) } : p));
       setSaveState(dirtyRef.current ? 'unsaved' : 'saved');
       scheduleCover();
+      return true;
     } catch (e) {
       // A deleted or inaccessible project will never accept the save: stop retrying.
       const gone = e instanceof ApiError && (e.status === 404 || e.status === 401);
@@ -119,12 +126,15 @@ export function useProjectDoc(projectId: string) {
         labels: [...pending.labels, ...pendingRef.current.labels],
         source: pendingRef.current.source !== 'edit' ? pendingRef.current.source : pending.source,
       };
-      setSaveState(e instanceof ApiError && e.code === 'version_conflict' ? 'conflict' : 'error');
+      conflictRef.current = e instanceof ApiError && e.code === 'version_conflict';
+      setSaveState(conflictRef.current ? 'conflict' : 'error');
+      return false;
     } finally {
       savingRef.current = false;
       if (dirtyRef.current) {
         window.clearTimeout(timerRef.current);
-        timerRef.current = window.setTimeout(save, AUTOSAVE_MS * 2);
+        // A conflict needs the user's choice; anything else retries.
+        if (!conflictRef.current) timerRef.current = window.setTimeout(() => save(), AUTOSAVE_MS * 2);
       }
     }
   }, [projectId]);
@@ -133,7 +143,7 @@ export function useProjectDoc(projectId: string) {
     dirtyRef.current = true;
     setSaveState((s) => (s === 'conflict' ? s : 'unsaved'));
     window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(save, AUTOSAVE_MS);
+    timerRef.current = window.setTimeout(() => save(), AUTOSAVE_MS);
   }, [save]);
 
   const apply = useCallback(
@@ -145,9 +155,9 @@ export function useProjectDoc(projectId: string) {
       schedule();
       if (opts?.saveNow) {
         window.clearTimeout(timerRef.current);
-        // If a save is already running, the finally-block retry picks this up.
-        void save();
+        return save();
       }
+      return Promise.resolve(true);
     },
     [schedule, save]
   );
@@ -159,7 +169,7 @@ export function useProjectDoc(projectId: string) {
       if (prev) pastRef.current = [...pastRef.current.slice(-HISTORY_LIMIT + 1), prev];
       futureRef.current = [];
       bump();
-      apply(next, opts);
+      return apply(next, opts);
     },
     [apply]
   );
@@ -168,7 +178,8 @@ export function useProjectDoc(projectId: string) {
   const restore = useCallback(
     async (version: number) => {
       const m = await api.versionModel(projectId, version);
-      commit(m, { label: `Restored version ${version}`, source: 'restore', saveNow: true });
+      const ok = await commit(m, { label: `Restored version ${version}`, source: 'restore', saveNow: true });
+      if (!ok) throw new Error('not_saved');
     },
     [projectId, commit]
   );
@@ -243,7 +254,12 @@ export function useProjectDoc(projectId: string) {
     restore,
     canUndo: pastRef.current.length > 0,
     canRedo: futureRef.current.length > 0,
-    saveNow: save,
+    saveNow: () => save(),
+    /** After a conflict: save this tab's design over the other one (which stays in History). */
+    keepMine: () => {
+      dirtyRef.current = true;
+      return save(true);
+    },
     updateMeta,
   };
 }

@@ -324,7 +324,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       model={model}
       onCommit={(next, opts) => {
         setPreview(null);
-        commit(next, opts);
+        return commit(next, opts);
       }}
       sketchCount={sketch.length}
       onConvertSketch={convertSketch}
@@ -512,7 +512,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ink-3" />
           </button>
           <StatusPill status={project.status} />
-          <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} />
+          <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} onKeepMine={() => void doc.keepMine().then((ok) => ok && toast('Saved · the other version is in History'))} />
 
           <div className="ml-auto flex items-center gap-1">
             <IconButton label="Undo (⌘Z)" size="sm" disabled={!doc.canUndo} onClick={doc.undo}>
@@ -617,7 +617,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           <div className="truncate text-[15px] font-semibold leading-tight tracking-tight">{project.name}</div>
           <div className="flex items-center gap-1 text-2xs text-ink-3">
             {sheet.name}
-            <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} compact />
+            <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} onKeepMine={() => void doc.keepMine()} compact />
           </div>
         </button>
         <IconButton label="History" size="sm" onClick={() => setMobileSheet('history')}>
@@ -820,7 +820,7 @@ function PanelTab({ active, onClick, icon, children }: { active: boolean; onClic
   );
 }
 
-function SaveIndicator({ state, onRetry, compact }: { state: SaveState; onRetry: () => void; compact?: boolean }) {
+function SaveIndicator({ state, onRetry, onKeepMine, compact }: { state: SaveState; onRetry: () => void; onKeepMine: () => void; compact?: boolean }) {
   const content: Record<SaveState, ReactNode> = {
     saved: (
       <>
@@ -839,9 +839,15 @@ function SaveIndicator({ state, onRetry, compact }: { state: SaveState; onRetry:
       </button>
     ),
     conflict: (
-      <button onClick={() => window.location.reload()} className="inline-flex items-center gap-1 text-warn">
-        <CloudOff className="h-3.5 w-3.5" /> Changed elsewhere · Reload
-      </button>
+      <span className="inline-flex items-center gap-1.5 text-warn">
+        <CloudOff className="h-3.5 w-3.5" /> {!compact && 'Changed in another tab'}
+        <button onClick={onKeepMine} className="rounded-full bg-warn/15 px-2 py-0.5 font-medium hover:bg-warn/25" title="Save this tab's design. The other version stays in History.">
+          Keep mine
+        </button>
+        <button onClick={() => window.location.reload()} className="rounded-full px-1.5 py-0.5 font-medium hover:bg-warn/10" title="Load the latest saved design">
+          Reload
+        </button>
+      </span>
     ),
   };
   return <span className="inline-flex items-center gap-1 text-2xs text-ink-3">{content[state]}</span>;

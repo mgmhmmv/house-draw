@@ -80,7 +80,7 @@ export const api = {
   getProject: (id: string) => request<{ project: Project; model: BuildingProject | null }>('GET', `/api/projects/${id}`),
   updateProject: (id: string, b: Partial<Pick<Project, 'name' | 'client' | 'location' | 'status'>>) =>
     request<{ project: Project }>('PATCH', `/api/projects/${id}`, b),
-  saveModel: (id: string, b: { model: BuildingProject; summary: ProjectSummary; baseVersion: number; source?: VersionSource; label?: string }) =>
+  saveModel: (id: string, b: { model: BuildingProject; summary: ProjectSummary; baseVersion?: number; source?: VersionSource; label?: string }) =>
     request<{ version: number; updatedAt: number }>('PUT', `/api/projects/${id}/model`, b),
   versions: (id: string, before?: number) =>
     request<{ current: number; versions: ProjectVersion[] }>('GET', `/api/projects/${id}/versions${before ? `?before=${before}` : ''}`),

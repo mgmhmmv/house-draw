@@ -19,7 +19,7 @@ interface Entry {
   /** A conversational reply to a question (no design change). */
   answer?: string;
   /** A proposed design change waiting for approval. The proposed model itself is kept in memory only. */
-  proposal?: 'pending' | 'applied' | 'discarded' | 'expired';
+  proposal?: 'pending' | 'saving' | 'applied' | 'unsaved' | 'discarded' | 'expired';
   /** What the proposal changes, worked out from the models. */
   diff?: string;
 }
@@ -45,7 +45,7 @@ export interface AssistantHandle {
 interface Props {
   projectId: string;
   model: BuildingProject;
-  onCommit: (next: BuildingProject, opts?: CommitOptions) => void;
+  onCommit: (next: BuildingProject, opts?: CommitOptions) => Promise<boolean> | void;
   sketchCount: number;
   onConvertSketch: () => void;
   /** Open the History tab (after a change is applied). */
@@ -122,7 +122,8 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
       const base = modelRef.current;
       const res = await runPromptArchitect(base, instruction, { provider: 'claude' }, prompt);
       const diff = describeChange(base, res.project, 50);
-      if (diff === 'Edited' && JSON.stringify(base) === JSON.stringify(res.project)) {
+      // 'Edited' means nothing the drawings show changed: the engine couldn't do it.
+      if (diff === 'Edited') {
         setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: `I couldn't turn that into a change to the design. Could you say it another way, with sizes or room names?`, engine: res.engineUsed } : e)));
         return;
       }
@@ -148,9 +149,12 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
     if (!p) return setStatus(e.id, 'expired');
     // Apply on top of the current design only if it hasn't changed since the proposal was made.
     if (modelRef.current !== p.base) return setStatus(e.id, 'expired');
-    onCommit(p.next, { label: `AI: ${e.summary || e.prompt}`.slice(0, 200), source: 'ai', saveNow: true });
+    setStatus(e.id, 'saving');
     proposals.current.delete(e.id);
-    setStatus(e.id, 'applied');
+    // Only say "Applied" once the change is actually saved.
+    Promise.resolve(onCommit(p.next, { label: `AI: ${e.summary || e.prompt}`.slice(0, 200), source: 'ai', saveNow: true }))
+      .then((ok) => setStatus(e.id, ok === false ? 'unsaved' : 'applied'))
+      .catch(() => setStatus(e.id, 'unsaved'));
   };
   const discard = (e: Entry) => {
     proposals.current.delete(e.id);
@@ -264,7 +268,9 @@ const ENGINE: Record<string, string> = { claude: 'Claude', tool: 'Tool', gemini:
 
 const STATUS = {
   pending: { label: 'Proposed change', dot: 'bg-accent', text: 'text-accent', bg: 'bg-accent-soft' },
+  saving: { label: 'Saving…', dot: 'bg-accent', text: 'text-accent', bg: 'bg-accent-soft' },
   applied: { label: 'Applied', dot: 'bg-ok', text: 'text-ok', bg: 'bg-ok/10' },
+  unsaved: { label: 'Not saved', dot: 'bg-danger', text: 'text-danger', bg: 'bg-danger/10' },
   discarded: { label: 'Discarded', dot: 'bg-ink-3', text: 'text-ink-3', bg: 'bg-sunken' },
   expired: { label: 'Not applied', dot: 'bg-warn', text: 'text-warn', bg: 'bg-warn/10' },
 } as const;
@@ -334,6 +340,9 @@ function Reply({
         )}
 
         {entry.proposal === 'applied' && <p className="mt-2.5 text-2xs text-ink-3">Saved as a new version. You can restore the one before it from History.</p>}
+        {entry.proposal === 'unsaved' && (
+          <p className="mt-2.5 text-2xs text-danger">The change is on screen but not saved: this project was saved from another tab. Use Keep mine in the top bar to save it, or Reload to drop it.</p>
+        )}
         {(entry.proposal === 'expired' || (pending && stale)) && (
           <p className="mt-2.5 text-2xs text-ink-3">{stale ? 'The design changed after this was proposed.' : 'This proposal is from an earlier visit.'}</p>
         )}

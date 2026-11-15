@@ -70,6 +70,27 @@ export function ModelView({ model }: { model: BuildingProject }) {
     controls.maxPolarAngle = Math.PI * 0.495;
     controls.minDistance = 3;
     controls.maxDistance = 160;
+    controls.screenSpacePanning = true;
+
+    // Hold Space and drag to slide the view without turning it.
+    const typing = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+    };
+    const setPan = (on: boolean) => {
+      controls.mouseButtons.LEFT = on ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+      renderer.domElement.style.cursor = on ? 'grab' : '';
+    };
+    const onSpaceDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || typing() || walkRef.current?.active) return;
+      e.preventDefault(); // no page scroll
+      if (!e.repeat) setPan(true);
+    };
+    const onSpaceUp = (e: KeyboardEvent) => e.code === 'Space' && setPan(false);
+    const onBlur = () => setPan(false);
+    window.addEventListener('keydown', onSpaceDown);
+    window.addEventListener('keyup', onSpaceUp);
+    window.addEventListener('blur', onBlur);
 
     scene.add(new THREE.HemisphereLight('#FFFFFF', '#D9D2C3', 1.35));
     const sun = new THREE.DirectionalLight('#FFF4E2', 2.4);
@@ -144,6 +165,9 @@ export function ModelView({ model }: { model: BuildingProject }) {
       walkRef.current?.stop();
       ro.disconnect();
       controls.dispose();
+      window.removeEventListener('keydown', onSpaceDown);
+      window.removeEventListener('keyup', onSpaceUp);
+      window.removeEventListener('blur', onBlur);
       disposeParts(c);
       ground.geometry.dispose();
       (ground.material as THREE.Material).dispose();
