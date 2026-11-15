@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, SketchStroke } from '../../model/types';
 import { PlanCanvas } from '../drawing/plan/PlanCanvas';
 import { Viewport3D } from '../../components/Viewport3D';
-import { ElevationsAndSectionsView } from '../../components/ElevationsAndSectionsView';
+import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
 import { SchematicsView } from '../../components/SchematicsView';
 import { BOQView } from '../../components/BOQView';
 import '../../app-legacy.css';
@@ -34,7 +34,7 @@ export function SheetView(p: Props) {
       break;
     case 'A-201':
     case 'A-301':
-      view = <ElevationsAndSectionsView project={p.model} mode={p.sheet} onUpdateProject={p.onCommit} isLight />;
+      view = <ElevationSheet model={p.model} mode={p.sheet === 'A-201' ? 'elevations' : 'sections'} svgRef={p.svgRef} />;
       break;
     case 'E-101':
     case 'P-101':
