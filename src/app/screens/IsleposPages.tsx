@@ -255,8 +255,16 @@ export function ClientDialog({ client, open, onClose, onSaved }: { client: IsleC
     const atoll = str(client?.atoll);
     const island = str(client?.island);
     // House and road: the structured street if IslePOS sends it, else the flat address minus island/atoll.
-    let street = str(client?.street) || str(client?.billing_address);
-    if (!street && client?.address) street = client.address.split(',').map((p) => p.trim()).filter((p) => p && p !== island && p !== atoll).join(', ');
+    let street = str(client?.street);
+    if (!street) {
+      // Older records only have the flat "house, road, island, atoll[, country]": keep what comes
+      // before the island or atoll (spelling and apostrophes ignored).
+      const norm = (v: string) => v.toLowerCase().replace(/[^a-z]/g, '');
+      const stops = new Set([norm(island), norm(atoll), 'maldives', 'mv'].filter(Boolean));
+      const parts = (str(client?.billing_address) || client?.address || '').split(',').map((p) => p.trim());
+      const cut = parts.findIndex((p) => stops.has(norm(p)));
+      street = (cut >= 0 ? parts.slice(0, cut) : parts).filter(Boolean).join(', ');
+    }
     setForm({ name: client?.name ?? '', mobile: client?.mobile ?? '', email: client?.email ?? '', street, atoll, island, tin: client?.tin ?? '', notes: client?.notes ?? '' });
   }, [open, client]);
 
