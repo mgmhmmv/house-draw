@@ -4,6 +4,8 @@ import {
   getHVACConfig,
   getRoofDrainageConfig,
   getSolarConfig,
+  getWaterSupply,
+  type WaterSupplyMode,
   GUTTER_PROFILE_META,
   MEPCircuit,
   MEPNode,
@@ -1597,9 +1599,17 @@ export function relocateMEPNode(
 export interface PlumbingRiserReport {
   occupancyCount: number;
   dailyWaterDemandLiters: number;
-  overheadTankLiters: number;
-  undergroundTankLiters: number;
-  boosterPumpKW: number;
+  /** Mains pressure direct, or a ground tank with a pressure pump set (no overhead tanks). */
+  supplyMode: WaterSupplyMode;
+  /** Ground storage tank (L); 0 on mains pressure. */
+  storageTankLiters: number;
+  /** Pressure pump set; 0 on mains pressure. */
+  pumpKW: number;
+  pumpFlowLpm: number;
+  pumpHeadMeters: number;
+  pressureVesselLiters: number;
+  /** Working pressure at the highest outlet (bar). */
+  outletPressureBar: number;
   totalDFU: number;
   supplyMainPipe: string;
   soilStackPipe: string;
@@ -1607,7 +1617,6 @@ export interface PlumbingRiserReport {
   totalWSFU: number;
   peakFlowLps: number;
   designVelocityMps: number;
-  pumpHeadMeters: number;
   roofCatchmentM2: number;
   rainfallIntensityMmh: number;
   stormwaterRunoffLps: number;
@@ -2436,6 +2445,14 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
     }
   }
 
+  // Water pressure pump set (ground-tank supply): a motor circuit of its own.
+  if (getWaterSupply(project).mode === 'ground_tank_pump') {
+    const pumpKW = computePlumbingRiser(project).pumpKW;
+    const row = makeRow('CKT-PUMP', `Water pressure pump set ${pumpKW} kW`, 'L2', Math.round((pumpKW * 1000) / 0.8), 1.0, 1, 0, 10);
+    row.breakerRating = '16A Type C RCBO (30mA)';
+    row.cableSpec = '3×2.5mm² + E PVC';
+    circuits.push(row);
+  }
   const totalConnectedWatts = circuits.reduce((s, c) => s + c.loadWatts, 0);
   const diversifiedLoadKW = Number(
     (circuits.reduce((s, c) => s + c.loadWatts * c.demandFactor, 0) / 1000).toFixed(2)
@@ -2547,8 +2564,10 @@ export function computePlumbingRiser(project: BuildingProject): PlumbingRiserRep
   const bedrooms = project.levels.flatMap((l) => l.rooms).filter((r) => r.category === 'bedroom').length;
   const occupancyCount = Math.max(2, bedrooms * 2);
   const dailyWaterDemandLiters = occupancyCount * 150;
-  const overheadTankLiters = Math.ceil((dailyWaterDemandLiters * 1.0) / 500) * 500;
-  const undergroundTankLiters = Math.ceil((dailyWaterDemandLiters * 2.0) / 1000) * 1000;
+  const supply = getWaterSupply(project);
+  const pumped = supply.mode === 'ground_tank_pump';
+  // Ground tank: two days' demand (min 1,000 L), in 500 L steps; none on mains pressure.
+  const storageTankLiters = pumped ? supply.storageLiters || Math.max(1000, Math.ceil((dailyWaterDemandLiters * 2) / 500) * 500) : 0;
 
   const nodes = project.levels.flatMap((l) => l.mepNodes);
   const wcCount = nodes.filter((n) => n.kind === 'plumb_wc').length || Math.max(1, project.levels.flatMap((l) => l.rooms).filter((r) => r.category === 'bathroom').length);
@@ -2569,7 +2588,12 @@ export function computePlumbingRiser(project: BuildingProject): PlumbingRiserRep
   const pipeInnerDiaM = totalDFU > 20 ? 0.025 : 0.020; // PN20 PPR ID
   const areaM2 = Math.PI * (pipeInnerDiaM / 2) ** 2;
   const designVelocityMps = Number((peakFlowLps / 1000 / areaM2).toFixed(2));
-  const pumpHeadMeters = Math.round(project.levels.length * 3.4 + 9);
+  // Pressure pump: lift to the highest outlet + 1.5 bar there + pipe losses.
+  const topOutletM = (project.levels[project.levels.length - 1]?.elevation ?? 0) + 1.2;
+  const pumpHeadMeters = pumped ? Math.ceil(topOutletM + 15 + 5) : 0;
+  const pumpFlowLpm = pumped ? Math.ceil(peakFlowLps * 60 * 1.2) : 0;
+  const hydraulicKW = (9.81 * (pumpFlowLpm / 60000) * pumpHeadMeters) / 0.45;
+  const pumpKW = pumped ? [0.37, 0.55, 0.75, 1.1, 1.5, 2.2].find((k) => k >= hydraulicKW) ?? 2.2 : 0;
 
   // BS EN 12056-3 Roof Stormwater Runoff: Q = C * i * A / 3600 (Maldives monsoon i=140 mm/h vs 75 mm/h)
   const hvacCfg = getHVACConfig(project);
@@ -2599,9 +2623,13 @@ export function computePlumbingRiser(project: BuildingProject): PlumbingRiserRep
   return {
     occupancyCount,
     dailyWaterDemandLiters,
-    overheadTankLiters,
-    undergroundTankLiters,
-    boosterPumpKW: project.levels.length > 1 ? 1.1 : 0.75,
+    supplyMode: supply.mode,
+    storageTankLiters,
+    pumpKW,
+    pumpFlowLpm,
+    pumpHeadMeters,
+    pressureVesselLiters: pumped ? (project.levels.length > 1 ? 50 : 24) : 0,
+    outletPressureBar: pumped ? 1.5 : 1.0,
     totalDFU,
     supplyMainPipe: totalDFU > 20 ? 'Ø32mm PPR PN20' : 'Ø25mm PPR PN20',
     soilStackPipe: 'Ø110mm uPVC Class-B Soil + Ø50mm Vent',
@@ -2609,7 +2637,6 @@ export function computePlumbingRiser(project: BuildingProject): PlumbingRiserRep
     totalWSFU,
     peakFlowLps,
     designVelocityMps,
-    pumpHeadMeters,
     roofCatchmentM2,
     rainfallIntensityMmh,
     stormwaterRunoffLps,

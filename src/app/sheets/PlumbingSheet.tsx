@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { WATER_COLLECTION_META, type BuildingProject } from '../../model/types';
+import { WATER_COLLECTION_META, WATER_SUPPLY_META, type BuildingProject } from '../../model/types';
 import { computePlumbingRiser, type PlumbingRiserReport } from '../../engine/mepEngine';
 import { INK, INK_2, INK_3, MEP_COLOR } from '../drawing/style';
 import { Card, DataTable, fmt, Kpis, SheetPage, Specs } from './kit';
@@ -27,9 +27,9 @@ function PlumbingSheetReport({ model }: { model: BuildingProject }) {
       <Kpis
         items={[
           { label: 'Daily demand', value: `${fmt(r.dailyWaterDemandLiters)} L`, hint: `${r.occupancyCount} occupants` },
-          { label: 'Overhead tank', value: `${fmt(r.overheadTankLiters)} L` },
-          { label: 'Ground tank', value: `${fmt(r.undergroundTankLiters)} L` },
-          { label: 'Booster pump', value: `${fmt(r.boosterPumpKW, 2)} kW`, hint: `${fmt(r.pumpHeadMeters, 1)} m head` },
+          { label: 'Water supply', value: r.supplyMode === 'ground_tank_pump' ? 'Tank + pump' : 'City mains', hint: WATER_SUPPLY_META[r.supplyMode].label },
+          { label: 'Ground tank', value: r.storageTankLiters ? `${fmt(r.storageTankLiters)} L` : 'None' },
+          { label: 'Pressure pump', value: r.pumpKW ? `${fmt(r.pumpKW, 2)} kW` : 'None', hint: r.pumpKW ? `${r.pumpFlowLpm} L/min at ${r.pumpHeadMeters} m head` : 'Mains pressure' },
         ]}
       />
 
@@ -133,43 +133,60 @@ function Riser({ r, levels }: { r: PlumbingRiserReport; levels: { name: string; 
         Ground
       </T>
 
-      {/* Supply: main → ground tank → pump → overhead tank → down-feed */}
-      <g stroke={cold} strokeWidth={2} fill="none">
-        <path d={`M170 ${groundY + 60}H230V${groundY + 20}`} />
-        <path d={`M300 ${groundY + 20}V${groundY + 6}`} />
-        <path d={`M300 ${groundY - 30}V${top - 10}H360V${top}`} />
-        <path d={`M420 ${top + 34}V${yOf(0) + 26}`} />
-        {levels.map((_, i) => (
-          <path key={i} d={`M420 ${yOf(i) + 22}H470`} />
-        ))}
-      </g>
-      <T x={170} y={groundY + 76} color={INK_3} size={10}>
-        Water main {r.supplyMainPipe}
-      </T>
-      <rect x={200} y={groundY + 20} width={130} height={52} rx={6} fill="#fff" stroke={cold} strokeWidth={1.6} />
-      <T x={265} y={groundY + 42} anchor="middle" weight={600} color={INK}>
-        Ground tank
-      </T>
-      <T x={265} y={groundY + 58} anchor="middle" color={INK_3} size={10}>
-        {fmt(r.undergroundTankLiters)} L
-      </T>
-      <circle cx={300} cy={groundY - 12} r={18} fill="#fff" stroke={cold} strokeWidth={1.6} />
-      <path d={`M292 ${groundY - 12}l14 -8v16z`} fill={cold} />
-      <T x={324} y={groundY - 8} color={INK_3} size={10}>
-        Pump {fmt(r.boosterPumpKW, 2)} kW
-      </T>
-      <rect x={350} y={top} width={140} height={34} rx={6} fill="#fff" stroke={cold} strokeWidth={1.6} />
-      <T x={420} y={top + 21} anchor="middle" weight={600} color={INK}>
-        Overhead {fmt(r.overheadTankLiters)} L
-      </T>
-      {levels.map((_, i) => (
-        <g key={i}>
-          <circle cx={474} cy={yOf(i) + 22} r={4} fill={cold} />
-          <T x={484} y={yOf(i) + 26} color={INK_2} size={10.5}>
-            Cold to fixtures
-          </T>
-        </g>
-      ))}
+      {/* Supply: utility main → (ground tank → pressure pump) → riser → each floor. No overhead tank. */}
+      {(() => {
+        const pumped = r.supplyMode === 'ground_tank_pump';
+        const riserX = 400;
+        return (
+          <g>
+            <g stroke={cold} strokeWidth={2} fill="none">
+              {pumped ? (
+                <>
+                  <path d={`M150 ${groundY + 40}H200V${groundY - 50}H215`} />
+                  <path d={`M330 ${groundY - 14}H${riserX - 18}`} />
+                  <path d={`M${riserX + 18} ${groundY - 14}H${riserX + 40}V${yOf(levels.length - 1) + 22}`} />
+                </>
+              ) : (
+                <path d={`M150 ${groundY + 40}H${riserX + 40}V${yOf(levels.length - 1) + 22}`} />
+              )}
+              {levels.map((_, i) => (
+                <path key={i} d={`M${riserX + 40} ${yOf(i) + 22}H${riserX + 90}`} />
+              ))}
+            </g>
+            <T x={150} y={groundY + 56} color={INK_3} size={10}>
+              Utility main {r.supplyMainPipe} · meter, stop valve, non-return valve
+            </T>
+            {pumped ? (
+              <>
+                <rect x={215} y={groundY - 70} width={115} height={70} rx={6} fill="#fff" stroke={cold} strokeWidth={1.6} />
+                <T x={272} y={groundY - 40} anchor="middle" weight={600} color={INK}>
+                  Ground tank
+                </T>
+                <T x={272} y={groundY - 24} anchor="middle" color={INK_3} size={10}>
+                  {fmt(r.storageTankLiters)} L on plinth
+                </T>
+                <circle cx={riserX} cy={groundY - 14} r={18} fill="#fff" stroke={cold} strokeWidth={1.6} />
+                <path d={`M${riserX - 8} ${groundY - 14}l14 -8v16z`} fill={cold} />
+                <T x={riserX - 22} y={groundY - 40} anchor="middle" color={INK_3} size={10}>
+                  Pump {fmt(r.pumpKW, 2)} kW · {r.pressureVesselLiters} L vessel
+                </T>
+              </>
+            ) : (
+              <T x={210} y={groundY + 30} color={INK_2} size={10.5}>
+                Mains pressure, direct to the fittings (no tank, no pump)
+              </T>
+            )}
+            {levels.map((_, i) => (
+              <g key={i}>
+                <circle cx={riserX + 94} cy={yOf(i) + 22} r={4} fill={cold} />
+                <T x={riserX + 104} y={yOf(i) + 26} color={INK_2} size={10.5}>
+                  Cold to fixtures
+                </T>
+              </g>
+            ))}
+          </g>
+        );
+      })()}
 
       {/* Drainage stack → chambers → sewer */}
       <g stroke={drain} strokeWidth={3.5} fill="none">

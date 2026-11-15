@@ -30,10 +30,10 @@ const LEGEND: LegendEntry[] = [
   { sym: 'line', color: SOIL, weight: 0.25, dash: '0.5 0.6', label: 'Vent pipe' },
   { sym: 'line', color: RAIN, weight: 0.45, label: 'Rainwater pipe Ø100 uPVC' },
   { sym: 'meter', tag: 'M', label: 'Water meter (utility)' },
-  { sym: 'valve', color: COLD, label: 'Stop / gate / isolating valve' },
+  { sym: 'valve', color: COLD, label: 'Stop / isolating valve; NRV = non-return valve' },
   { sym: 'float', color: COLD, label: 'Float valve (ball valve) at tank inlet' },
-  { sym: 'pump', color: COLD, label: 'Booster pump with pressure switch' },
-  { sym: 'vessel', label: 'Water tank (capacity shown)' },
+  { sym: 'pump', color: COLD, label: 'Pressure pump set: pump, pressure switch, vessel' },
+  { sym: 'vessel', label: 'Ground-mounted water tank on plinth' },
   { sym: 'ring', color: COLD, tag: 'WC', label: 'Fixture, tagged as in the fixture schedule' },
   { sym: 'cowl', color: SOIL, label: 'Vent cowl, 900 mm above roof' },
   { sym: 'chamber', label: 'IC: inspection chamber; IL = invert level (m)' },
@@ -92,44 +92,44 @@ export function plumbingPages(model: BuildingProject): DrawnPage[] {
     p.push(T(A.x + 2, y - 0.7, `${d.name} ${d.z > 0 ? '+' : '±'}${d.z.toFixed(3)}`, 1.3, { c: INK2 }));
   }
 
-  /* ── Water supply ── */
+  /* ── Water supply: utility main, then either straight up on mains pressure or through a
+     ground tank and a pressure pump set. No overhead tanks (Maldives practice). ── */
+  const pumped = rep.supplyMode === 'ground_tank_pump';
   const mainY = groundY + 8;
-  p.push(L(A.x + 2, mainY, 36, mainY, COLD, 0.5));
-  p.push(T(A.x + 2, mainY - 3, 'UTILITY MAIN', 1.3, { w: 700, c: INK2 }));
-  p.push(T(A.x + 2, mainY + 3, rep.supplyMainPipe, 1.2, { c: INK2 }));
-  p.push(CIRC(24, mainY, 2) + T(24, mainY + 0.55, 'M', 1.4, { w: 700, a: 'middle' }));
-  p.push(valve(31, mainY));
-  const tk = { x: 36, y: groundY + 3, w: 24, h: 15 };
-  p.push(tank(tk.x, tk.y, tk.w, tk.h));
-  p.push(floatValve(tk.x + 1, mainY));
-  p.push(T(tk.x + tk.w / 2 + 2, tk.y + 10.8, 'UNDERGROUND TANK', 1.3, { w: 700, a: 'middle' }));
-  p.push(T(tk.x + tk.w / 2 + 2, tk.y + 13.2, `${rep.undergroundTankLiters.toLocaleString('en-US')} L`, 1.3, { c: INK2, a: 'middle' }));
-  // Suction to the pump at ground level, rising main to the overhead tank.
-  const px = 68;
-  const pumpY = groundY - 3.5;
-  p.push(PL([[tk.x + tk.w - 3, tk.y + tk.h - 2], [tk.x + tk.w - 3, tk.y - 1], [px - 4, tk.y - 1], [px - 4, pumpY], [px - 2.4, pumpY]], COLD, 0.45));
-  p.push(pump(px, pumpY));
-  p.push(T(px + 3.4, pumpY + 1.2, `PUMP ${rep.boosterPumpKW} kW`, 1.3, { w: 700 }));
-  p.push(T(px + 3.4, pumpY + 3.2, `pressure switch · ${rep.pumpHeadMeters} m head`, 1.15, { c: INK2 }));
-  const oh = { x: 60, w: 22, h: 9 };
-  const ohBottom = yRidge - 3;
-  const ohTop = ohBottom - oh.h;
-  p.push(valve(px, pumpY - 5, true));
-  p.push(PL([[px, pumpY - 2.4], [px, ohTop - 2.5], [oh.x + 3, ohTop - 2.5], [oh.x + 3, ohTop + 1]], COLD, 0.45));
-  p.push(T(px + 1.2, (pumpY + ohTop) / 2, `RISING MAIN ${rep.supplyMainPipe.replace(' PPR PN20', '')}`, 1.15, { c: INK2, rot: -90, a: 'middle' }));
-  p.push(tank(oh.x, ohTop, oh.w, oh.h));
-  p.push(floatValve(oh.x + 3, ohTop + 1.4));
-  p.push(T(oh.x + oh.w / 2, ohTop - 4, 'OVERHEAD TANK', 1.3, { w: 700, a: 'middle' }));
-  p.push(T(oh.x + oh.w / 2, ohTop + 6.8, `${rep.overheadTankLiters.toLocaleString('en-US')} L`, 1.3, { c: INK2, a: 'middle' }));
-  // Stand.
-  p.push(L(oh.x + 2, ohBottom, oh.x + 2, yEave, INK3, 0.25) + L(oh.x + oh.w - 2, ohBottom, oh.x + oh.w - 2, yEave, INK3, 0.25));
-  // Down-feed.
   const dx = 80;
   const branchY = (z: number) => yOf(z + 0.8);
-  const lowest = branchY(levels[0].elevation);
-  p.push(L(dx, ohBottom, dx, lowest, COLD, 0.5));
-  p.push(valve(dx, ohBottom + 4, true));
-  p.push(T(dx + 1.2, ohBottom + 9, 'DOWN-FEED Ø25', 1.15, { c: INK2, rot: 90 }));
+  const highest = branchY(top.elevation);
+  p.push(T(A.x + 2, mainY - 3, 'UTILITY MAIN (MWSC / FENAKA)', 1.3, { w: 700, c: INK2 }));
+  p.push(T(A.x + 2, mainY + 3, rep.supplyMainPipe, 1.2, { c: INK2 }));
+  p.push(L(A.x + 2, mainY, 36, mainY, COLD, 0.5));
+  p.push(CIRC(20, mainY, 2) + T(20, mainY + 0.55, 'M', 1.4, { w: 700, a: 'middle' }));
+  p.push(valve(26, mainY) + valve(32, mainY) + T(32, mainY + 3, 'NRV', 1.0, { c: INK2, a: 'middle' }));
+  if (pumped) {
+    const tk = { x: 38, w: 22, h: 14, y: groundY - 15 };
+    p.push(RECT(tk.x - 1, groundY - 1, tk.w + 2, 1, { fill: '#E4E1DA', sw: 0.2 }));
+    p.push(tank(tk.x, tk.y, tk.w, tk.h));
+    p.push(PL([[36, mainY], [36, tk.y + 2], [tk.x + 1, tk.y + 2]], COLD, 0.45));
+    p.push(floatValve(tk.x + 1, tk.y + 2));
+    p.push(T(tk.x + tk.w / 2, tk.y - 4.2, 'GROUND TANK', 1.3, { w: 700, a: 'middle' }));
+    p.push(T(tk.x + tk.w / 2, tk.y - 2, `${rep.storageTankLiters.toLocaleString('en-US')} L on plinth`, 1.15, { c: INK2, a: 'middle' }));
+    const pumpY = tk.y + tk.h - 2.5;
+    const px = 68;
+    p.push(L(tk.x + tk.w, pumpY, px - 2.4, pumpY, COLD, 0.45) + valve(63, pumpY));
+    p.push(pump(px, pumpY));
+    // Pressure vessel and switch on the outlet.
+    p.push(L(px + 2.4, pumpY, dx, pumpY, COLD, 0.45) + L(73, pumpY, 73, pumpY - 4, COLD, 0.35));
+    p.push(RECT(71, pumpY - 9, 4, 5, { fill: '#EAF1FB', rx: 1.6 }) + T(77.6, pumpY - 6.4, `${rep.pressureVesselLiters} L`, 1.0, { c: INK2, a: 'end', rot: -90 }));
+    p.push(valve(76.5, pumpY) + T(76.5, pumpY + 3, 'NRV', 1.0, { c: INK2, a: 'middle' }));
+    p.push(T(px - 6, groundY + 3.4, 'PRESSURE PUMP SET', 1.3, { w: 700 }));
+    p.push(T(px - 6, groundY + 5.6, `${rep.pumpKW} kW · ${rep.pumpFlowLpm} L/min at ${rep.pumpHeadMeters} m`, 1.15, { c: INK2 }));
+    p.push(T(px - 6, groundY + 7.6, 'pressure switch + vessel, dry-run cut-out', 1.15, { c: INK2 }));
+    p.push(L(dx, pumpY, dx, highest, COLD, 0.5));
+  } else {
+    p.push(PL([[36, mainY], [dx, mainY], [dx, highest]], COLD, 0.5));
+    p.push(T(40, mainY - 1.4, 'MAINS PRESSURE, DIRECT TO THE FITTINGS', 1.2, { w: 700, c: INK2 }));
+    p.push(T(40, mainY + 3, 'no storage tank, no pump', 1.15, { c: INK2 }));
+  }
+  p.push(T(dx - 1.2, highest + 1.6, 'RISER Ø25', 1.1, { c: INK2, a: 'end' }));
   for (const pl of perLevel) {
     const by = branchY(pl.lvl.elevation);
     const fx0 = 92;
@@ -312,9 +312,14 @@ export function plumbingPages(model: BuildingProject): DrawnPage[] {
   const db = dataBox(A.x + 166, tTop, 70, 'Design data', [
     ['Occupancy', `${rep.occupancyCount} persons`],
     ['Daily demand', `${rep.dailyWaterDemandLiters.toLocaleString('en-US')} L (150 L/p/d)`],
-    ['Underground tank', `${rep.undergroundTankLiters.toLocaleString('en-US')} L`],
-    ['Overhead tank', `${rep.overheadTankLiters.toLocaleString('en-US')} L`],
-    ['Booster pump', `${rep.boosterPumpKW} kW, ${rep.pumpHeadMeters} m head`],
+    ['Water supply', pumped ? 'Ground tank + pressure pump' : 'Pressurised city water'],
+    ...(pumped
+      ? ([
+          ['Ground tank', `${rep.storageTankLiters.toLocaleString('en-US')} L (2 days)`],
+          ['Pressure pump', `${rep.pumpKW} kW, ${rep.pumpFlowLpm} L/min, ${rep.pumpHeadMeters} m head`],
+          ['Pressure vessel', `${rep.pressureVesselLiters} L, cut-in 1.5 bar`],
+        ] as [string, string][])
+      : ([['Mains pressure', 'min. 1.0 bar at highest outlet']] as [string, string][])),
     ['Supply main', rep.supplyMainPipe],
     ['Peak flow', `${rep.peakFlowLps} L/s at ${rep.designVelocityMps} m/s`],
     ['Soil stack', rep.soilStackPipe],
@@ -327,7 +332,9 @@ export function plumbingPages(model: BuildingProject): DrawnPage[] {
   ], 1.4);
   p.push(db.svg);
 
-  const ks = keySize(LEGEND)!;
+  // Mains-pressure houses have no tank, float valve or pump to explain.
+  const legend = pumped ? LEGEND : LEGEND.filter((e) => e.sym !== 'float' && e.sym !== 'pump' && e.sym !== 'vessel');
+  const ks = keySize(legend)!;
   const key = { x: A.x + A.w - ks.w, y: A.y + A.h - ks.h, w: ks.w, h: ks.h };
-  return [{ title: 'Plumbing & drainage schematic', body: p.join(''), legend: LEGEND, key }];
+  return [{ title: 'Plumbing & drainage schematic', body: p.join(''), legend, key }];
 }

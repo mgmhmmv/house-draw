@@ -582,6 +582,8 @@ export interface BuildingProject {
   sections: SectionLine[];
   rates: BOQRateConfig;
   solar?: SolarPVConfig;
+  /** How water reaches the fittings: mains pressure, or a ground tank with a pressure pump (no overhead tanks). */
+  waterSupply?: Partial<WaterSupplyConfig>;
   design?: MaterialDesignConfig;
   hvac?: HVACConfig;
   /**
@@ -637,6 +639,25 @@ export const MALDIVES_HVAC_CONFIG: HVACConfig = {
   ceilingFansEnabled: true,
   freshAirERV: true,
 };
+
+/* ── Water supply ──────────────────────────────────────────────────── */
+
+export type WaterSupplyMode = 'city_pressure' | 'ground_tank_pump';
+
+export interface WaterSupplyConfig {
+  mode: WaterSupplyMode;
+  /** Ground tank capacity (L); 0 = sized from daily demand. Ground-pump mode only. */
+  storageLiters: number;
+}
+
+export const WATER_SUPPLY_META: Record<WaterSupplyMode, { label: string; note: string }> = {
+  city_pressure: { label: 'Pressurised city water', note: 'Utility main at mains pressure (MWSC / FENAKA) through the meter, direct to the fittings; no storage or pump.' },
+  ground_tank_pump: { label: 'Ground tank + pressure pump', note: 'Ground-mounted storage tank filled from the utility (and rainwater), a pressure pump set with pressure vessel and switch feeding the fittings.' },
+};
+
+export function getWaterSupply(project: BuildingProject): WaterSupplyConfig {
+  return { mode: project.waterSupply?.mode ?? 'ground_tank_pump', storageLiters: project.waterSupply?.storageLiters ?? 0 };
+}
 
 export function getSolarConfig(project: BuildingProject): SolarPVConfig {
   return { ...DEFAULT_SOLAR_CONFIG, ...(project.solar ?? {}) };

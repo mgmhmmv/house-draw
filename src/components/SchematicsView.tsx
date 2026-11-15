@@ -869,7 +869,7 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
             <div className="text-[11px] text-slate-400 uppercase">Storage (OHT + UG Cistern)</div>
             <div className="text-xl font-bold font-mono text-sky-300">
-              {plumb.overheadTankLiters}L + {plumb.undergroundTankLiters}L
+              {plumb.storageTankLiters}L + {plumb.storageTankLiters}L
             </div>
             <div className="text-[10px] font-mono text-slate-400">
               {plumb.occupancyCount} Occ · {plumb.dailyWaterDemandLiters} L/day
@@ -879,7 +879,7 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
             <div className="text-[11px] text-slate-400 uppercase">Sanitary Load & Pump Head</div>
             <div className="text-xl font-bold font-mono text-emerald-300">{plumb.totalDFU} DFU</div>
             <div className="text-[10px] font-mono text-slate-400">
-              Transfer Pump {plumb.boosterPumpKW} kW @ {plumb.pumpHeadMeters}m Head
+              Transfer Pump {plumb.pumpKW} kW @ {plumb.pumpHeadMeters}m Head
             </div>
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
@@ -912,7 +912,7 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
               strokeWidth={2}
             />
             <text x={212} y={38} textAnchor="middle" fill={isLight ? '#0c4a6e' : '#e0f2fe'} fontSize={10} fontFamily="monospace" fontWeight="bold">
-              ROOF OHT ({plumb.overheadTankLiters}L)
+              ROOF OHT ({plumb.storageTankLiters}L)
             </text>
             <text x={212} y={53} textAnchor="middle" fill={isLight ? '#0369a1' : '#7dd3fc'} fontSize={8.5} fontFamily="monospace">
               Float Valve + 300mm Overflow
@@ -1020,10 +1020,10 @@ export const SchematicsView: React.FC<SchematicsViewProps> = ({
               strokeWidth={1.5}
             />
             <text x={132} y={314} textAnchor="middle" fill={isLight ? '#0c4a6e' : '#bae6fd'} fontSize={9} fontFamily="monospace" fontWeight="bold">
-              UG SUMP ({plumb.undergroundTankLiters}L)
+              UG SUMP ({plumb.storageTankLiters}L)
             </text>
             <text x={132} y={327} textAnchor="middle" fill={isLight ? '#0369a1' : '#38bdf8'} fontSize={8} fontFamily="monospace">
-              {plumb.boosterPumpKW}kW + NRV + Strainer
+              {plumb.pumpKW}kW + NRV + Strainer
             </text>
             <line x1={150} y1={295} x2={150} y2={64} stroke="#0284c7" strokeWidth={1.8} strokeDasharray="5 2" />
 

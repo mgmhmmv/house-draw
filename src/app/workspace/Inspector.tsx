@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { ASSETS, assetFor, CATEGORIES } from '../drawing/assets/catalog';
+import { computePlumbingRiser } from '../../engine/mepEngine';
 
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, ChevronRight, FlipHorizontal, RotateCcw, Scissors, Trash2 } from 'lucide-react';
 import {
@@ -24,6 +25,9 @@ import {
   getRoofStructure,
   ROOF_STRUCTURE_META,
   type RoofStructureSystem,
+  getWaterSupply,
+  WATER_SUPPLY_META,
+  type WaterSupplyMode,
 } from '../../model/types';
 import { computeTotalFloorArea, polygonArea, uid, wallLength } from '../../engine/geometry';
 import { mepAsset } from '../drawing/assets/render';
@@ -498,6 +502,7 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete, on
 function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; edit: (fn: (m: BuildingProject) => void) => void; focusSolar: boolean }) {
   const design = getDesignConfig(model);
   const roofStructure = getRoofStructure(model.roof);
+  const waterSupply = getWaterSupply(model);
   const hvac = getHVACConfig(model);
   const solar = getSolarConfig(model);
   const rooms = model.levels.flatMap((l) => l.rooms);
@@ -556,6 +561,22 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
       </Section>
 
       <RainwaterSection model={model} edit={edit} />
+
+      <Section title="Water supply">
+        <Row label="Supply">
+          <Choice
+            value={waterSupply.mode}
+            options={(Object.keys(WATER_SUPPLY_META) as WaterSupplyMode[]).map((k) => ({ value: k, label: WATER_SUPPLY_META[k].label }))}
+            onChange={(v) => edit((m) => (m.waterSupply = { ...waterSupply, mode: v }))}
+          />
+        </Row>
+        {waterSupply.mode === 'ground_tank_pump' && (
+          <Row label="Ground tank">
+            <Num value={computePlumbingRiser(model).storageTankLiters} unit="L" step={500} min={500} max={20000} onChange={(v) => edit((m) => (m.waterSupply = { ...waterSupply, storageLiters: v }))} />
+          </Row>
+        )}
+        <p className="px-4 pb-3 text-2xs leading-relaxed text-ink-3">{WATER_SUPPLY_META[waterSupply.mode].note}</p>
+      </Section>
 
       <Section title="Materials">
         <Row label="Facade">

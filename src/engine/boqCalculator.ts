@@ -9,7 +9,7 @@ import {
   WATER_COLLECTION_META,
 } from '../model/types';
 import { levelBoundingBox, openingWorldCenter, polygonArea, polygonPerimeter, wallLength } from './geometry';
-import { computeHVACReport } from './mepEngine';
+import { computeHVACReport, computePlumbingRiser } from './mepEngine';
 import { framingQuantities, roofFraming } from '../app/drawing/model3d/framing';
 
 export interface BOQLineItem {
@@ -277,6 +277,13 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
   // Division 06: MEP
   add('06.01', '06 MEP Systems', 'Electrical First/Second Fix, MDB, Breakers & Fixtures', 'pts', totalMepElectricalPts, r.electricalPoint);
   add('06.02', '06 MEP Systems', 'Plumbing PPR Supply, uPVC Drainage & Sanitaryware', 'pts', totalMepPlumbingPts, r.plumbingPoint);
+  // Water supply: mains connection, plus a ground tank and pressure pump set where pumped.
+  const water = computePlumbingRiser(project);
+  add('06.02a', '06 MEP Systems', 'Utility water connection: meter chamber, stop valve & non-return valve', 'sys', 1, 320);
+  if (water.supplyMode === 'ground_tank_pump') {
+    add('06.02b', '06 MEP Systems', `Ground-mounted water storage tank ${water.storageTankLiters.toLocaleString()} L (food-grade PE) on RC plinth, float valve & overflow`, 'nr', 1, Math.round(180 + water.storageTankLiters * 0.32));
+    add('06.02c', '06 MEP Systems', `Pressure pump set ${water.pumpKW} kW (${water.pumpFlowLpm} L/min at ${water.pumpHeadMeters} m) with ${water.pressureVesselLiters} L pressure vessel, pressure switch, dry-run cut-out & valves`, 'nr', 1, Math.round(420 + water.pumpKW * 520));
+  }
   const solar = getSolarConfig(project);
   if (solar.enabled) {
     const arrayKwp = Number(((solar.panelCount * solar.panelWattage) / 1000).toFixed(2));

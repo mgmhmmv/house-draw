@@ -186,6 +186,34 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
       gi++;
     }
   });
+  // Water pressure pump set (ground-tank supply): its own way from the MDB, motor-rated.
+  const pumpRow = rows.get('CKT-PUMP');
+  if (pumpRow) {
+    boards.push({
+      id: 'PMP',
+      room: 'Water pump set',
+      level: 'External',
+      phase: pumpRow.phase,
+      sub: false,
+      feedDevice: iecDevice(pumpRow.breakerRating),
+      feedCable: iecCable(pumpRow.cableSpec),
+      runM: pumpRow.cableLengthM,
+      vdPct: pumpRow.voltageDropPct,
+      circuits: [
+        {
+          id: 'PMP-1',
+          kind: 'P',
+          desc: 'Pressure pump motor via pressure switch, dry-run cut-out',
+          points: [{ kind: 'appliance', label: `Pump ${(pumpRow.loadWatts / 1000).toFixed(2)} kW`, watts: pumpRow.loadWatts }],
+          watts: pumpRow.loadWatts,
+          device: 'RCBO C16 30 mA Type A',
+          deviceKind: 'rcd',
+          cable: '3G2.5 mm² Cu PVC',
+        },
+      ],
+      watts: pumpRow.loadWatts,
+    });
+  }
   return boards;
 }
 
