@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, Sparkles } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useRouter } from '../lib/router';
 import { summarize, TEMPLATES } from '../lib/templates';
@@ -8,6 +8,8 @@ import { Button, cx, Dialog, Field, Input, toast } from '../ui';
 import { ClientPicker } from './ClientPicker';
 import { addressBody, AtollIslandSelects, clientAddress } from './IsleposPages';
 import { PlanGlyph } from './PlanGlyph';
+import { AiProjectDesigner } from './AiProjectDesigner';
+import { buildFromDesign, type AiDesign } from '../lib/buildFromDesign';
 
 const EMPTY_SITE = { street: '', atoll: '', island: '' };
 
@@ -43,8 +45,9 @@ export function NewProjectDialog({ open, onClose, initialTemplate = 'blank' }: {
   const noAddress = (c: IsleCustomer) => Object.values(clientAddress(c)).every((v) => !v.trim());
   const location = [site.street, site.island, site.atoll].map((x) => x.trim()).filter(Boolean).join(', ');
 
-  const create = async () => {
-    if (!name.trim()) {
+  const create = async (design?: AiDesign) => {
+    const title = name.trim() || design?.name?.trim() || '';
+    if (!title) {
       setError('Give the project a name.');
       return;
     }
@@ -52,10 +55,10 @@ export function NewProjectDialog({ open, onClose, initialTemplate = 'blank' }: {
     setError('');
     try {
       const t = TEMPLATES.find((x) => x.id === template) ?? TEMPLATES[0];
-      const model = t.create();
       const clientName = (customer?.name ?? client).trim();
-      model.meta = { ...model.meta, title: name.trim(), client: clientName, clientPhone: phone.trim(), location };
-      const { project } = await api.createProject({ name: name.trim(), client: clientName, location, template: t.id, summary: summarize(model), model });
+      const model = design ? buildFromDesign(design, { title, client: clientName, clientPhone: phone.trim(), location }) : t.create();
+      model.meta = { ...model.meta, title, client: clientName, clientPhone: phone.trim(), location };
+      const { project } = await api.createProject({ name: title, client: clientName, location, template: design ? 'ai' : t.id, summary: summarize(model), model });
       if (customer) {
         // Link the project so it shows on the client's page; a failure here shouldn't lose the project.
         await billing.setCustomer(project.id, customer.id).catch(() => toast('Project created, but it could not be linked to the client.'));
@@ -91,16 +94,18 @@ export function NewProjectDialog({ open, onClose, initialTemplate = 'blank' }: {
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} onClick={create}>
-            Create project
-          </Button>
+          {template !== 'ai' && (
+            <Button variant="primary" loading={busy} onClick={() => create()}>
+              Create project
+            </Button>
+          )}
         </>
       }
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">
           <Field label="Project name" error={error || undefined}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Hulhumalé family house" autoFocus onKeyDown={(e) => e.key === 'Enter' && create()} />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={template === 'ai' ? 'Optional: the AI suggests one' : 'e.g. Hulhumalé family house'} autoFocus onKeyDown={(e) => e.key === 'Enter' && template !== 'ai' && create()} />
           </Field>
         </div>
         <div className="sm:col-span-2">
@@ -126,6 +131,30 @@ export function NewProjectDialog({ open, onClose, initialTemplate = 'blank' }: {
       </div>
 
       <p className="mb-3 mt-7 text-[13px] font-medium text-ink-2">Start from</p>
+      <button
+        onClick={() => setTemplate('ai')}
+        className={cx(
+          'mb-3 flex w-full items-center gap-3 rounded-card border p-3.5 text-left transition-all',
+          template === 'ai' ? 'border-accent ring-4 ring-accent/15' : 'border-line hover:border-line-strong'
+        )}
+      >
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-accent-soft text-accent">
+          <Sparkles className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Describe it to AI</span>
+          <span className="block text-[13px] leading-snug text-ink-2">The architect asks what it needs, reasons through the layout, then builds walls, doors, windows, structure and services.</span>
+        </span>
+      </button>
+      {template === 'ai' && (
+        <div className="mb-5 rounded-card border border-line p-4">
+          <AiProjectDesigner
+            known={{ 'Project name': name, Client: customer?.name ?? client, Location: location }}
+            onBuild={(d) => void create(d)}
+            building={busy}
+          />
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {TEMPLATES.map((t) => {
           const active = t.id === template;
