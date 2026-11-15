@@ -16,6 +16,13 @@ interface Props {
   svgRef: RefObject<SVGSVGElement | null>;
 }
 
+interface Info {
+  model: BuildingProject;
+  eave: number;
+  ridge: number;
+  notes: Partial<Record<string, string>>;
+}
+
 interface Annot {
   grid: { label: string; u: number }[];
   /** Wall-to-wall extent along the picture plane. */
@@ -31,7 +38,7 @@ interface Placed extends Annot {
   oy: number;
 }
 
-const GAP_X = 6;
+const GAP_X = 13;
 
 /** Line weights by surface: openings and texture lighter than walls; the profile is drawn separately. */
 const FACE_STROKE: Record<string, { color: string; w: number }> = {
@@ -105,11 +112,11 @@ export function ElevationSheet({ model, mode, svgRef }: Props) {
     const rows = Math.ceil(drawings.length / cols);
     return {
       placed,
-      bounds: { minX: -3.5, minY: -1, maxX: cols * colW + (cols - 1) * GAP_X + 6.5, maxY: rows * (rowH + GAP_Y) - GAP_Y + 3 },
+      bounds: { minX: -3.5, minY: -1, maxX: cols * colW + (cols - 1) * GAP_X + (mode === 'elevations' ? 16 : 6.5), maxY: rows * (rowH + GAP_Y) - GAP_Y + 3 },
     };
   }, [drawings, mode, wide]);
 
-  return <Surface key={`${mode}-${choice}`} placed={placed} bounds={bounds} frameInfo={{ model, eave: frame.eaveZ, ridge: frame.ridgeZ }} svgRef={svgRef} options={options} choice={choice} setChoice={setChoice} />;
+  return <Surface key={`${mode}-${choice}`} placed={placed} bounds={bounds} frameInfo={{ model, eave: frame.eaveZ, ridge: frame.ridgeZ, notes: frame.notes }} svgRef={svgRef} options={options} choice={choice} setChoice={setChoice} />;
 }
 
 function Surface({
@@ -123,7 +130,7 @@ function Surface({
 }: {
   placed: Placed[];
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
-  frameInfo: { model: BuildingProject; eave: number; ridge: number };
+  frameInfo: Info;
   svgRef: RefObject<SVGSVGElement | null>;
   options: { id: string; label: string }[];
   choice: string;
@@ -195,7 +202,7 @@ function Surface({
   );
 }
 
-function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: number, px: number) => number; info: { model: BuildingProject; eave: number; ridge: number } }) {
+function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: number, px: number) => number; info: Info }) {
   const d = p.drawing;
   const u0 = d.uMin;
   const u1 = d.uMax;
@@ -275,6 +282,40 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       )}
       <line x1={u0 - 1.5} y1={0} x2={u1 + 1.5} y2={0} stroke={INK} strokeWidth={2.8} strokeLinecap="square" />
 
+      {/* Opening marks under each exterior window and door */}
+      {!p.section &&
+        d.faces.map((f, i) => {
+          if (!f.tag) return null;
+          const isDoor = f.kind === 'door';
+          const h = Math.max(0.26, 9 / k);
+          const w = Math.max(h * 1.5, f.tag.text.length * h * 0.48 + h * 0.5);
+          const y = f.tag.bottom + h * 0.9 + (isDoor ? 0.05 : 0.12);
+          return (
+            <g key={`t${i}`}>
+              {isDoor ? (
+                <circle cx={f.tag.u} cy={y} r={h * 0.62} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.hair} />
+              ) : (
+                <rect x={f.tag.u - w / 2} y={y - h / 2} width={w} height={h} rx={h * 0.18} fill="#fff" stroke={INK_2} strokeWidth={WEIGHT.hair} />
+              )}
+              <text x={f.tag.u} y={y + h * 0.3} textAnchor="middle" fontSize={h * 0.68} fontWeight={600} fill={INK_2}>
+                {f.tag.text}
+              </text>
+            </g>
+          );
+        })}
+
+      {/* Material notes with leaders, in a column to the right */}
+      {!p.section && (
+        <Notes
+          d={d}
+          info={info}
+          // Clear of the longest datum label.
+          x={datumX + 0.3 + Math.max(...datums.map((dt) => dt.name.length + 7)) * textSize * 0.56 + 0.9}
+          avoid={datums.map((dt) => -dt.z)}
+          textSize={textSize}
+        />
+      )}
+
       {/* Level datums */}
       {datums.map((dt, i) => (
         <g key={i}>
@@ -298,8 +339,16 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
         ))}
         {stops.slice(1).map((z, i) => {
           const len = z - stops[i];
-          if (len * k < fmtMM(len).length * textSize * 0.6 * k + 6) return null;
+          const fits = len * k >= fmtMM(len).length * textSize * 0.6 * k + 6;
           const m = -(z + stops[i]) / 2;
+          if (!fits) {
+            // Too short to letter along the line (e.g. the plinth): write it beside, horizontally.
+            return (
+              <text key={i} x={dimX - 0.25} y={m + textSize * 0.35} textAnchor="end" fontSize={textSize} fill={INK_2} stroke="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                {fmtMM(len)}
+              </text>
+            );
+          }
           return (
             <text key={i} x={dimX - textSize * 0.5} y={m} transform={`rotate(-90 ${dimX - textSize * 0.5} ${m})`} textAnchor="middle" fontSize={textSize} fill={INK_2} stroke="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
               {fmtMM(len)}
@@ -319,4 +368,57 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       </g>
     </g>
   );
+}
+
+const NOTE_ORDER = ['roof', 'fascia', 'wall', 'frame', 'door', 'plinth'];
+
+function Notes({ d, info, x, avoid, textSize }: { d: Drawing; info: Info; x: number; avoid: number[]; textSize: number }) {
+  const items = d.targets
+    .filter((t) => info.notes[t.kind])
+    .sort((a, b) => a.y - b.y || NOTE_ORDER.indexOf(a.kind) - NOTE_ORDER.indexOf(b.kind));
+  // Stack notes top to bottom near their targets, never closer than two lines apart.
+  const gap = textSize * 3.2;
+  let last = -Infinity;
+  const placed = items.map((t) => {
+    let y = Math.max(t.y, last + gap);
+    // Keep notes off the level datum lines so leaders and text stay readable.
+    for (let guard = 0; guard < 6; guard++) {
+      const hit = avoid.find((a) => Math.abs(a - y) < textSize * 1.3);
+      if (hit === undefined) break;
+      y = hit + textSize * 1.4;
+    }
+    last = y;
+    return { ...t, ny: y };
+  });
+  return (
+    <g>
+      {placed.map((t) => (
+        <g key={t.kind}>
+          <circle cx={t.u} cy={t.y} r={textSize * 0.28} fill={INK} />
+          <polyline points={`${t.u},${t.y} ${x - 0.6},${t.ny} ${x - 0.15},${t.ny}`} fill="none" stroke={INK_2} strokeWidth={WEIGHT.hair} />
+          <text x={x} y={t.ny + textSize * 0.35} fontSize={textSize} fill={INK} stroke={PAPER} strokeWidth={3} style={{ paintOrder: 'stroke' }}>
+            {wrap(info.notes[t.kind]!, 30).map((line, i) => (
+              <tspan key={i} x={x} dy={i ? textSize * 1.25 : 0}>
+                {line}
+              </tspan>
+            ))}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+/** Break a note into lines of at most `max` characters, on word boundaries. */
+function wrap(text: string, max: number): string[] {
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of text.split(' ')) {
+    if (cur && (cur + ' ' + w).length > max) {
+      lines.push(cur);
+      cur = w;
+    } else cur = cur ? cur + ' ' + w : w;
+  }
+  if (cur) lines.push(cur);
+  return lines;
 }

@@ -30,6 +30,8 @@ export interface Projected {
   sash: string;
   /** Cast shadow falling on this face, if any. */
   shadow: string;
+  /** Opening mark and the opening's extent, for tags. */
+  tag?: { text: string; u: number; top: number; bottom: number };
 }
 
 export interface Drawing {
@@ -44,6 +46,8 @@ export interface Drawing {
   uMax: number;
   zMax: number;
   rooms: { name: string; u: number; z: number; w: number }[];
+  /** One point per surface kind to hang a material note from, in (u, -z). */
+  targets: { kind: Face['kind']; u: number; y: number }[];
 }
 
 const depthOf = (v: View, p: { x: number; y: number }) => (p.x - v.origin.x) * v.look.x + (p.y - v.origin.y) * v.look.y;
@@ -80,6 +84,7 @@ interface Item {
   lines: string;
   sash: string;
   shadow: MultiPolygon;
+  tag?: string;
 }
 
 const ring2 = (v: View, ring: V3[]): Ring => {
@@ -103,6 +108,17 @@ const bbox = (p: PCPolygon) => {
   }
   return { x0, y0, x1, y1 };
 };
+/** Even-odd point-in-polygon over all rings (holes excluded). */
+function insidePoly(p: PCPolygon, [x, y]: [number, number]): boolean {
+  let inside = false;
+  for (const ring of p)
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  return inside;
+}
 const shift = (p: PCPolygon, d: number): PCPolygon => p.map((r) => r.map(([x, y]) => [x + d, y + d] as [number, number]));
 const safe = <T,>(fn: () => T, fallback: T): T => {
   try {
@@ -155,6 +171,7 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
       lines: segPath(view, f.lines, !!opts.section),
       sash: segPath(view, f.sash, !!opts.section),
       shadow: [],
+      tag: f.tag,
     });
   }
 
@@ -215,7 +232,33 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
     return outers.length ? multiPolygonPath(polygonClipping.union(outers[0], ...outers.slice(1)).map((p) => [p[0]])) : '';
   }, '');
 
+  // Callout anchors: the largest visible surface of each kind, at a point clear of openings and shadow.
+  const targets: Drawing['targets'] = [];
+  const nearest = items.length ? Math.min(...items.map((i) => i.depth)) : 0;
+  for (const kind of ['roof', 'fascia', 'wall', 'frame', 'door', 'plinth'] as Face['kind'][]) {
+    const pool = items.filter((i) => i.kind === kind && i.depth - nearest < 4);
+    if (!pool.length) continue;
+    const area = (i: Item) => {
+      const b = bbox(i.poly);
+      return (b.x1 - b.x0) * (b.y1 - b.y0);
+    };
+    const best = pool.reduce((a, b) => (area(b) > area(a) ? b : a));
+    const b = bbox(best.poly);
+    let pt: [number, number] | null = null;
+    // Prefer the upper right of the surface (notes sit on the right of the sheet).
+    // Frames are thin bars around glass, so try points along the border for them.
+    const fys = kind === 'frame' ? [0.5, 0.03, 0.97] : [0.35, 0.5, 0.65, 0.25, 0.8];
+    const fxs = kind === 'frame' ? [0.97, 0.03, 0.5] : [0.85, 0.75, 0.65, 0.92, 0.55, 0.45];
+    for (const fy of fys)
+      for (const fx of fxs) {
+        const q: [number, number] = [b.x0 + (b.x1 - b.x0) * fx, b.y0 + (b.y1 - b.y0) * fy];
+        if (!pt && insidePoly(best.poly, q) && !best.shadow.some((sp) => insidePoly(sp, q))) pt = q;
+      }
+    if (pt) targets.push({ kind, u: pt[0], y: pt[1] });
+  }
+
   return {
+    targets,
     faces: items.map((it) => ({
       d: multiPolygonPath([it.poly]),
       fill: it.fill,
@@ -224,6 +267,10 @@ export function project(frame: BuildingFrame, view: View, opts: { section?: bool
       lines: it.lines,
       sash: it.sash,
       shadow: it.shadow.length ? multiPolygonPath(it.shadow) : '',
+      tag: it.tag ? (() => {
+        const b = bbox(it.poly);
+        return { text: it.tag, u: (b.x0 + b.x1) / 2, top: b.y0, bottom: b.y1 };
+      })() : undefined,
     })),
     profile,
     cut: '',

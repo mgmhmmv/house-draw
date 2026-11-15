@@ -34,6 +34,8 @@ export interface Face {
   lines?: [V3, V3][];
   /** Dashed opening-direction lines (casement sashes, door swings). */
   sash?: [V3, V3][];
+  /** Opening mark (W1, D2) on the outward face of an exterior opening. */
+  tag?: string;
   fill: string;
   /** Painter's tie-break when depths are equal: higher draws later. */
   order: number;
@@ -46,6 +48,8 @@ export interface BuildingFrame {
   ridgeZ: number;
   groundFloorZ: number;
   roofPlanes: { pts: V3[] }[];
+  /** Material notes for callouts, by surface kind. */
+  notes: Partial<Record<FaceKind, string>>;
 }
 
 const v = (x: number, y: number, z: number): V3 => ({ x, y, z });
@@ -110,7 +114,7 @@ function wallRect(P: (s: number, off: number, z: number) => V3, s0: number, s1: 
   return side > 0 ? [P(s0, off, z0), P(s1, off, z0), P(s1, off, z1), P(s0, off, z1)] : [P(s1, off, z0), P(s0, off, z0), P(s0, off, z1), P(s1, off, z1)];
 }
 
-function openingFaces(level: FloorLevel, o: Opening, pal: Palette): Face[] {
+function openingFaces(level: FloorLevel, o: Opening, pal: Palette, exterior: boolean, center: { x: number; y: number }): Face[] {
   const w = level.walls.find((x) => x.id === o.wallId);
   if (!w) return [];
   const f = wallFrame(w);
@@ -130,6 +134,9 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette): Face[] {
     const back = side * 0.02; // glass / leaf plane, set back in the reveal
     const front = side * 0.035; // frame plane, just proud of the glass
     const R = (a0: number, a1: number, b0: number, b1: number, off: number) => wallRect(P, a0, a1, b0, b1, off, side);
+    const mid = P(c, 0, 0);
+    const outward = (mid.x - center.x) * n.x + (mid.y - center.y) * n.y > 0;
+    const tag = exterior && outward && o.label ? o.label : undefined;
 
     if (o.kind === 'window') {
       faces.push({ kind: 'glass', pts: R(s0, s1, z0, z1, back), n, fill: GLASS, order: 1 });
@@ -160,7 +167,7 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette): Face[] {
           sash.push([P(ox, front, b0), P(hx, front, (b0 + b1) / 2)], [P(hx, front, (b0 + b1) / 2), P(ox, front, b1)]);
         });
       }
-      faces.push({ kind: 'frame', pts: R(s0, s1, z0, z1, front), holes, n, fill: pal.frame, order: 2, sash });
+      faces.push({ kind: 'frame', pts: R(s0, s1, z0, z1, front), holes, n, fill: pal.frame, order: 2, sash, tag });
       // Sill: a slim projecting ledge under the window.
       const sz = z0 - 0.06;
       faces.push({ kind: 'sill', pts: R(s0 - 0.06, s1 + 0.06, sz, z0, side * (t + 0.05)), n, fill: '#F4F3EF', order: 3 });
@@ -186,7 +193,7 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette): Face[] {
         const hx = o.style === 'double' ? c - 0.1 : s1 - fw - 0.1;
         lines.push([P(hx, back, z0 + 0.98), P(hx, back, z0 + 1.12)]);
       }
-      faces.push({ kind: 'door', pts: R(s0 + fw, s1 - fw, z0, lz1, back), n, fill: pal.door, order: 1, lines });
+      faces.push({ kind: 'door', pts: R(s0 + fw, s1 - fw, z0, lz1, back), n, fill: pal.door, order: 1, lines, tag });
     }
   }
   // Reveals from the wall face back to the glass.
@@ -216,6 +223,8 @@ function endIsJoined(level: FloorLevel, wallId: string, p: { x: number; y: numbe
 
 function wallFaces(level: FloorLevel, pal: Palette): Face[] {
   const faces: Face[] = [];
+  const lb = levelBounds(level);
+  const center = { x: (lb.minX + lb.maxX) / 2, y: (lb.minY + lb.maxY) / 2 };
   for (const w of level.walls) {
     const f = wallFrame(w);
     if (f.length < 0.01) continue;
@@ -244,7 +253,7 @@ function wallFaces(level: FloorLevel, pal: Palette): Face[] {
       faces.push({ kind: 'wall', fill, order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(sA, t, z0), P(sA, -t, z0), P(sA, -t, z1), P(sA, t, z1)] });
     if (!endIsJoined(level, w.id, w.end))
       faces.push({ kind: 'wall', fill, order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(sB, -t, z0), P(sB, t, z0), P(sB, t, z1), P(sB, -t, z1)] });
-    for (const o of openings) faces.push(...openingFaces(level, o, pal));
+    for (const o of openings) faces.push(...openingFaces(level, o, pal, w.isExterior, center));
   }
   return faces;
 }
@@ -413,5 +422,16 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
     ridgeZ: roof.ridgeZ,
     groundFloorZ: first?.elevation ?? 0,
     roofPlanes: roof.planes,
+    notes: {
+      roof: model.roof.type === 'flat' ? `${label(ROOF_MATERIAL_OPTIONS, model.roof.material)}, ${model.roof.parapetHeight > 0 ? 'parapet' : 'flat roof'}` : `${label(ROOF_MATERIAL_OPTIONS, model.roof.material)} roofing, ${model.roof.pitchDeg}° pitch`,
+      wall: `${label(FACADE_MATERIAL_OPTIONS, design.exteriorFacade)} on ${model.levels[0]?.walls.find((w) => w.isExterior)?.material.replace(/_/g, ' ') ?? 'masonry'} walls`,
+      frame: `${titleCase(design.windowFrame)} aluminium frames, clear glazing`,
+      door: `${titleCase(design.doorMaterial)} door`,
+      fascia: model.roof.type === 'flat' ? 'Parapet, finished to match walls' : 'Fascia board, painted white',
+      plinth: 'Plinth, cement render',
+    },
   };
 }
+
+const label = (opts: { id: string; label: string }[], id: string) => opts.find((o) => o.id === id)?.label ?? titleCase(id);
+const titleCase = (s: string) => s.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
