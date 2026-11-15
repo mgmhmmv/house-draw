@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react';
 import { ArrowRight, Moon, Sun } from 'lucide-react';
 import { IsleposSettings } from './IsleposPages';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/hooks';
 import { TEMPLATES } from '../lib/templates';
-import { Avatar, Segmented } from '../ui';
+import { Avatar, Button, Field, Input, Segmented, toast } from '../ui';
+import { getStudio, saveStudio, type StudioProfile } from '../lib/studio';
 import { PlanGlyph } from './PlanGlyph';
 
 function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -75,7 +77,69 @@ export function SettingsPage() {
           />
         </div>
         <IsleposSettings />
+        <StudioSettings />
       </div>
     </Page>
+  );
+}
+
+/** Studio details for drawing title blocks. */
+function StudioSettings() {
+  const [p, setP] = useState<StudioProfile | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void getStudio().then(setP);
+  }, []);
+  if (!p) return null;
+  const f = (k: keyof StudioProfile, label: string, ph = '') => (
+    <Field label={label}>
+      <Input value={p[k]} placeholder={ph} onChange={(e) => setP({ ...p, [k]: e.target.value })} />
+    </Field>
+  );
+  return (
+    <div className="space-y-4 p-5">
+      <div>
+        <div className="text-sm font-medium">Drawing title block</div>
+        <div className="text-[13px] text-ink-3">Printed in the sidebar of every exported sheet.</div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {f('studioName', 'Studio name', 'e.g. Rajje Sol')}
+        {f('legalName', 'Company', 'e.g. PICAD PVT LTD')}
+        {f('regNo', 'Registration no.')}
+        {f('tin', 'GST TIN')}
+        <div className="sm:col-span-2">{f('address', 'Address', "e.g. G. Hazel House, Rah Dhebai Magu, Male'")}</div>
+        {f('phone', 'Phone')}
+        {f('email', 'Email')}
+        {f('drawnBy', 'Drawn by')}
+        {f('checkedBy', 'Checked by')}
+        {f('prefix', 'Drawing number prefix', 'e.g. RS')}
+      </div>
+      <Field label="General notes (one per line)">
+        <textarea
+          value={p.notes}
+          onChange={(e) => setP({ ...p, notes: e.target.value })}
+          rows={4}
+          className="w-full rounded-ctl border border-line bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15"
+        />
+      </Field>
+      <div className="flex justify-end">
+        <Button
+          variant="primary"
+          loading={busy}
+          onClick={() => {
+            setBusy(true);
+            saveStudio(p)
+              .then((x) => {
+                setP(x);
+                toast('Title block saved');
+              })
+              .catch(() => toast('Could not save'))
+              .finally(() => setBusy(false));
+          }}
+        >
+          Save
+        </Button>
+      </div>
+    </div>
   );
 }

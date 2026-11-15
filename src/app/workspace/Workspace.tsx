@@ -52,9 +52,10 @@ import {
   exportFullDrawingSetHTML,
   exportLevelToDXF,
   exportProjectToJSON,
-  exportSVGElement,
-  exportViewportPNG,
+  triggerDownload,
 } from '../../export/exporters';
+import { sheetsHTML } from '../../export/sheet';
+import { composeCurrent, PRINTABLE } from './printSheets';
 import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
@@ -272,20 +273,68 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     toast(`${lvl.name} added`);
   }, [model, commit]);
 
-  const runExport = async (kind: 'json' | 'dxf' | 'obj' | 'csv' | 'set' | 'image') => {
-    if (!model) return;
-    const code = (model.meta.projectCode || 'ARCHSTUDIO').replace(/[^\w-]/g, '_');
+  const [printing, setPrinting] = useState<string | null>(null);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** Open (or fall back to downloading) a print-ready page of A3 sheets. */
+  const showSheets = (win: Window | null, title: string, svgs: string[]) => {
+    const html = sheetsHTML(title, svgs);
+    if (win && !win.closed) {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+    } else void triggerDownload(`${title.replace(/[^\w-]+/g, '_')}.html`, html, 'text/html');
+  };
+
+  const runExport = async (kind: 'json' | 'dxf' | 'obj' | 'csv' | 'report' | 'sheet-pdf' | 'sheet-svg' | 'set-pdf') => {
+    if (!model || !doc.project) return;
+    const project = doc.project;
+    // Print windows must open in the click itself, or the browser blocks them.
+    const win = kind === 'sheet-pdf' || kind === 'set-pdf' ? window.open('', '_blank') : null;
+    win?.document.write('<p style="font:14px system-ui;padding:24px">Preparing sheets…</p>');
     try {
       if (kind === 'json') await exportProjectToJSON(model);
       else if (kind === 'dxf') await exportLevelToDXF(model, safeLevel);
       else if (kind === 'obj') await export3DToOBJ(model);
       else if (kind === 'csv') await exportBOQToCSV(model);
-      else if (kind === 'set') await exportFullDrawingSetHTML(model);
-      else if (sheet.id === '3D-VIEW') await exportViewportPNG(model, sheet.id);
-      else await exportSVGElement(sheet.plan ? svgRef.current : document.querySelector('main svg'), `${code}_${sheet.code}.svg`);
-      toast('Download started');
+      else if (kind === 'report') await exportFullDrawingSetHTML(model);
+      else if (kind === 'sheet-pdf' || kind === 'sheet-svg') {
+        setSelection(null);
+        setPlacing(null);
+        await sleep(80);
+        const svg = await composeCurrent({ project, model, sheetId: sheet.id, sheetCode: sheet.code, levelName: levels[safeLevel]?.name, levelIndex: safeLevel });
+        if (kind === 'sheet-svg') await triggerDownload(`${project.name.replace(/[^\w-]+/g, '_')}_${sheet.code}.svg`, `<?xml version="1.0" encoding="UTF-8"?>\n${svg}`, 'image/svg+xml');
+        else showSheets(win, `${project.name} · ${sheet.code}`, [svg]);
+      } else if (kind === 'set-pdf') {
+        // Visit each drawing sheet (every level for the plans), capture it, then come back.
+        const back = { sheet, level: safeLevel };
+        setSelection(null);
+        setPlacing(null);
+        const jobs: { def: SheetDef; level: number }[] = [];
+        for (const id of PRINTABLE) {
+          const def = SHEETS.find((x) => x.id === id);
+          if (!def) continue;
+          if (def.id === 'A-101') levels.forEach((_, i) => jobs.push({ def, level: i }));
+          else jobs.push({ def, level: 0 });
+        }
+        const svgs: string[] = [];
+        for (const [i, j] of jobs.entries()) {
+          setPrinting(`Preparing sheet ${i + 1} of ${jobs.length} · ${j.def.name}`);
+          navigate(`/p/${projectId}/${j.def.slug}`, { replace: true });
+          setLevelIndex(j.level);
+          await sleep(j.def.id === '3D-VIEW' ? 1600 : 700);
+          svgs.push(await composeCurrent({ project, model, sheetId: j.def.id, sheetCode: j.def.code, levelName: levels[j.level]?.name, levelIndex: j.level, sheetOf: `${i + 1} of ${jobs.length}` }));
+        }
+        navigate(`/p/${projectId}/${back.sheet.slug}`, { replace: true });
+        setLevelIndex(back.level);
+        showSheets(win, `${project.name} · drawing set`, svgs);
+      }
+      if (kind !== 'sheet-pdf' && kind !== 'set-pdf') toast('Download started');
     } catch {
+      win?.close();
       toast('Export failed');
+    } finally {
+      setPrinting(null);
     }
   };
 
@@ -419,11 +468,18 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     >
       {(close) => (
         <>
-          <MenuItem icon={<ImageIcon />} onClick={() => (close(), runExport('image'))}>
-            This sheet ({sheet.id === '3D-VIEW' ? 'PNG' : 'SVG'})
+          <MenuItem icon={<FileText />} onClick={() => (close(), runExport('sheet-pdf'))}>
+            This sheet · A3 PDF
           </MenuItem>
-          <MenuItem icon={<FileText />} onClick={() => (close(), runExport('set'))}>
-            Full drawing set (HTML, print to PDF)
+          <MenuItem icon={<ImageIcon />} onClick={() => (close(), runExport('sheet-svg'))}>
+            This sheet · A3 SVG
+          </MenuItem>
+          <MenuItem icon={<SquareStack />} onClick={() => (close(), runExport('set-pdf'))}>
+            Drawing set · A3 PDF (all sheets)
+          </MenuItem>
+          <div className="my-1 h-px bg-line" />
+          <MenuItem icon={<FileText />} onClick={() => (close(), runExport('report'))}>
+            Engineering report (HTML)
           </MenuItem>
           <div className="my-1 h-px bg-line" />
           <MenuItem icon={<FileCode2 />} onClick={() => (close(), runExport('dxf'))}>
@@ -481,11 +537,17 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         }}
         placing={preview ? null : placing}
         onPlaced={(id, kind) => {
-          // One click places one item; then it is selected, ready to turn or adjust.
+          // One click places one item; it is selected (rotate handle) but the Library stays open.
           setPlacing(null);
-          if (id) onSelect(id, kind);
+          if (id) setSelection({ id, kind });
         }}
       />
+
+      {printing && (
+        <div className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full bg-ink px-4 py-2 text-[13px] font-medium text-page shadow-float">
+          <Spinner className="h-4 w-4 text-page" /> {printing}
+        </div>
+      )}
 
       {doc.held > 0 && !preview && (
         <div className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-[14px] border border-warn/40 bg-surface/95 py-1.5 pl-3.5 pr-1.5 shadow-float backdrop-blur animate-fade-up">

@@ -1,5 +1,6 @@
 import { handleAi, handleAsset, handleAssist } from './ai';
 import { handleAssets } from './assets';
+import { handleSettings } from './settings';
 import { handleAuth, requireUser } from './auth';
 import { Env, HttpError, json } from './http';
 import { handleProjects } from './projects';
@@ -47,6 +48,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (path === '/api/ai/claude') return await handleAi(env, req);
     if (path === '/api/ai/assist') return await handleAssist(env, req);
     if (path === '/api/ai/asset') return await handleAsset(env, req);
+    if (path === '/api/settings') return await handleSettings(env, req, user);
     if (path === '/api/assets' || path.startsWith('/api/assets/')) return await handleAssets(env, req, user, path);
     throw new HttpError(404, 'not_found');
   } catch (err) {

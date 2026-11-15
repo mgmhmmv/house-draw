@@ -15,6 +15,7 @@ import { uid } from '../../../engine/geometry';
 import { cx } from '../../ui';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
+import { usePrintMode } from '../printMode';
 import { assetFor, type AssetDef } from '../assets/catalog';
 import { assetPlan, isOverhead, mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
 import { PlanPrims } from '../assets/PlanSymbol';
@@ -91,6 +92,9 @@ export function PlanCanvas(p: Props) {
   }, [p.levelIndex === 0 ? geo.bounds : null, mode]);
   const vp = useViewport(surfaceRef, fitBounds);
   const { k, tx, ty } = vp.view;
+  // Text and symbol sizes: real paper sizes when printing, kept readable on screen otherwise.
+  const print = usePrintMode();
+  const kText = print ? 1e6 : k;
 
   const [hover, setHover] = useState<Vec | null>(null);
   const [wallStart, setWallStart] = useState<Vec | null>(null);
@@ -565,7 +569,7 @@ export function PlanCanvas(p: Props) {
             )}
             {/* Invisible hit areas so each wall can still be picked */}
             {[...geo.frames.values()].map((f) => {
-              const t = Math.max(f.wall.thickness / 2, 6 / k);
+              const t = Math.max(f.wall.thickness / 2, 6 / kText);
               const q = [along(f, 0, -t), along(f, f.length, -t), along(f, f.length, t), along(f, 0, t)];
               return <polygon key={f.wall.id} data-kind="wall" data-id={f.wall.id} points={pts(q)} fill="transparent" />;
             })}
@@ -634,14 +638,14 @@ export function PlanCanvas(p: Props) {
           </g>
 
           {/* MEP */}
-          {mode === 'mep' && <Mep level={level} filter={mepFilter} selectedId={sel} k={k} />}
+          {mode === 'mep' && <Mep level={level} filter={mepFilter} selectedId={sel} k={kText} />}
 
           {/* Room tags: paper size when zoomed in, never smaller than readable on screen */}
           {mode !== 'mep' &&
             tags.map((t) => {
               const scale = Math.min(1, Math.max(0.65, t.room_w / 2.6));
-              const nameSize = Math.max(TEXT.roomName * scale, 11 / k);
-              const areaSize = Math.max(TEXT.roomArea * scale, 9.5 / k);
+              const nameSize = Math.max(TEXT.roomName * scale, 11 / kText);
+              const areaSize = Math.max(TEXT.roomArea * scale, 9.5 / kText);
               const nameW = t.room.name.length * nameSize * 0.62;
               if (nameW > t.room_w * 0.92) {
                 // Too small for a name: show the area only if that fits.
@@ -667,7 +671,7 @@ export function PlanCanvas(p: Props) {
 
           {/* Dimensions */}
           {chains.map((c) => (
-            <DimChainView key={c.side} c={c} k={k} />
+            <DimChainView key={c.side} c={c} k={kText} />
           ))}
 
           {/* Section markers */}

@@ -4,6 +4,7 @@ import type { BuildingProject } from '../../../model/types';
 import { cx } from '../../ui';
 import { useMediaQuery } from '../../lib/hooks';
 import { INK, INK_2, INK_3, PAPER, WEIGHT } from '../style';
+import { usePrintMode } from '../printMode';
 import { useViewport } from '../useViewport';
 import { buildFrame } from '../model3d/faces';
 import { defaultSections, ELEVATIONS, project, sectionDrawing, uAt, type Drawing } from '../model3d/project';
@@ -144,7 +145,8 @@ function Surface({
   const vp = useViewport(ref, bounds, 48);
   const { k, tx, ty } = vp.view;
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const fs = (paper: number, px: number) => Math.max(paper, px / k);
+  const print = usePrintMode();
+  const fs = (paper: number, px: number) => (print ? paper : Math.max(paper, px / k));
 
   return (
     <div ref={ref} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
