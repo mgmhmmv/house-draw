@@ -14,6 +14,7 @@ import {
   FileText,
   History,
   Eye,
+  Armchair,
   RotateCcw,
   Image as ImageIcon,
   ImagePlus,
@@ -21,6 +22,7 @@ import {
   Loader2,
   MousePointer2,
   PanelRight,
+  PanelLeft,
   PenLine,
   PenTool,
   Plus,
@@ -59,6 +61,8 @@ import { Link, useRouter } from '../lib/router';
 import { Button, cx, Dialog, Field, IconButton, Input, Kbd, Menu, MenuItem, Spinner, STATUS_META, StatusPill, toast } from '../ui';
 import { Assistant, type AssistantHandle } from './Assistant';
 import { HistoryPanel } from './HistoryPanel';
+import { LibraryPanel } from './LibraryPanel';
+import type { AssetDef } from '../drawing/assets/catalog';
 import { Inspector, type Selection } from './Inspector';
 import { SheetView } from './SheetView';
 import { SHEET_GROUPS, SHEETS, sheetBySlug, type SheetDef } from './sheets';
@@ -75,8 +79,8 @@ const TOOLS: { id: CADTool; label: string; key: string; icon: typeof PenTool }[]
   { id: 'sketch_wall', label: 'Sketch', key: 'S', icon: PenLine },
 ];
 
-type Panel = 'properties' | 'assistant' | 'history';
-type MobileSheet = null | 'sheets' | 'properties' | 'assistant' | 'project' | 'history';
+type Panel = 'properties' | 'assistant' | 'history' | 'library';
+type MobileSheet = null | 'sheets' | 'properties' | 'assistant' | 'project' | 'history' | 'library';
 
 export default function Workspace({ projectId, sheetParam }: { projectId: string; sheetParam?: string }) {
   const doc = useProjectDoc(projectId);
@@ -92,6 +96,23 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const [traceOpacity, setTraceOpacity] = useState(0.4);
   const [panel, setPanel] = useState<Panel>('properties');
   const [panelOpen, setPanelOpen] = useState(true);
+  /** The sheet menu on the left can fold down to an icon rail; remembered per browser. */
+  const [navOpen, setNavOpen] = useState(() => {
+    try {
+      return localStorage.getItem('as_nav') !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const toggleNav = () =>
+    setNavOpen((o) => {
+      try {
+        localStorage.setItem('as_nav', o ? 'closed' : 'open');
+      } catch {
+        /* storage blocked */
+      }
+      return !o;
+    });
   const [mobileSheet, setMobileSheet] = useState<MobileSheet>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -101,6 +122,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   /** An older version shown read-only on the canvas, from History. */
   const [preview, setPreview] = useState<{ version: ProjectVersion; model: BuildingProject } | null>(null);
   const [restoreArmed, setRestoreArmed] = useState(false);
+  /** A library item being placed on the plan. */
+  const [placing, setPlacing] = useState<{ def: AssetDef; rotation: number } | null>(null);
 
   const model = doc.model;
   const levels = model?.levels ?? [];
@@ -146,6 +169,27 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     },
     [projectId, preview]
   );
+  // Choosing a drawing tool ends placing.
+  useEffect(() => {
+    if (tool !== 'select') setPlacing(null);
+  }, [tool]);
+
+  /** Start placing a library item; the plan is where things are placed. */
+  const pickAsset = useCallback(
+    (def: AssetDef) => {
+      setPreview(null);
+      setSelection(null);
+      setTool('select');
+      setPlacing((pl) => (pl?.def.id === def.id ? null : { def, rotation: 0 }));
+      setMobileSheet(null);
+      if (!sheet.plan || sheet.id !== 'A-101') {
+        const plan = SHEETS.find((x) => x.id === 'A-101');
+        if (plan) navigate(`/p/${projectId}/${plan.slug}`, { replace: true });
+      }
+    },
+    [sheet, navigate, projectId]
+  );
+
   const restoreVersion = useCallback(
     async (v: number) => {
       await doc.restore(v);
@@ -238,8 +282,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
 
   /* ── Keyboard ──────────────────────────────────────────────────── */
 
-  const keys = useRef({ deleteSelection, undo: doc.undo, redo: doc.redo, sheet, selection });
-  keys.current = { deleteSelection, undo: doc.undo, redo: doc.redo, sheet, selection };
+  const keys = useRef({ deleteSelection, undo: doc.undo, redo: doc.redo, sheet, selection, placing });
+  keys.current = { deleteSelection, undo: doc.undo, redo: doc.redo, sheet, selection, placing };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
@@ -258,12 +302,18 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         return;
       }
       if (mod || e.altKey) return;
+      if (k.placing && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault();
+        setPlacing((pl) => (pl ? { ...pl, rotation: (pl.rotation + (e.shiftKey ? 270 : 90)) % 360 } : pl));
+        return;
+      }
       if ((e.key === 'Backspace' || e.key === 'Delete') && k.selection) {
         e.preventDefault();
         k.deleteSelection();
       } else if (e.key === 'Escape') {
         setSelection(null);
         setTool('select');
+        setPlacing(null);
       } else if (e.key === '/') {
         e.preventDefault();
         setPanel('assistant');
@@ -342,6 +392,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     <HistoryPanel projectId={projectId} current={project.version} onRestore={restoreVersion} onPreview={openPreview} previewing={preview?.version.version ?? null} />
   );
 
+  const library = <LibraryPanel onPick={pickAsset} placingId={placing?.def.id ?? null} />;
+
   const exportMenu = (
     <Menu
       trigger={(t) =>
@@ -400,6 +452,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         traceImageUrl={trace}
         traceOpacity={traceOpacity}
         svgRef={svgRef}
+        placing={preview ? null : placing}
       />
 
       {preview && (
@@ -507,6 +560,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           <IconButton label="All projects" size="sm" onClick={() => navigate('/')}>
             <ArrowLeft className="h-4 w-4" />
           </IconButton>
+          <IconButton label={navOpen ? 'Collapse sheet menu' : 'Expand sheet menu'} size="sm" active={!navOpen} onClick={toggleNav}>
+            <PanelLeft className="h-4 w-4" />
+          </IconButton>
           <button onClick={() => setDetailsOpen(true)} className="flex min-w-0 items-center gap-2 rounded-ctl px-2 py-1.5 hover:bg-sunken/70">
             <span className="truncate text-[15px] font-semibold tracking-tight">{project.name}</span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ink-3" />
@@ -558,25 +614,59 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         </header>
 
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-line bg-raised px-3 py-4">
-            <SheetNav current={sheet} onPick={goSheet} />
-            {sheet.plan && (
-              <div className="mt-6">
-                <p className="px-3 pb-2 text-2xs font-medium uppercase tracking-wide text-ink-3">Levels</p>
-                <LevelList levels={levels.map((l) => l.name)} index={safeLevel} onPick={setLevelIndex} onAdd={addLevel} />
+          {navOpen ? (
+            <aside className="flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-line bg-raised px-3 py-4">
+              <SheetNav current={sheet} onPick={goSheet} />
+              {sheet.plan && (
+                <div className="mt-6">
+                  <p className="px-3 pb-2 text-2xs font-medium uppercase tracking-wide text-ink-3">Levels</p>
+                  <LevelList levels={levels.map((l) => l.name)} index={safeLevel} onPick={setLevelIndex} onAdd={addLevel} />
+                </div>
+              )}
+              <div className="mt-auto space-y-1.5 px-3 pt-6 text-2xs text-ink-3">
+                <div className="flex items-center justify-between">
+                  <span>Ask AI</span>
+                  <Kbd>/</Kbd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Undo</span>
+                  <Kbd>⌘Z</Kbd>
+                </div>
               </div>
-            )}
-            <div className="mt-auto space-y-1.5 px-3 pt-6 text-2xs text-ink-3">
-              <div className="flex items-center justify-between">
-                <span>Ask AI</span>
-                <Kbd>/</Kbd>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Undo</span>
-                <Kbd>⌘Z</Kbd>
-              </div>
-            </div>
-          </aside>
+            </aside>
+          ) : (
+            <aside className="flex w-14 shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-line bg-raised py-3">
+              {SHEET_GROUPS.map((g, gi) => (
+                <div key={g.label} className={cx('flex flex-col items-center gap-0.5', gi > 0 && 'mt-2 border-t border-line pt-2')}>
+                  {g.sheets.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => goSheet(s)}
+                      title={`${s.name} · ${s.code}`}
+                      aria-label={s.name}
+                      className={cx('flex h-9 w-9 items-center justify-center rounded-ctl', s.id === sheet.id ? 'bg-surface text-accent shadow-card' : 'text-ink-2 hover:bg-sunken/70 hover:text-ink')}
+                    >
+                      <s.icon className="h-[18px] w-[18px]" strokeWidth={1.75} />
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {sheet.plan && levels.length > 1 && (
+                <div className="mt-2 flex flex-col items-center gap-0.5 border-t border-line pt-2">
+                  {levels.map((l, i) => (
+                    <button
+                      key={l.id}
+                      onClick={() => setLevelIndex(i)}
+                      title={l.name}
+                      className={cx('flex h-7 w-7 items-center justify-center rounded-md font-mono text-2xs', i === safeLevel ? 'bg-accent text-accent-ink' : 'bg-sunken text-ink-3 hover:text-ink')}
+                    >
+                      {i}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </aside>
+          )}
 
           {canvas}
 
@@ -587,7 +677,10 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
                   Properties
                 </PanelTab>
                 <PanelTab active={panel === 'assistant'} onClick={() => setPanel('assistant')} icon={<Sparkles className="h-4 w-4" />}>
-                  AI Architect
+                  AI
+                </PanelTab>
+                <PanelTab active={panel === 'library'} onClick={() => setPanel('library')} icon={<Armchair className="h-4 w-4" />}>
+                  Library
                 </PanelTab>
                 <PanelTab active={panel === 'history'} onClick={() => setPanel('history')} icon={<History className="h-4 w-4" />}>
                   History
@@ -596,6 +689,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
               <div className={cx('min-h-0 flex-1', panel === 'properties' ? 'overflow-y-auto' : 'hidden')}>{inspector}</div>
               <div className={cx('min-h-0 flex-1', panel === 'assistant' ? 'flex flex-col' : 'hidden')}>{assistant}</div>
               {panel === 'history' && <div className="min-h-0 flex-1 overflow-y-auto p-3">{history}</div>}
+              {panel === 'library' && <div className="min-h-0 flex-1">{library}</div>}
             </aside>
           )}
         </div>
@@ -620,6 +714,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             <SaveIndicator state={doc.saveState} onRetry={doc.saveNow} onKeepMine={() => void doc.keepMine()} compact />
           </div>
         </button>
+        <IconButton label="Library" size="sm" active={!!placing} onClick={() => (placing ? setPlacing(null) : setMobileSheet('library'))}>
+          <Armchair className="h-[18px] w-[18px]" />
+        </IconButton>
         <IconButton label="History" size="sm" onClick={() => setMobileSheet('history')}>
           <History className="h-[18px] w-[18px]" />
         </IconButton>
@@ -675,6 +772,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       </BottomSheet>
       <BottomSheet open={mobileSheet === 'project'} onClose={() => setMobileSheet(null)} title="Project">
         <ProjectDetailsForm doc={doc} onDone={() => setMobileSheet(null)} />
+      </BottomSheet>
+      <BottomSheet open={mobileSheet === 'library'} onClose={() => setMobileSheet(null)} title="Library" tall>
+        <div className="h-[70vh]">{library}</div>
       </BottomSheet>
       <BottomSheet open={mobileSheet === 'history'} onClose={() => setMobileSheet(null)} title="History" tall>
         <div className="px-3 pb-6">{history}</div>
@@ -812,7 +912,7 @@ function PanelTab({ active, onClick, icon, children }: { active: boolean; onClic
   return (
     <button
       onClick={onClick}
-      className={cx('flex h-8 items-center gap-2 rounded-ctl px-3 text-[13px] font-medium transition-colors', active ? 'bg-sunken text-ink' : 'text-ink-3 hover:text-ink')}
+      className={cx('flex h-8 min-w-0 items-center gap-1.5 rounded-ctl px-2.5 text-[13px] font-medium transition-colors', active ? 'bg-sunken text-ink' : 'text-ink-3 hover:text-ink')}
     >
       {icon}
       {children}

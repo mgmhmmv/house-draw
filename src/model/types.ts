@@ -281,6 +281,7 @@ export interface Staircase {
 
 export interface FurnitureItem {
   id: string;
+  /** Library asset id (see app/drawing/assets/catalog.ts); older projects use the first few. */
   type:
     | 'bed_double'
     | 'bed_single'
@@ -291,11 +292,16 @@ export interface FurnitureItem {
     | 'wc'
     | 'sink'
     | 'shower'
-    | 'car';
+    | 'car'
+    | (string & {});
   position: Point2D;
   rotation: number; // degrees
   width: number;
   depth: number;
+  /** Overall height; the library default when absent. */
+  height?: number;
+  /** Underside above the floor, for wall-mounted items; the library default when absent. */
+  elevation?: number;
 }
 
 export type MEPNodeKind =
@@ -330,6 +336,10 @@ export interface MEPNode {
   label?: string;
   roomId?: string;
   wallSide?: 'north' | 'south' | 'west' | 'east';
+  /** Library model for the fixture (e.g. 'pendant' for a light point); a default per kind otherwise. */
+  model?: string;
+  /** Plan rotation in degrees, for wall units. */
+  rotation?: number;
 }
 
 export interface MEPCircuit {

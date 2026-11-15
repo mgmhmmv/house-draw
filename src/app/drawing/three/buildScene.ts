@@ -9,6 +9,8 @@ import type { BuildingProject } from '../../../model/types';
 import { buildFrame, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
 import { ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
+import { AssetMaterials } from '../assets/kit';
+import { furnitureObject, mepObject } from '../assets/render';
 
 const T = (p: V3) => new THREE.Vector3(p.x, p.z, p.y);
 
@@ -282,35 +284,18 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     }
   });
 
-  // Furniture and AC units, so cutaway and X-ray views read as rooms.
+  // Furniture, fittings and equipment from the asset library, so cutaway, X-ray and walk views
+  // read as real rooms; AC units, fans and lights are drawn from their service points.
+  const assetMats = new AssetMaterials(clay);
   model.levels.forEach((lvl, i) => {
-    const fm = metalMat(clay ? '#E6E2DA' : '#D8CFC2', 0.9, 0);
-    for (const f of lvl.furniture) {
-      const h = FURNITURE_H[f.type] ?? 0.75;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(f.width, h, f.depth), fm);
-      mesh.position.set(f.position.x, lvl.elevation + h / 2, f.position.y);
-      mesh.rotation.y = (-f.rotation * Math.PI) / 180;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData.solid = true;
-      levels[i].add(mesh);
-    }
-    const am = metalMat('#F3F3F1', 0.6, 0.1);
+    const wallTop = Math.max(...lvl.walls.map((w) => w.height), 2.4);
+    for (const f of lvl.furniture) levels[i].add(furnitureObject(f, lvl.elevation, assetMats, i === 0 ? 0 : null));
     for (const n of lvl.mepNodes) {
-      if (n.kind === 'ac_split') {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.28, 0.22), am);
-        m.position.set(n.position.x, lvl.elevation + 2.35, n.position.y);
-        m.userData.solid = true;
-        levels[i].add(m);
-      } else if (n.kind === 'ac_condenser') {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.55, 0.3), am);
-        m.position.set(n.position.x, lvl.elevation + 0.3, n.position.y);
-        m.userData.solid = true;
-        m.castShadow = true;
-        levels[i].add(m);
-      }
+      const o = mepObject(n, lvl, lvl.elevation + wallTop, assetMats);
+      if (o) levels[i].add(o);
     }
   });
+  materials.push(...assetMats.all());
 
   const box = new THREE.Box3();
   levels.forEach((g) => box.expandByObject(g));
@@ -319,19 +304,6 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
 
   return { levels, roof, site, roofTopZ: frame.ridgeZ, edges, materials, box, levelElevations: elevations };
 }
-
-const FURNITURE_H: Record<string, number> = {
-  bed_double: 0.55,
-  bed_single: 0.55,
-  sofa: 0.8,
-  dining_table: 0.75,
-  kitchen_counter: 0.9,
-  desk: 0.75,
-  wc: 0.42,
-  sink: 0.85,
-  shower: 0.04,
-  car: 1.45,
-};
 
 function roofRibColor(model: BuildingProject, clay: boolean): string {
   if (clay) return '#ECE9E3';

@@ -1,3 +1,4 @@
+import { assetFor } from '../drawing/assets/catalog';
 import { getDesignConfig, getHVACConfig, getSolarConfig, type BuildingProject, type FloorLevel } from '../../model/types';
 
 /**
@@ -60,7 +61,14 @@ export function describeChange(prev: BuildingProject | null, next: BuildingProje
     }
     if (!same(p.columns, l.columns) || !same(p.stairs, l.stairs)) parts.push('Updated structure');
     if (!same(p.mepNodes, l.mepNodes) || !same(p.mepCircuits, l.mepCircuits)) parts.push('Updated services');
-    if (!same(p.furniture, l.furniture)) parts.push('Moved furniture');
+    const fur = diff(p.furniture, l.furniture);
+    const fname = (t: string) => assetFor(t)?.name ?? t.replace(/_/g, ' ');
+    const list = (xs: { type: string }[]) => (xs.length <= 2 ? xs.map((x) => fname(x.type)).join(' and ') : plural(xs.length, 'item'));
+    if (fur.added.length) parts.push(`Added ${list(fur.added)}`);
+    if (fur.removed.length) parts.push(`Removed ${list(fur.removed)}`);
+    if (fur.changed.length) parts.push(`Moved ${list(fur.changed)}`);
+    const fx = diff(p.mepNodes.filter((n) => n.model), l.mepNodes.filter((n) => n.model));
+    if (fx.added.length) parts.push(`Added ${fx.added.map((n) => n.label ?? n.model).slice(0, 2).join(' and ')}`);
     if (p.name !== l.name) parts.push(`Renamed level to ${l.name}`);
     if (p.floorToFloorHeight !== l.floorToFloorHeight || p.elevation !== l.elevation || p.slabThickness !== l.slabThickness) parts.push('Changed level heights');
     out.push(...parts.map((x) => x + at));

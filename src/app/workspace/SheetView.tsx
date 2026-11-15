@@ -1,6 +1,7 @@
 import type { RefObject } from 'react';
 import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, SketchStroke } from '../../model/types';
 import { PlanCanvas } from '../drawing/plan/PlanCanvas';
+import type { AssetDef } from '../drawing/assets/catalog';
 import { ModelView } from '../drawing/three/ModelView';
 import { ElevationSheet } from '../drawing/elevation/ElevationSheet';
 import { ElectricalSheet } from '../sheets/ElectricalSheet';
@@ -27,6 +28,7 @@ interface Props {
   traceImageUrl: string | null;
   traceOpacity: number;
   svgRef: RefObject<SVGSVGElement | null>;
+  placing?: { def: AssetDef; rotation: number } | null;
 }
 
 /**
@@ -73,6 +75,7 @@ export function SheetView(p: Props) {
           traceImageUrl={p.traceImageUrl}
           traceOpacity={p.traceOpacity}
           svgRef={p.svgRef}
+          placing={p.placing}
         />
       );
   }

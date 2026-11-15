@@ -1,4 +1,6 @@
 import { useState, type ReactNode } from 'react';
+import { assetFor, CATEGORIES } from '../drawing/assets/catalog';
+
 import { ChevronDown, FlipHorizontal, Trash2 } from 'lucide-react';
 import {
   getDesignConfig,
@@ -37,6 +39,7 @@ interface Props {
 }
 
 const title = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+const CATEGORY_NAME = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.name])) as Record<string, string>;
 const opts = <T extends string>(xs: readonly T[]) => xs.map((x) => ({ value: x, label: title(x) }));
 
 const ROOM_CATEGORIES: RoomCategory[] = ['living', 'kitchen', 'dining', 'bedroom', 'bathroom', 'hallway', 'garage', 'office', 'utility', 'porch', 'balcony'];
@@ -295,7 +298,7 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete }: 
       const set = (fn: (x: NonNullable<typeof f>) => void) => edit((m) => fn(lvl(m).furniture.find((x) => x.id === f.id)!));
       return (
         <>
-          {header('Furniture', title(f.type))}
+          {header(assetFor(f.type) ? CATEGORY_NAME[assetFor(f.type)!.category] : 'Furniture', assetFor(f.type)?.name ?? title(f.type))}
           <Section title="Placement">
             <Row label="Rotation">
               <Num value={f.rotation} unit="°" step={15} onChange={(v) => set((x) => (x.rotation = ((v % 360) + 360) % 360))} />

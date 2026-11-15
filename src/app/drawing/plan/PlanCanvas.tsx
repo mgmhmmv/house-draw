@@ -15,6 +15,9 @@ import { uid } from '../../../engine/geometry';
 import { cx } from '../../ui';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
+import { assetFor, type AssetDef } from '../assets/catalog';
+import { assetPlan, isOverhead, mepAsset, WALL_SIDE_ROT } from '../assets/render';
+import { PlanPrims } from '../assets/PlanSymbol';
 import { buildPlanGeometry, dimensionChains, fmtMM, nearestWall, openingSymbol, roomTag, wallFrame, along, type Vec } from './kernel';
 
 type Mode = 'plan' | 'structure' | 'mep';
@@ -33,6 +36,8 @@ interface Props {
   traceImageUrl: string | null;
   traceOpacity: number;
   svgRef: RefObject<SVGSVGElement | null>;
+  /** A library item being placed: each click on the plan places one. */
+  placing?: { def: AssetDef; rotation: number } | null;
 }
 
 const NS = 'non-scaling-stroke' as const;
@@ -179,6 +184,68 @@ export function PlanCanvas(p: Props) {
     return next;
   };
 
+  /* ── Placing library items ───────────────────────────────────────── */
+
+  type Placement = { kind: 'item'; pos: Vec; rot: number } | { kind: 'opening'; wall: (typeof level.walls)[number]; s: number; f: ReturnType<typeof wallFrame> };
+  const placementAt = (raw: Vec): Placement | null => {
+    const pl = p.placing;
+    if (!pl) return null;
+    const def = pl.def;
+    if (def.opening) {
+      const hit = nearestWall(level, raw, 0.8);
+      if (!hit) return null;
+      const f = wallFrame(hit.wall);
+      const half = def.w / 2;
+      return { kind: 'opening', wall: hit.wall, f, s: Math.min(f.length - half, Math.max(half, snap(hit.t * f.length))) };
+    }
+    if (def.mount === 'wall') {
+      // Back against the nearest wall face, on the side the pointer is on.
+      const hit = nearestWall(level, raw, 1.2);
+      if (hit) {
+        const f = wallFrame(hit.wall);
+        const s0 = Math.min(f.length - def.w / 2, Math.max(def.w / 2, snap(hit.t * f.length)));
+        const rel = { x: raw.x - hit.wall.start.x, y: raw.y - hit.wall.start.y };
+        const side = rel.x * f.n.x + rel.y * f.n.y >= 0 ? 1 : -1;
+        const pos = along(f, s0, side * (hit.wall.thickness / 2 + def.d / 2 + 0.005));
+        const nx = f.n.x * side;
+        const ny = f.n.y * side;
+        return { kind: 'item', pos, rot: Math.round((Math.atan2(-nx, ny) * 180) / Math.PI + 360) % 360 };
+      }
+    }
+    return { kind: 'item', pos: snapPt(raw), rot: pl.rotation };
+  };
+
+  const place = (raw: Vec) => {
+    const pl = p.placing;
+    const at = placementAt(raw);
+    if (!pl || !at) return;
+    const def = pl.def;
+    if (at.kind === 'opening' && def.opening) {
+      const o = def.opening;
+      edit((lvl) =>
+        lvl.openings.push({
+          id: uid('op'),
+          wallId: at.wall.id,
+          kind: o.kind,
+          style: o.style,
+          offset: at.s / at.f.length,
+          width: def.w,
+          height: o.height,
+          sillHeight: o.sill,
+          swingDirection: 1,
+          label: `${o.kind === 'door' ? 'D' : 'W'}${lvl.openings.filter((x) => x.kind === o.kind).length + 1}`,
+        })
+      );
+    } else if (at.kind === 'item' && def.mep) {
+      const m = def.mep;
+      edit((lvl) =>
+        lvl.mepNodes.push({ id: uid('mep'), kind: m.kind, system: m.system, position: at.pos, wattage: m.wattage, model: def.id, rotation: at.rot, label: def.name })
+      );
+    } else if (at.kind === 'item') {
+      edit((lvl) => lvl.furniture.push({ id: uid('f'), type: def.id, position: at.pos, rotation: at.rot, width: def.w, depth: def.d }));
+    }
+  };
+
   /* ── Pointer handling ────────────────────────────────────────────── */
 
   const onPointerDown = (e: RPointerEvent<SVGSVGElement>) => {
@@ -188,6 +255,11 @@ export function PlanCanvas(p: Props) {
     const hitKind = target?.dataset.kind as SelectableElementKind | undefined;
     const hitId = target?.dataset.id;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
+
+    if (p.placing) {
+      place(raw);
+      return;
+    }
 
     switch (p.tool) {
       case 'select': {
@@ -350,7 +422,8 @@ export function PlanCanvas(p: Props) {
       : null;
 
   const wallsFaded = mode === 'mep' ? 0.35 : 1;
-  const cursor = p.tool === 'select' ? (drag.current?.kind === 'pan' ? 'grabbing' : 'default') : 'crosshair';
+  const cursor = p.placing ? 'copy' : p.tool === 'select' ? (drag.current?.kind === 'pan' ? 'grabbing' : 'default') : 'crosshair';
+  const ghost = p.placing && hover ? placementAt(hover) : null;
 
   return (
     <div ref={surfaceRef} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
@@ -409,10 +482,12 @@ export function PlanCanvas(p: Props) {
 
           {/* Furniture & fixtures */}
           {mode === 'plan' && (
-            <g stroke={INK_3} strokeWidth={WEIGHT.light} fill="none" vectorEffect={NS}>
+            <g>
               {level.furniture.map((f) => (
                 <Furniture key={f.id} f={f} selected={sel === f.id} />
               ))}
+              {/* Overhead equipment (AC units, fans, chosen light fittings), dashed as seen from below. */}
+              {level.mepNodes.map((n) => (n.model || n.kind === 'ac_split' || n.kind === 'ceiling_fan' ? <Fixture key={n.id} n={n} selected={sel === n.id} /> : null))}
             </g>
           )}
 
@@ -543,6 +618,26 @@ export function PlanCanvas(p: Props) {
           {/* Selection */}
           <Selection model={model} level={level} geoFrames={geo.frames} selectedId={sel} k={k} />
 
+          {/* Library item following the pointer */}
+          {p.placing && ghost && ghost.kind === 'item' && (
+            <g transform={`translate(${ghost.pos.x} ${ghost.pos.y}) rotate(${ghost.rot})`} opacity={0.85} style={{ pointerEvents: 'none' }}>
+              <PlanPrims prims={assetPlan(p.placing.def, p.placing.def.w, p.placing.def.d)} ink={ACCENT} fill="rgba(47,85,212,0.08)" width={1.2} />
+            </g>
+          )}
+          {p.placing && ghost && ghost.kind === 'opening' && (
+            <line
+              {...(() => {
+                const a = along(ghost.f, ghost.s - p.placing!.def.w / 2);
+                const b = along(ghost.f, ghost.s + p.placing!.def.w / 2);
+                return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+              })()}
+              stroke={ACCENT}
+              strokeWidth={ghost.wall.thickness}
+              strokeOpacity={0.45}
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
+
           {/* Sketch strokes */}
           <g fill="none" strokeLinecap="round" strokeLinejoin="round">
             {[...p.sketchStrokes, ...(sketchDrag ? [{ id: 'live', kind: 'wall' as const, points: sketchDrag.points }] : [])].map((s) => (
@@ -616,7 +711,13 @@ export function PlanCanvas(p: Props) {
           ))}
         </div>
       )}
-      <ToolHint tool={p.tool} wallStarted={!!wallStart} />
+      {p.placing ? (
+        <div className="pointer-events-none absolute left-1/2 top-3 hidden -translate-x-1/2 whitespace-nowrap rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
+          Placing {p.placing.def.name} · click to place · R to turn · Esc to stop
+        </div>
+      ) : (
+        <ToolHint tool={p.tool} wallStarted={!!wallStart} />
+      )}
       <div className="absolute bottom-[146px] right-3 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface/95 shadow-float backdrop-blur lg:bottom-4">
         <ZoomBtn label="Zoom in" onClick={() => vp.zoomAt(1.25)}>
           <Plus className="h-4 w-4" />
@@ -879,105 +980,31 @@ function Stair({ s }: { s: FloorLevel['stairs'][number] }) {
 }
 
 function Furniture({ f, selected }: { f: FurnitureItem; selected: boolean }) {
+  const def = assetFor(f.type);
   const w = f.width;
   const d = f.depth;
-  const x = -w / 2;
-  const y = -d / 2;
-  let body: React.ReactNode;
-  switch (f.type) {
-    case 'bed_double':
-    case 'bed_single':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} rx={0.05} />
-          {f.type === 'bed_double' ? (
-            <>
-              <rect x={x + 0.1} y={y + 0.08} width={w / 2 - 0.15} height={0.32} rx={0.06} />
-              <rect x={0.05} y={y + 0.08} width={w / 2 - 0.15} height={0.32} rx={0.06} />
-            </>
-          ) : (
-            <rect x={x + 0.1} y={y + 0.08} width={w - 0.2} height={0.32} rx={0.06} />
-          )}
-          <line x1={x} y1={y + d * 0.38} x2={x + w} y2={y + d * 0.38} />
-        </>
-      );
-      break;
-    case 'sofa':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} rx={0.08} />
-          <line x1={x + 0.15} y1={y + 0.2} x2={x + w - 0.15} y2={y + 0.2} />
-          <line x1={x + 0.15} y1={y + 0.2} x2={x + 0.15} y2={y + d} />
-          <line x1={x + w - 0.15} y1={y + 0.2} x2={x + w - 0.15} y2={y + d} />
-        </>
-      );
-      break;
-    case 'dining_table':
-      body = (
-        <>
-          <rect x={x + 0.25} y={y + 0.25} width={w - 0.5} height={d - 0.5} rx={0.04} />
-          {[0.3, 0.7].map((t) => (
-            <g key={t}>
-              <rect x={x + (w - 0.5) * t + 0.05} y={y} width={0.4} height={0.2} rx={0.04} />
-              <rect x={x + (w - 0.5) * t + 0.05} y={y + d - 0.2} width={0.4} height={0.2} rx={0.04} />
-            </g>
-          ))}
-        </>
-      );
-      break;
-    case 'wc':
-      body = (
-        <>
-          <rect x={x + w * 0.15} y={y} width={w * 0.7} height={d * 0.28} rx={0.03} />
-          <ellipse cx={0} cy={y + d * 0.62} rx={w * 0.32} ry={d * 0.34} />
-        </>
-      );
-      break;
-    case 'sink':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} rx={0.04} />
-          <ellipse cx={0} cy={0.02} rx={w * 0.32} ry={d * 0.3} />
-        </>
-      );
-      break;
-    case 'shower':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} />
-          <line x1={x} y1={y} x2={x + w} y2={y + d} />
-          <line x1={x + w} y1={y} x2={x} y2={y + d} />
-          <circle cx={0} cy={0} r={0.05} />
-        </>
-      );
-      break;
-    case 'car':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} rx={0.35} strokeDasharray="6 4" />
-        </>
-      );
-      break;
-    case 'kitchen_counter':
-      body = (
-        <>
-          <rect x={x} y={y} width={w} height={d} />
-          <rect x={-0.3} y={y + 0.08} width={0.45} height={d - 0.16} rx={0.04} />
-          {[0.25, 0.4].map((t) => (
-            <circle key={t} cx={x + w * (0.75 + (t - 0.25))} cy={0} r={0.09} />
-          ))}
-        </>
-      );
-      break;
-    default:
-      body = <rect x={x} y={y} width={w} height={d} rx={0.04} />;
-  }
+  // Library items draw their own top view; anything unknown is a plain outline.
+  const prims = useMemo(
+    () => (def ? assetPlan(def, w, d, f.height ?? def.h, isOverhead(def, f.elevation ?? def.elevation)) : [{ k: 'rect' as const, x: -w / 2, y: -d / 2, w, h: d, rx: 0.04, style: 'fill' as const }]),
+    [def, w, d, f.height, f.elevation]
+  );
   return (
-    <g data-kind="furniture" data-id={f.id} transform={`translate(${f.position.x} ${f.position.y}) rotate(${f.rotation})`} stroke={selected ? ACCENT : undefined}>
-      <rect x={x} y={y} width={w} height={d} fill="transparent" stroke="none" />
-      <g vectorEffect={NS} style={{ vectorEffect: 'non-scaling-stroke' }}>
-        {body}
-      </g>
+    <g data-kind="furniture" data-id={f.id} transform={`translate(${f.position.x} ${f.position.y}) rotate(${f.rotation})`}>
+      <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="transparent" stroke="none" />
+      <PlanPrims prims={prims} ink={selected ? ACCENT : INK_2} fill={selected ? '#F3F6FE' : '#FFFFFF'} width={WEIGHT.light + 0.15} />
+    </g>
+  );
+}
+
+function Fixture({ n, selected }: { n: MEPNode; selected: boolean }) {
+  const def = mepAsset(n);
+  const prims = useMemo(() => (def ? assetPlan(def, def.w, def.d, def.h, true) : []), [def]);
+  if (!def) return null;
+  const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
+  return (
+    <g data-kind="mep_node" data-id={n.id} transform={`translate(${n.position.x} ${n.position.y}) rotate(${rot})`}>
+      <rect x={-def.w / 2} y={-def.d / 2} width={def.w} height={def.d} fill="transparent" stroke="none" />
+      <PlanPrims prims={prims} ink={selected ? ACCENT : INK_3} width={WEIGHT.light} />
     </g>
   );
 }
