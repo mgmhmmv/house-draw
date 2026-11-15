@@ -1,6 +1,6 @@
 import type { RefObject } from 'react';
 import type { ActiveSheetId, BuildingProject, CADTool, SelectableElementKind, SketchStroke } from '../../model/types';
-import { Canvas2DCAD } from '../../components/Canvas2DCAD';
+import { PlanCanvas } from '../drawing/plan/PlanCanvas';
 import { Viewport3D } from '../../components/Viewport3D';
 import { ElevationsAndSectionsView } from '../../components/ElevationsAndSectionsView';
 import { SchematicsView } from '../../components/SchematicsView';
@@ -46,20 +46,19 @@ export function SheetView(p: Props) {
       break;
     default:
       view = (
-        <Canvas2DCAD
-          project={p.model}
-          activeLevelIndex={p.levelIndex}
-          activeSheet={p.sheet}
-          activeTool={p.tool}
+        <PlanCanvas
+          model={p.model}
+          sheet={p.sheet}
+          levelIndex={p.levelIndex}
+          tool={p.tool}
           selectedId={p.selectedId}
           onSelect={p.onSelect}
-          onUpdateProject={p.onCommit}
+          onCommit={p.onCommit}
           sketchStrokes={p.sketchStrokes}
           onAddSketchStroke={p.onAddSketchStroke}
           traceImageUrl={p.traceImageUrl}
           traceOpacity={p.traceOpacity}
           svgRef={p.svgRef}
-          isLight
         />
       );
   }

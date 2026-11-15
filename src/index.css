@@ -111,6 +111,11 @@
   }
 }
 
+/* Drawing strokes keep their weight at every zoom (patterns in <defs> are excluded). */
+.as-plan > g * {
+  vector-effect: non-scaling-stroke;
+}
+
 @keyframes as-fade-up {
   from {
     opacity: 0;
