@@ -16,13 +16,17 @@ import { cx } from '../../ui';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR, PAPER, ROOM_TINT, TEXT, WEIGHT } from '../style';
 import { useViewport } from '../useViewport';
 import { usePrintMode } from '../printMode';
+import { chooseScale, composeSheet, DRAWING_AREA, PAPER as SHEET, type SheetInfo } from '../../../export/sheet';
+import { RoofPlan, roofPlanBounds, SewagePlan, sewerLayout } from './sheetPlans';
 import { assetFor, type AssetDef } from '../assets/catalog';
 import { assetPlan, isOverhead, mepAsset, mepSize, WALL_SIDE_ROT } from '../assets/render';
 import { PlanPrims } from '../assets/PlanSymbol';
 import { buildPlanGeometry, dimensionChains, fmtMM, nearestWall, openingSymbol, roomTag, wallFrame, along, type Vec } from './kernel';
 
-type Mode = 'plan' | 'structure' | 'mep';
-type MepFilter = 'all' | 'electrical' | 'plumbing' | 'hvac';
+type Mode = 'plan' | 'structure' | 'mep' | 'roof' | 'sewage';
+type MepGroup = 'electrical' | 'plumbing' | 'hvac';
+/** The water & electrical plan shows both, or one. */
+type MepFilter = 'all' | 'electrical' | 'water';
 
 interface Props {
   model: BuildingProject;
@@ -41,6 +45,39 @@ interface Props {
   placing?: { def: AssetDef; rotation: number } | null;
   /** Called after an item is placed, with what was placed (so it can be selected). */
   onPlaced?: (id: string, kind: SelectableElementKind) => void;
+  /** Title-block details: when given, the plan can be shown on paper (A3, to scale). */
+  paperInfo?: SheetInfo | null;
+}
+
+const EDITABLE = ['A-101', 'S-101', 'M-101'];
+const PAPER_KEY = 'as_paper';
+const readPaperPrefs = (): Record<string, boolean> => {
+  try {
+    return JSON.parse(localStorage.getItem(PAPER_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * A plan sheet. Drawn freely for editing, or on paper: the A3 sheet with its title block and
+ * the plan at a true scale, exactly as it prints. Roof and sewage plans are drawings only.
+ */
+export function PlanCanvas(p: Props) {
+  const [prefs, setPrefs] = useState(readPaperPrefs);
+  const paperOn = prefs[p.sheet] ?? !EDITABLE.includes(p.sheet);
+  const setPaperOn = (v: boolean) => {
+    const next = { ...prefs, [p.sheet]: v };
+    setPrefs(next);
+    try {
+      localStorage.setItem(PAPER_KEY, JSON.stringify(next));
+    } catch {
+      /* private mode */
+    }
+  };
+  const printing = usePrintMode();
+  const paper = (paperOn || printing) && p.paperInfo ? p.paperInfo : null;
+  return <PlanSurface key={paper ? `paper-${p.sheet}` : 'free'} {...p} paper={paper} canPaper={!!p.paperInfo} paperOn={paperOn} setPaperOn={setPaperOn} />;
 }
 
 const NS = 'non-scaling-stroke' as const;
@@ -66,13 +103,19 @@ type Drag =
   | { kind: 'room_rect'; start: Vec }
   | { kind: 'sketch'; points: Vec[] };
 
-export function PlanCanvas(p: Props) {
-  const mode: Mode = p.sheet === 'S-101' ? 'structure' : p.sheet === 'M-101' ? 'mep' : 'plan';
+const SHEET_BOUNDS = { minX: 0, minY: 0, maxX: SHEET.w, maxY: SHEET.h };
+
+function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; paperOn: boolean; setPaperOn: (v: boolean) => void }) {
+  const mode: Mode = p.sheet === 'S-101' ? 'structure' : p.sheet === 'M-101' ? 'mep' : p.sheet === 'R-101' ? 'roof' : p.sheet === 'D-101' ? 'sewage' : 'plan';
+  const paper = p.paper;
+  const readOnly = !!paper || mode === 'roof' || mode === 'sewage';
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<BuildingProject | null>(null);
   const model = draft ?? p.model;
-  const level: FloorLevel = model.levels[p.levelIndex] ?? model.levels[0];
-  const below: FloorLevel | null = p.levelIndex > 0 ? model.levels[p.levelIndex - 1] : null;
+  const levelIndex = mode === 'roof' ? model.levels.length - 1 : p.levelIndex;
+  const level: FloorLevel = model.levels[levelIndex] ?? model.levels[0];
+  const below: FloorLevel | null = levelIndex > 0 && mode !== 'roof' && mode !== 'sewage' && !paper ? model.levels[levelIndex - 1] : null;
+  const sewer = useMemo(() => (mode === 'sewage' ? sewerLayout(model, level) : null), [mode, model, level]);
 
   const geo = useMemo(() => buildPlanGeometry(level), [level]);
   const ghostGeo = useMemo(() => (below ? buildPlanGeometry(below) : null), [below]);
@@ -84,17 +127,34 @@ export function PlanCanvas(p: Props) {
   );
 
   const fitBounds = useMemo(() => {
+    if (mode === 'roof') return roofPlanBounds(model);
+    if (sewer) return sewer.bounds;
     const b = geo.bounds;
     const m = mode === 'plan' ? 2.6 : 1.8;
     return { minX: b.minX - m, minY: b.minY - m, maxX: b.maxX + m, maxY: b.maxY + m };
     // Fit to the first level's footprint so switching levels keeps the view still.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.levelIndex === 0 ? geo.bounds : null, mode]);
-  const vp = useViewport(surfaceRef, fitBounds);
-  const { k, tx, ty } = vp.view;
-  // Text and symbol sizes: real paper sizes when printing, kept readable on screen otherwise.
+  }, [p.levelIndex === 0 ? geo.bounds : null, mode, mode === 'roof' ? model : null, sewer]);
+
+  // On paper: the plan at a true scale on the A3 sheet.
+  const layout = useMemo(() => {
+    if (!paper) return null;
+    const e = fitBounds;
+    // 1:100 like the elevations and sections (one scale through the set), smaller only if it must be.
+    const scale = Math.max(100, chooseScale(e.maxX - e.minX, e.maxY - e.minY, DRAWING_AREA.w, DRAWING_AREA.h));
+    const m = 1000 / scale;
+    const x0 = DRAWING_AREA.x + (DRAWING_AREA.w - (e.maxX - e.minX) * m) / 2 - e.minX * m;
+    const y0 = DRAWING_AREA.y + (DRAWING_AREA.h - (e.maxY - e.minY) * m) / 2 - e.minY * m;
+    const frame = composeSheet(null, paper, { scale }).svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+    return { m, x0, y0, frame };
+  }, [paper, fitBounds]);
+  const vp = useViewport(surfaceRef, layout ? SHEET_BOUNDS : fitBounds, layout ? 24 : 72, layout ? { kMin: 0.25, kMax: 80 } : {});
+  const { tx, ty } = vp.view;
+  // Screen pixels per metre of the plan (on paper, through the sheet's scale).
+  const k = layout ? vp.view.k * layout.m : vp.view.k;
+  // Text and symbol sizes: real paper sizes when printing or on paper, kept readable on screen otherwise.
   const print = usePrintMode();
-  const kText = print ? 1e6 : k;
+  const kText = print || layout ? 1e6 : k;
 
   const [hover, setHover] = useState<Vec | null>(null);
   const [wallStart, setWallStart] = useState<Vec | null>(null);
@@ -280,6 +340,12 @@ export function PlanCanvas(p: Props) {
 
   const onPointerDown = (e: RPointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
+    if (readOnly) {
+      // Drawings only: a drag moves the sheet.
+      drag.current = { kind: 'pan', x: e.clientX, y: e.clientY };
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      return;
+    }
     const raw = vp.toWorld(e.clientX, e.clientY);
     const target = (e.target as Element).closest('[data-kind]') as SVGElement | null;
     const hitKind = target?.dataset.kind as SelectableElementKind | undefined;
@@ -375,6 +441,7 @@ export function PlanCanvas(p: Props) {
       drag.current = { ...d, x: e.clientX, y: e.clientY };
       return;
     }
+    if (readOnly) return;
     if (d?.kind === 'rotate') {
       // 0° = handle straight up (north); clockwise like SVG rotate().
       const ang = snapAngle((Math.atan2(raw.x - d.center.x, -(raw.y - d.center.y)) * 180) / Math.PI, e.shiftKey);
@@ -457,7 +524,7 @@ export function PlanCanvas(p: Props) {
   /* ── Derived drawing bits ────────────────────────────────────────── */
 
   const sel = p.selectedId;
-  const showText = (size: number) => size * k >= 7;
+  const showText = (size: number) => !!(print || layout) || size * k >= 7;
   const roomDrag = drag.current?.kind === 'room_rect' ? drag.current : null;
   const sketchDrag = drag.current?.kind === 'sketch' ? drag.current : null;
   const openingPreview =
@@ -482,34 +549,15 @@ export function PlanCanvas(p: Props) {
         })()
       : null;
 
-  const wallsFaded = mode === 'mep' ? 0.35 : 1;
-  const cursor = p.placing ? 'copy' : p.tool === 'select' ? (drag.current?.kind === 'pan' ? 'grabbing' : 'default') : 'crosshair';
+  const wallsFaded = mode === 'mep' || mode === 'sewage' ? 0.35 : 1;
+  const cursor = readOnly ? 'grab' : p.placing ? 'copy' : p.tool === 'select' ? (drag.current?.kind === 'pan' ? 'grabbing' : 'default') : 'crosshair';
   const ghost = p.placing && hover ? placementAt(hover) : null;
 
-  return (
-    <div ref={surfaceRef} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
-      <svg
-        ref={p.svgRef as RefObject<SVGSVGElement>}
-        className="as-plan absolute inset-0 h-full w-full"
-        style={{ cursor, fontFamily: 'Inter, system-ui, sans-serif' }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={() => setHover(null)}
-        onDoubleClick={onDoubleClick}
-      >
-        <defs>
-          <pattern id="as-dots" width={k} height={k} patternUnits="userSpaceOnUse" patternTransform={`translate(${tx} ${ty})`}>
-            <circle cx={0.5} cy={0.5} r={0.7} fill={LINE} />
-          </pattern>
-          <pattern id="as-hatch" width={0.12} height={0.12} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1={0} y1={0} x2={0} y2={0.12} stroke={INK_3} strokeWidth={0.012} />
-          </pattern>
-        </defs>
-        {k >= 18 && <rect width="100%" height="100%" fill="url(#as-dots)" opacity={0.7} />}
-
-        <g transform={`translate(${tx} ${ty}) scale(${k})`}>
-          {p.traceImageUrl && (
+  const world = mode === 'roof' ? (
+    <RoofPlan model={model} k={kText} />
+  ) : (
+    <>
+          {p.traceImageUrl && !layout && (
             <image
               href={p.traceImageUrl}
               x={geo.bounds.minX}
@@ -539,7 +587,7 @@ export function PlanCanvas(p: Props) {
           </g>
 
           {/* Structural grid */}
-          {mode === 'structure' && <Grid model={model} bounds={geo.bounds} k={k} />}
+          {mode === 'structure' && <Grid model={model} bounds={geo.bounds} k={print || layout ? 1e6 : k} />}
 
           {/* Furniture & fixtures */}
           {mode === 'plan' && (
@@ -551,7 +599,7 @@ export function PlanCanvas(p: Props) {
               {level.mepNodes.map((n) => (n.model || n.kind === 'ac_split' || n.kind === 'ceiling_fan' ? <Fixture key={n.id} n={n} selected={sel === n.id} /> : null))}
             </g>
           )}
-          {mode === 'plan' && p.tool === 'select' && !p.placing && sel && <RotateHandle level={level} id={sel} k={k} rotating={drag.current?.kind === 'rotate' ? (drag.current as { angle: number }).angle : null} />}
+          {mode === 'plan' && !readOnly && p.tool === 'select' && !p.placing && sel && <RotateHandle level={level} id={sel} k={k} rotating={drag.current?.kind === 'rotate' ? (drag.current as { angle: number }).angle : null} />}
 
           {/* Stairs */}
           <g opacity={wallsFaded}>
@@ -675,10 +723,10 @@ export function PlanCanvas(p: Props) {
           ))}
 
           {/* Section markers */}
-          {mode === 'plan' && model.sections.map((s) => <SectionMark key={s.id} s={s} k={k} />)}
+          {mode === 'plan' && model.sections.map((s) => <SectionMark key={s.id} s={s} k={print || layout ? 1e6 : k} />)}
 
           {/* Selection */}
-          <Selection model={model} level={level} geoFrames={geo.frames} selectedId={sel} k={k} />
+          {!readOnly && <Selection model={model} level={level} geoFrames={geo.frames} selectedId={sel} k={k} />}
 
           {/* Library item following the pointer */}
           {p.placing && ghost && ghost.kind === 'item' && (
@@ -702,7 +750,7 @@ export function PlanCanvas(p: Props) {
 
           {/* Sketch strokes */}
           <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-            {[...p.sketchStrokes, ...(sketchDrag ? [{ id: 'live', kind: 'wall' as const, points: sketchDrag.points }] : [])].map((s) => (
+            {[...(layout ? [] : p.sketchStrokes), ...(sketchDrag ? [{ id: 'live', kind: 'wall' as const, points: sketchDrag.points }] : [])].map((s) => (
               <polyline key={s.id} points={pts(s.points)} stroke={s.kind === 'door' ? MEP_COLOR.power : s.kind === 'window' ? MEP_COLOR.hvac : ACCENT} strokeWidth={2.2} vectorEffect={NS} opacity={0.85} />
             ))}
           </g>
@@ -756,24 +804,76 @@ export function PlanCanvas(p: Props) {
           {(p.tool === 'wall' || p.tool === 'measure' || p.tool === 'room_rect') && hover && (
             <circle cx={hover.x} cy={hover.y} r={3.5 / k} fill="none" stroke={ACCENT} strokeWidth={1.5} vectorEffect={NS} pointerEvents="none" />
           )}
-        </g>
+      {sewer && <SewagePlan layout={sewer} k={kText} />}
+    </>
+  );
+
+  return (
+    <div ref={surfaceRef} className="relative h-full w-full select-none overflow-hidden" style={{ background: PAPER, touchAction: 'none' }}>
+      <svg
+        ref={p.svgRef as RefObject<SVGSVGElement>}
+        className="as-plan absolute inset-0 h-full w-full"
+        data-paper={layout && paper ? paper.drawingNumber : undefined}
+        style={{ cursor, fontFamily: 'Inter, system-ui, sans-serif', background: layout ? '#E9E8E4' : undefined }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setHover(null)}
+        onDoubleClick={onDoubleClick}
+      >
+        <defs>
+          <pattern id="as-dots" width={k} height={k} patternUnits="userSpaceOnUse" patternTransform={`translate(${tx} ${ty})`}>
+            <circle cx={0.5} cy={0.5} r={0.7} fill={LINE} />
+          </pattern>
+          <pattern id="as-hatch" width={0.12} height={0.12} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={0.12} stroke={INK_3} strokeWidth={0.012} />
+          </pattern>
+        </defs>
+        {k >= 18 && !layout && <rect width="100%" height="100%" fill="url(#as-dots)" opacity={0.7} />}
+
+        {layout ? (
+          <g transform={`translate(${tx} ${ty}) scale(${vp.view.k})`}>
+            <rect x={2} y={3} width={SHEET.w} height={SHEET.h} fill="rgba(0,0,0,0.08)" className="as-scale" />
+            {/* One printed sheet: title block and the plan at true scale. */}
+            <g data-paper-page="">
+              <g className="as-scale" fontFamily="Inter, Helvetica, Arial, sans-serif" dangerouslySetInnerHTML={{ __html: layout.frame }} />
+              <g className="as-w" transform={`translate(${layout.x0} ${layout.y0}) scale(${layout.m})`}>
+                {world}
+              </g>
+            </g>
+          </g>
+        ) : (
+          <g transform={`translate(${tx} ${ty}) scale(${k})`}>{world}</g>
+        )}
       </svg>
 
       {/* Overlays */}
+      {p.canPaper && (
+        <div className="absolute right-3 top-3 z-10 flex gap-1 rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur">
+          {[
+            { on: true, label: 'Paper' },
+            { on: false, label: 'Drawing' },
+          ].map((b) => (
+            <button key={b.label} onClick={() => p.setPaperOn(b.on)} className={cx('h-7 rounded-[8px] px-3 text-[13px] font-medium', p.paperOn === b.on ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken')}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
       {mode === 'mep' && (
         <div className="absolute left-3 top-3 flex gap-1 rounded-[12px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur">
-          {(['all', 'electrical', 'plumbing', 'hvac'] as MepFilter[]).map((f) => (
+          {(['all', 'electrical', 'water'] as MepFilter[]).map((f) => (
             <button
               key={f}
               onClick={() => setMepFilter(f)}
               className={cx('h-7 rounded-[8px] px-3 text-[13px] font-medium capitalize', mepFilter === f ? 'bg-ink text-page' : 'text-ink-2 hover:bg-sunken')}
             >
-              {f === 'hvac' ? 'HVAC' : f}
+              {f === 'all' ? 'Water & electrical' : f}
             </button>
           ))}
         </div>
       )}
-      {p.placing ? (
+      {readOnly ? null : p.placing ? (
         <div className="pointer-events-none absolute left-1/2 top-3 hidden -translate-x-1/2 whitespace-nowrap rounded-full bg-ink/85 px-3.5 py-1.5 text-2xs font-medium text-page backdrop-blur lg:block">
           Placing {p.placing.def.name} · click to place · R to turn · Esc to cancel
         </div>
@@ -791,7 +891,7 @@ export function PlanCanvas(p: Props) {
           <Maximize2 className="h-4 w-4" />
         </ZoomBtn>
       </div>
-      <ScaleAndNorth k={k} />
+      {!layout && <ScaleAndNorth k={k} />}
     </div>
   );
 }
@@ -1103,7 +1203,7 @@ function Fixture({ n, selected }: { n: MEPNode; selected: boolean }) {
   );
 }
 
-const MEP_GLYPH: Partial<Record<MEPNode['kind'], { letter: string; color: string; group: MepFilter }>> = {
+const MEP_GLYPH: Partial<Record<MEPNode['kind'], { letter: string; color: string; group: MepGroup }>> = {
   mdb: { letter: 'DB', color: MEP_COLOR.power, group: 'electrical' },
   sub_db: { letter: 'SDB', color: MEP_COLOR.power, group: 'electrical' },
   utility_meter: { letter: 'M', color: MEP_COLOR.power, group: 'electrical' },
@@ -1125,7 +1225,7 @@ const MEP_GLYPH: Partial<Record<MEPNode['kind'], { letter: string; color: string
   solar_bess: { letter: 'BAT', color: MEP_COLOR.solar, group: 'electrical' },
 };
 
-const CIRCUIT_COLOR: Record<string, { color: string; group: MepFilter; dash?: string }> = {
+const CIRCUIT_COLOR: Record<string, { color: string; group: MepGroup; dash?: string }> = {
   electrical_grid: { color: MEP_COLOR.power, group: 'electrical' },
   electrical_submain: { color: MEP_COLOR.power, group: 'electrical' },
   electrical_light: { color: MEP_COLOR.lighting, group: 'electrical', dash: '5 3' },
@@ -1165,20 +1265,22 @@ function circuitPath(system: string, p: Point2D[]): string {
 }
 
 function Mep({ level, filter, selectedId, k }: { level: FloorLevel; filter: MepFilter; selectedId: string | null; k: number }) {
-  const show = (g: MepFilter) => filter === 'all' || filter === g;
+  // Water & electrical plan: cooling units are electrical loads; drainage has its own sheet.
+  const show = (g: MepGroup) => filter === 'all' || filter === (g === 'plumbing' ? 'water' : 'electrical');
+  const SEWER = ['plumbing_drain', 'hvac_refrigerant', 'hvac_condensate'];
   const r = Math.max(0.14, 9 / k);
   return (
     <g>
       <g fill="none" strokeLinejoin="round" strokeLinecap="round" pointerEvents="none">
         {level.mepCircuits.map((c) => {
-          const s = CIRCUIT_COLOR[c.system] ?? { color: INK_3, group: 'electrical' as MepFilter };
-          if (!show(s.group) || c.points.length < 2 || c.system === 'electrical_grid' || c.system === 'electrical_pv') return null;
+          const s = CIRCUIT_COLOR[c.system] ?? { color: INK_3, group: 'electrical' as MepGroup };
+          if (!show(s.group) || SEWER.includes(c.system) || c.points.length < 2 || c.system === 'electrical_grid' || c.system === 'electrical_pv') return null;
           return <path key={c.id} d={circuitPath(c.system, c.points)} stroke={s.color} strokeWidth={1.3} strokeDasharray={s.dash} vectorEffect={NS} opacity={0.85} />;
         })}
       </g>
       {level.mepNodes.map((n) => {
-        const g = MEP_GLYPH[n.kind] ?? { letter: '•', color: INK_2, group: (n.system === 'plumbing' ? 'plumbing' : 'electrical') as MepFilter };
-        if (!show(g.group)) return null;
+        const g = MEP_GLYPH[n.kind] ?? { letter: '•', color: INK_2, group: (n.system === 'plumbing' ? 'plumbing' : 'electrical') as MepGroup };
+        if (!show(g.group) || n.kind === 'floor_trap') return null;
         const sel = n.id === selectedId;
         const isLight = n.kind === 'light_ceiling';
         const isOutlet = n.kind === 'outlet_duplex';

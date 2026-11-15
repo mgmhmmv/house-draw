@@ -55,7 +55,7 @@ import {
   triggerDownload,
 } from '../../export/exporters';
 import { sheetsHTML } from '../../export/sheet';
-import { composePages, PRINTABLE, sheetInfo } from './printSheets';
+import { composePages, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
 import type { SheetInfo } from '../../export/sheet';
 import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
@@ -176,19 +176,20 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     },
     [projectId, preview]
   );
-  // Elevations and sections are shown on paper, with the same title block as the print.
+  // Drawings are shown on paper, with the same title block as the print.
   const [paperInfo, setPaperInfo] = useState<SheetInfo | null>(null);
   const metaKey = model ? JSON.stringify(model.meta) : '';
   useEffect(() => {
     const p = doc.project;
-    if (!p || !model || (sheet.id !== 'A-201' && sheet.id !== 'A-301')) return setPaperInfo(null);
+    setPaperInfo(null);
+    if (!p || !model || !PAPER_SHEETS.includes(sheet.id)) return;
     let live = true;
-    void sheetInfo({ project: p, model, sheetId: sheet.id, sheetCode: sheet.code }).then((i) => live && setPaperInfo(i));
+    void sheetInfo({ project: p, model, sheetId: sheet.id, sheetCode: sheet.code, levelName: levels[safeLevel]?.name, levelIndex: safeLevel }).then((i) => live && setPaperInfo(i));
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.project?.id, doc.project?.name, doc.project?.client, doc.project?.status, metaKey, sheet.id]);
+  }, [doc.project?.id, doc.project?.name, doc.project?.client, doc.project?.status, metaKey, sheet.id, safeLevel, levels.length]);
 
   // The user's own (AI-made) objects join the library.
   useEffect(() => {
@@ -339,7 +340,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         for (const id of PRINTABLE) {
           const def = SHEETS.find((x) => x.id === id);
           if (!def) continue;
-          if (def.id === 'A-101') levels.forEach((_, i) => jobs.push({ def, level: i }));
+          if (PER_LEVEL.includes(def.id)) levels.forEach((_, i) => jobs.push({ def, level: i }));
           else jobs.push({ def, level: 0 });
         }
         const svgs: string[] = [];
@@ -709,7 +710,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     </main>
   );
 
-  const levelPicker = sheet.plan && (
+  const levelPicker = (sheet.plan || sheet.levels) && (
     <LevelPicker levels={levels.map((l) => l.name)} index={safeLevel} onPick={setLevelIndex} onAdd={addLevel} />
   );
 
@@ -779,7 +780,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           {navOpen ? (
             <aside className="flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-line bg-raised px-3 py-4">
               <SheetNav current={sheet} onPick={goSheet} />
-              {sheet.plan && (
+              {(sheet.plan || sheet.levels) && (
                 <div className="mt-6">
                   <p className="px-3 pb-2 text-2xs font-medium uppercase tracking-wide text-ink-3">Levels</p>
                   <LevelList levels={levels.map((l) => l.name)} index={safeLevel} onPick={setLevelIndex} onAdd={addLevel} />
@@ -813,7 +814,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
                   ))}
                 </div>
               ))}
-              {sheet.plan && levels.length > 1 && (
+              {(sheet.plan || sheet.levels) && levels.length > 1 && (
                 <div className="mt-2 flex flex-col items-center gap-0.5 border-t border-line pt-2">
                   {levels.map((l, i) => (
                     <button

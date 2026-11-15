@@ -548,7 +548,9 @@ export type ActiveSheetId =
   | 'A-201' // 4 Elevations (N, S, E, W)
   | 'A-301' // Architectural & Structural Cross-Section
   | 'S-101' // Structural Foundation & Framing Plan
-  | 'M-101' // MEP Floor Layout Overlay
+  | 'R-101' // Roof plan
+  | 'M-101' // Water & electrical plan
+  | 'D-101' // Sewage plan
   | 'H-101' // HVAC & Cooling Load Schedule
   | 'E-101' // Electrical Single-Line Diagram & Load Schedule
   | 'P-101' // Plumbing Riser Schematic

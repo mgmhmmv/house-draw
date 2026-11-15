@@ -15,14 +15,20 @@ const SHEET_META: Record<string, { title: string; discipline: string; legend: Le
   'A-201': { title: 'Elevations', discipline: 'Architectural', legend: [], north: false },
   'A-301': { title: 'Sections', discipline: 'Architectural', legend: ['wall'], north: false },
   'S-101': { title: 'Structural plan', discipline: 'Structural', legend: ['wall', 'column', 'grid'], north: true },
-  'M-101': { title: 'Services layout', discipline: 'MEP', legend: ['wall', 'power', 'lighting', 'water', 'drain', 'hvac'], north: true },
+  'R-101': { title: 'Roof plan', discipline: 'Architectural', legend: ['roof', 'gutter', 'solar'], north: true },
+  'M-101': { title: 'Water & electrical plan', discipline: 'MEP', legend: ['wall', 'power', 'lighting', 'water', 'hotwater'], north: true },
+  'D-101': { title: 'Sewage plan', discipline: 'Plumbing', legend: ['wall', 'soil', 'waste', 'chamber'], north: true },
   'H-101': { title: 'HVAC & cooling', discipline: 'Mechanical', legend: ['hvac'], north: false },
   'E-101': { title: 'Electrical single-line', discipline: 'Electrical', legend: ['power', 'lighting', 'solar'], north: false },
   'P-101': { title: 'Plumbing riser', discipline: 'Plumbing', legend: ['water', 'drain'], north: false },
 };
 
 /** Sheets that have a drawing worth printing, in set order. */
-export const PRINTABLE = ['A-101', 'A-201', 'A-301', 'S-101', 'M-101', 'E-101', 'P-101', '3D-VIEW'];
+export const PRINTABLE = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301', 'E-101', 'P-101', '3D-VIEW'];
+/** Sheets drawn on paper in the app (plans at true scale, elevations and sections). */
+export const PAPER_SHEETS = ['A-101', 'S-101', 'R-101', 'M-101', 'D-101', 'A-201', 'A-301'];
+/** Plans with one sheet per level. */
+export const PER_LEVEL = ['A-101', 'S-101', 'M-101', 'D-101'];
 
 export const stageFor = (status: string): Stage =>
   status === 'done' ? 'asbuilt' : status === 'handover' ? 'construction' : status === 'drawings' || status === 'review' ? 'approval' : 'concept';
@@ -111,7 +117,7 @@ export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
   ].filter(Boolean);
   return {
     title: meta.title,
-    subtitle: c.sheetId === 'A-101' || c.sheetId === 'S-101' || c.sheetId === 'M-101' ? c.levelName : undefined,
+    subtitle: PER_LEVEL.includes(c.sheetId) ? c.levelName : undefined,
     discipline: meta.discipline,
     sheetCode: c.sheetCode,
     drawingNumber: `${prefix}-${code}-${c.sheetCode.replace('-', '')}${lvl}`,
@@ -146,12 +152,18 @@ export function paperSheets(): string[] {
 
 /** All sheets for the current view: the paper view's pages, or one composed sheet. */
 export async function composePages(c: SheetContext): Promise<string[]> {
-  if (c.sheetId === 'A-201' || c.sheetId === 'A-301') {
-    // Print mode lays out every elevation/section as its own sheet; read them, then go back.
+  if (PAPER_SHEETS.includes(c.sheetId)) {
+    // Print mode lays every drawing out on paper (each elevation/section on its own sheet);
+    // read the sheets, then go back. The title block loads with the sheet, so allow it a moment.
+    const want = (await sheetInfo(c)).drawingNumber;
     setPrintMode(true);
-    await nextPaint();
-    await nextPaint();
     try {
+      for (let i = 0; i < 40; i++) {
+        await nextPaint();
+        if (document.querySelector('main svg[data-paper]')?.getAttribute('data-paper') === want) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await nextPaint();
       const shown = paperSheets();
       if (shown.length) return shown;
     } finally {

@@ -26,7 +26,7 @@ export const STAGES: { id: Stage; label: string }[] = [
   { id: 'asbuilt', label: 'AS-BUILT' },
 ];
 
-export type LegendKind = 'wall' | 'door' | 'window' | 'room' | 'column' | 'grid' | 'power' | 'lighting' | 'water' | 'drain' | 'hvac' | 'solar' | 'section';
+export type LegendKind = 'wall' | 'door' | 'window' | 'room' | 'column' | 'grid' | 'power' | 'lighting' | 'water' | 'hotwater' | 'drain' | 'soil' | 'waste' | 'chamber' | 'roof' | 'gutter' | 'hvac' | 'solar' | 'section';
 export const LEGEND_LABEL: Record<LegendKind, string> = {
   wall: 'Wall',
   door: 'Door and its swing',
@@ -37,7 +37,13 @@ export const LEGEND_LABEL: Record<LegendKind, string> = {
   power: 'Power',
   lighting: 'Lighting',
   water: 'Water supply',
+  hotwater: 'Hot water',
   drain: 'Drainage',
+  soil: 'Soil pipe Ø110 uPVC',
+  waste: 'Waste pipe Ø50 uPVC',
+  chamber: 'Inspection chamber',
+  roof: 'Roof slope (falls to arrow)',
+  gutter: 'Gutter & rainwater pipe',
   hvac: 'Cooling',
   solar: 'Solar PV',
   section: 'Section line',
@@ -326,8 +332,20 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
 }
 
 function legendSymbol(k: LegendKind, x: number, y: number) {
-  const c = { power: '#C2410C', lighting: '#B45309', water: '#0369A1', drain: '#57534E', hvac: '#0E7490', solar: '#1D4ED8' } as Record<string, string>;
+  const c = { power: '#C2781B', lighting: '#B8860B', water: '#2F6FD4', hotwater: '#C9473B', drain: '#6B5B4B', hvac: '#2A8C8C', solar: '#D1A21F' } as Record<string, string>;
   switch (k) {
+    case 'soil':
+      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="#6B5B4B" stroke-width="0.6"/>`;
+    case 'waste':
+      return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="#6B5B4B" stroke-width="0.35" stroke-dasharray="1.2 0.6"/>`;
+    case 'chamber':
+      return `<rect x="${x + 1.6}" y="${y - 1.4}" width="2.8" height="2.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/><line x1="${x + 1.6}" y1="${y - 1.4}" x2="${x + 4.4}" y2="${y + 1.4}" stroke="${INK}" stroke-width="0.2"/>`;
+    case 'roof':
+      return `<line x1="${x}" y1="${y}" x2="${x + 5}" y2="${y}" stroke="${INK}" stroke-width="0.3"/><path d="M${x + 6} ${y} l-1.4 -0.7 v1.4 Z" fill="${INK}"/>`;
+    case 'gutter':
+      return `<line x1="${x}" y1="${y}" x2="${x + 4.4}" y2="${y}" stroke="${INK2}" stroke-width="0.5"/><circle cx="${x + 5.4}" cy="${y}" r="0.8" fill="#fff" stroke="${INK}" stroke-width="0.3"/>`;
+    case 'solar':
+      return `<rect x="${x}" y="${y - 1.2}" width="6" height="2.4" fill="#DCE4F0" stroke="#3D5A80" stroke-width="0.25"/><line x1="${x + 3}" y1="${y - 1.2}" x2="${x + 3}" y2="${y + 1.2}" stroke="#3D5A80" stroke-width="0.15"/>`;
     case 'wall':
       return `<line x1="${x}" y1="${y}" x2="${x + 6}" y2="${y}" stroke="${INK}" stroke-width="0.9"/>`;
     case 'door':

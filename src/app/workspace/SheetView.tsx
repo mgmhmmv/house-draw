@@ -81,6 +81,7 @@ export function SheetView(p: Props) {
           svgRef={p.svgRef}
           placing={p.placing}
           onPlaced={p.onPlaced}
+          paperInfo={p.paperInfo}
         />
       );
   }

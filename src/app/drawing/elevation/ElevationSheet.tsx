@@ -308,7 +308,7 @@ function Surface({
       <svg
         ref={svgRef as RefObject<SVGSVGElement>}
         className="as-plan absolute inset-0 h-full w-full"
-        data-paper={layout ? '' : undefined}
+        data-paper={layout && paper ? paper.drawingNumber : undefined}
         style={{ fontFamily: 'Inter, system-ui, sans-serif', cursor: drag.current ? 'grabbing' : 'grab', background: layout ? '#E9E8E4' : undefined }}
         onPointerDown={(e) => {
           if (e.button !== 0) return;

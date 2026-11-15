@@ -1,4 +1,4 @@
-import { Box, Building, Calculator, Receipt, Droplets, Fan, Grid3x3, LayoutDashboard, Layers, PlugZap, Scissors, type LucideIcon } from 'lucide-react';
+import { Box, Building, Calculator, Receipt, Droplets, Fan, Grid3x3, Home, LayoutDashboard, Layers, PlugZap, Scissors, Waves, type LucideIcon } from 'lucide-react';
 import type { ActiveSheetId } from '../../model/types';
 
 /** Drawing sheets come from the model; Billing is the one sheet that is not a drawing. */
@@ -14,6 +14,10 @@ export interface SheetDef {
   icon: LucideIcon;
   /** Sheets drawn on the plan canvas take tools and a level. */
   plan?: boolean;
+  /** Drawn on the plan canvas but not edited there (roof, sewage): no tools. */
+  paperOnly?: boolean;
+  /** Has one drawing per level (a level picker, but no tools). */
+  levels?: boolean;
 }
 
 export const SHEET_GROUPS: { label: string; sheets: SheetDef[] }[] = [
@@ -21,6 +25,7 @@ export const SHEET_GROUPS: { label: string; sheets: SheetDef[] }[] = [
     label: 'Design',
     sheets: [
       { id: 'A-101', slug: 'plan', name: 'Floor plan', short: 'Plan', code: 'A-101', icon: LayoutDashboard, plan: true },
+      { id: 'R-101', slug: 'roof', name: 'Roof plan', short: 'Roof', code: 'A-102', icon: Home, paperOnly: true },
       { id: '3D-VIEW', slug: '3d', name: '3D model', short: '3D', code: '3D', icon: Box },
       { id: 'A-201', slug: 'elevations', name: 'Elevations', short: 'Elevations', code: 'A-201', icon: Building },
       { id: 'A-301', slug: 'sections', name: 'Sections', short: 'Sections', code: 'A-301', icon: Scissors },
@@ -30,7 +35,8 @@ export const SHEET_GROUPS: { label: string; sheets: SheetDef[] }[] = [
     label: 'Engineering',
     sheets: [
       { id: 'S-101', slug: 'structure', name: 'Structure', short: 'Structure', code: 'S-101', icon: Grid3x3, plan: true },
-      { id: 'M-101', slug: 'mep', name: 'MEP layout', short: 'MEP', code: 'M-101', icon: Layers, plan: true },
+      { id: 'M-101', slug: 'mep', name: 'Water & electrical', short: 'Services', code: 'M-101', icon: Layers, plan: true },
+      { id: 'D-101', slug: 'sewage', name: 'Sewage plan', short: 'Sewage', code: 'D-101', icon: Waves, levels: true, paperOnly: true },
       { id: 'H-101', slug: 'hvac', name: 'HVAC & cooling', short: 'HVAC', code: 'H-101', icon: Fan },
       { id: 'E-101', slug: 'electrical', name: 'Electrical', short: 'Electrical', code: 'E-101', icon: PlugZap },
       { id: 'P-101', slug: 'plumbing', name: 'Plumbing', short: 'Plumbing', code: 'P-101', icon: Droplets },
