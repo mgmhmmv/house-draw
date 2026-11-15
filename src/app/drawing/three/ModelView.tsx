@@ -20,6 +20,7 @@ const PAPER = new THREE.Color('#F6F5F2');
  */
 export function ModelView({ model }: { model: BuildingProject }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const compassRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<Style>('rendered');
   const [cut, setCut] = useState<Cut>('all');
   const [hour, setHour] = useState(15);
@@ -110,12 +111,31 @@ export function ModelView({ model }: { model: BuildingProject }) {
     const c = { renderer, scene, camera, controls, sun, ground, parts: null as SceneParts | null, frame: 0, fitted: false };
     ctx.current = c;
     const clock = new THREE.Clock();
+    const fwd = new THREE.Vector3();
+    let lastDeg = NaN;
     const loop = () => {
       c.frame = requestAnimationFrame(loop);
       const dt = clock.getDelta();
       if (walkRef.current?.active) walkRef.current.update(dt);
       else controls.update();
       renderer.render(scene, camera);
+      // Compass: plan north is -z. Turn the dial so N points where north is on screen.
+      camera.getWorldDirection(fwd);
+      if (Math.hypot(fwd.x, fwd.z) > 1e-3) {
+        const deg = Math.round((Math.atan2(-fwd.x, -fwd.z) * 180) / Math.PI * 10) / 10;
+        if (deg !== lastDeg && compassRef.current) {
+          compassRef.current.style.transform = `rotate(${deg}deg)`;
+          lastDeg = deg;
+        }
+      } else if (compassRef.current) {
+        // Looking straight down: use the camera's up vector instead.
+        const up = camera.up.clone().applyQuaternion(camera.quaternion);
+        const deg = Math.round((Math.atan2(-up.x, -up.z) * 180) / Math.PI * 10) / 10;
+        if (deg !== lastDeg) {
+          compassRef.current.style.transform = `rotate(${deg}deg)`;
+          lastDeg = deg;
+        }
+      }
     };
     loop();
 
@@ -311,6 +331,28 @@ export function ModelView({ model }: { model: BuildingProject }) {
         </>
       )}
 
+      <button
+        onClick={() => ctx.current && faceNorth(ctx.current)}
+        title="North · click to face north"
+        aria-label="Compass. Click to face north."
+        className={cx(
+          'absolute bottom-[84px] flex h-14 w-14 items-center justify-center rounded-full border border-line bg-surface/95 shadow-float backdrop-blur transition-[left] hover:border-line-strong lg:bottom-4',
+          walking ? 'left-[188px]' : 'left-3'
+        )}
+      >
+        <div ref={compassRef} className="relative h-12 w-12">
+          <svg viewBox="-24 -24 48 48" className="absolute inset-0 h-full w-full">
+            {[0, 90, 180, 270].map((a) => (
+              <line key={a} x1="0" y1="-21" x2="0" y2="-18" transform={`rotate(${a})`} stroke="rgb(var(--ink-3))" strokeWidth="1.2" strokeLinecap="round" />
+            ))}
+            <path d="M0 -13 L4 0 L-4 0 Z" fill="rgb(var(--accent))" />
+            <path d="M0 13 L4 0 L-4 0 Z" fill="rgb(var(--ink-3) / 0.45)" />
+            <circle r="1.6" fill="rgb(var(--surface))" stroke="rgb(var(--ink-2))" strokeWidth="0.8" />
+          </svg>
+          <span className="absolute left-1/2 top-[-1px] -translate-x-1/2 text-[9px] font-bold leading-none text-accent">N</span>
+        </div>
+      </button>
+
       <div className="absolute bottom-[84px] right-3 flex flex-col items-end gap-2 lg:bottom-4">
         {showCut && (
           <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface/95 px-3 py-2 shadow-float backdrop-blur animate-fade-up">
@@ -399,6 +441,16 @@ function disposeParts(c: { scene: THREE.Scene; parts: SceneParts | null }) {
   }
   p.materials.forEach((m) => m.dispose());
   c.parts = null;
+}
+
+/** Turn the orbit camera so north is straight up the screen, keeping its height and distance. */
+function faceNorth(c: { camera: THREE.PerspectiveCamera; controls: OrbitControls }) {
+  const off = c.camera.position.clone().sub(c.controls.target);
+  // Camera to the south (+z) of the target, looking north (a hair off vertical when looking down).
+  const flat = Math.max(Math.hypot(off.x, off.z), 0.01);
+  c.camera.position.set(c.controls.target.x, c.camera.position.y, c.controls.target.z + flat);
+  c.camera.lookAt(c.controls.target);
+  c.controls.update();
 }
 
 function applyPreset(c: { camera: THREE.PerspectiveCamera; controls: OrbitControls; parts: SceneParts | null }, preset: Preset) {
