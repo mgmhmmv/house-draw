@@ -4,7 +4,7 @@ import { getDesignConfig, getHVACConfig, getSolarConfig, type BuildingProject, t
  * A short, human label for what changed between two saved models, for the project history
  * ("Added Study · Moved 2 windows"). Compares by element id, level by level.
  */
-export function describeChange(prev: BuildingProject | null, next: BuildingProject): string {
+export function describeChange(prev: BuildingProject | null, next: BuildingProject, max = 3): string {
   if (!prev) return 'Edited';
   const out: string[] = [];
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -78,7 +78,7 @@ export function describeChange(prev: BuildingProject | null, next: BuildingProje
   if (!same(prev.sections, next.sections)) out.push('Edited sections');
 
   if (!out.length) return 'Edited';
-  return out.length > 3 ? `${out.slice(0, 3).join(' · ')} · +${out.length - 3} more` : out.join(' · ');
+  return out.length > max ? `${out.slice(0, max).join(' · ')} · +${out.length - max} more` : out.join(' · ');
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

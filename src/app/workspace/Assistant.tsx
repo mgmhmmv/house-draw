@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronRight, Cpu, PenLine, RotateCcw, Sparkles, Wand2, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, ChevronRight, Cpu, History, PenLine, RotateCcw, Sparkles, Wand2, X } from 'lucide-react';
 import type { BuildingProject } from '../../model/types';
 import { runPromptArchitect } from '../../ai/promptEngine';
 import { projectBrief } from './projectBrief';
@@ -48,13 +48,15 @@ interface Props {
   onCommit: (next: BuildingProject, opts?: CommitOptions) => void;
   sketchCount: number;
   onConvertSketch: () => void;
+  /** Open the History tab (after a change is applied). */
+  onOpenHistory?: () => void;
   onSyncEngineering: () => void;
 }
 
 const storeKey = (id: string) => `as_ai_${id}`;
 
 export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
-  { projectId, model, onCommit, sketchCount, onConvertSketch, onSyncEngineering },
+  { projectId, model, onCommit, sketchCount, onConvertSketch, onSyncEngineering, onOpenHistory },
   ref
 ) {
   const [entries, setEntries] = useState<Entry[]>(() => {
@@ -119,7 +121,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
       const instruction = routed.ok && routed.kind === 'change' && routed.instruction ? routed.instruction : prompt;
       const base = modelRef.current;
       const res = await runPromptArchitect(base, instruction, { provider: 'claude' }, prompt);
-      const diff = describeChange(base, res.project);
+      const diff = describeChange(base, res.project, 50);
       if (diff === 'Edited' && JSON.stringify(base) === JSON.stringify(res.project)) {
         setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: `I couldn't turn that into a change to the design. Could you say it another way, with sizes or room names?`, engine: res.engineUsed } : e)));
         return;
@@ -190,7 +192,7 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
                 ) : e.error ? (
                   <div className="mr-8 rounded-[14px] rounded-bl-[4px] bg-danger/10 px-3.5 py-2.5 text-[13px] text-danger">{e.error}</div>
                 ) : (
-                  <Reply entry={e} stale={stale(e)} busy={busy} onApprove={() => approve(e)} onDiscard={() => discard(e)} onRetry={() => run(e.prompt)} />
+                  <Reply entry={e} stale={stale(e)} busy={busy} onApprove={() => approve(e)} onDiscard={() => discard(e)} onRetry={() => run(e.prompt)} onOpenHistory={onOpenHistory} />
                 )}
               </div>
             ))}
@@ -258,65 +260,139 @@ function QuickAction({ icon, children, onClick, highlight }: { icon: React.React
   );
 }
 
-function Reply({ entry, stale, busy, onApprove, onDiscard, onRetry }: { entry: Entry; stale: boolean; busy: boolean; onApprove: () => void; onDiscard: () => void; onRetry: () => void }) {
-  const isProposal = !!entry.proposal;
-  const [open, setOpen] = useState(isProposal && entry.proposal === 'pending');
-  const engine = entry.engine === 'claude' ? 'Claude' : entry.engine === 'tool' ? 'Tool' : entry.engine === 'gemini' ? 'Gemini' : 'Built-in rules';
+const ENGINE: Record<string, string> = { claude: 'Claude', tool: 'Tool', gemini: 'Gemini' };
+
+const STATUS = {
+  pending: { label: 'Proposed change', dot: 'bg-accent', text: 'text-accent', bg: 'bg-accent-soft' },
+  applied: { label: 'Applied', dot: 'bg-ok', text: 'text-ok', bg: 'bg-ok/10' },
+  discarded: { label: 'Discarded', dot: 'bg-ink-3', text: 'text-ink-3', bg: 'bg-sunken' },
+  expired: { label: 'Not applied', dot: 'bg-warn', text: 'text-warn', bg: 'bg-warn/10' },
+} as const;
+
+function Reply({
+  entry,
+  stale,
+  busy,
+  onApprove,
+  onDiscard,
+  onRetry,
+  onOpenHistory,
+}: {
+  entry: Entry;
+  stale: boolean;
+  busy: boolean;
+  onApprove: () => void;
+  onDiscard: () => void;
+  onRetry: () => void;
+  onOpenHistory?: () => void;
+}) {
   const pending = entry.proposal === 'pending';
-  return (
-    <div className={cx('mr-4 rounded-[14px] rounded-bl-[4px] border bg-surface px-3.5 py-3', pending ? 'border-accent/50 ring-4 ring-accent/10' : 'border-line')}>
-      {isProposal && (
-        <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-accent">
-          {pending ? 'Proposed change' : entry.proposal === 'applied' ? 'Applied' : entry.proposal === 'discarded' ? 'Discarded' : 'Not applied'}
+  const [open, setOpen] = useState(pending);
+  const engine = ENGINE[entry.engine ?? ''] ?? 'Built-in rules';
+
+  // A plain answer, or a log line from a tool: just the text.
+  if (!entry.proposal)
+    return (
+      <div className="mr-4 rounded-[14px] rounded-bl-[4px] border border-line bg-surface px-3.5 py-3">
+        {entry.answer ? <Markdown text={entry.answer} /> : <p className="text-[13px] leading-relaxed text-ink">{entry.summary}</p>}
+        {entry.changes && entry.changes.length > 0 && <Steps items={entry.changes} />}
+        <p className="mt-2.5 inline-flex items-center gap-1 text-2xs text-ink-3">
+          <Cpu className="h-3 w-3" /> {engine}
         </p>
-      )}
-      {entry.answer ? <Markdown text={entry.answer} /> : <p className="text-[13px] leading-relaxed text-ink">{entry.summary}</p>}
-      {entry.diff && entry.diff !== 'Edited' && <p className="mt-1.5 text-[13px] text-ink-2">{entry.diff}</p>}
-      {entry.changes && entry.changes.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {entry.changes.slice(0, 6).map((c, i) => (
-            <li key={i} className="flex gap-2 text-[13px] text-ink-2">
-              <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-ink-3" />
-              {c}
-            </li>
-          ))}
-        </ul>
-      )}
-      {open && entry.reasoning && (
-        <div className="mt-2.5 border-l-2 border-accent/30 pl-3">
-          <Markdown text={entry.reasoning} />
+      </div>
+    );
+
+  const st = STATUS[stale && pending ? 'expired' : entry.proposal];
+  const chips = entry.diff && entry.diff !== 'Edited' ? entry.diff.split(' · ') : [];
+  const hasDetails = !!entry.reasoning || (entry.changes?.length ?? 0) > 0;
+
+  return (
+    <div className={cx('mr-4 overflow-hidden rounded-[14px] rounded-bl-[4px] border bg-surface', pending && !stale ? 'border-accent/50 shadow-card' : 'border-line')}>
+      <div className="px-3.5 pb-3 pt-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className={cx('inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-2xs font-semibold', st.bg, st.text)}>
+            <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)} />
+            {st.label}
+          </span>
+          {entry.proposal === 'applied' && onOpenHistory && (
+            <button onClick={onOpenHistory} className="inline-flex h-6 items-center gap-1 rounded-full px-2 text-2xs font-medium text-ink-3 hover:bg-sunken hover:text-ink">
+              <History className="h-3 w-3" /> History
+            </button>
+          )}
+        </div>
+
+        <p className="mt-2.5 text-[14px] font-medium leading-snug text-ink">{entry.summary}</p>
+
+        {chips.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {chips.map((c) => (
+              <span key={c} className="inline-flex h-6 items-center rounded-[7px] border border-line bg-raised px-2 text-2xs text-ink-2">
+                {c}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {entry.proposal === 'applied' && <p className="mt-2.5 text-2xs text-ink-3">Saved as a new version. You can restore the one before it from History.</p>}
+        {(entry.proposal === 'expired' || (pending && stale)) && (
+          <p className="mt-2.5 text-2xs text-ink-3">{stale ? 'The design changed after this was proposed.' : 'This proposal is from an earlier visit.'}</p>
+        )}
+      </div>
+
+      {hasDetails && (
+        <div className="border-t border-line">
+          <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-2xs font-medium text-ink-2 hover:bg-raised">
+            <ChevronDown className={cx('h-3.5 w-3.5 transition-transform', open ? '' : '-rotate-90')} />
+            <span className="flex-1">Reasoning</span>
+            <span className="inline-flex items-center gap-1 font-normal text-ink-3">
+              <Cpu className="h-3 w-3" /> {engine}
+            </span>
+          </button>
+          {open && (
+            <div className="max-h-80 overflow-y-auto px-3.5 pb-3">
+              {entry.reasoning && <Markdown text={entry.reasoning} />}
+              {entry.changes && entry.changes.length > 0 && (
+                <>
+                  <p className="mb-1 mt-3 text-2xs font-semibold uppercase tracking-wide text-ink-3">Engine steps</p>
+                  <Steps items={entry.changes} />
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
+
       {pending && !stale && (
-        <div className="mt-3 flex gap-2">
-          <button onClick={onApprove} className="inline-flex h-8 items-center gap-1.5 rounded-[9px] bg-ink px-3 text-[13px] font-medium text-page hover:opacity-90">
+        <div className="flex gap-2 border-t border-line bg-raised px-3.5 py-2.5">
+          <button onClick={onApprove} className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-[9px] bg-ink px-3 text-[13px] font-medium text-page hover:opacity-90">
             <Check className="h-3.5 w-3.5" /> Apply change
           </button>
-          <button onClick={onDiscard} className="inline-flex h-8 items-center gap-1.5 rounded-[9px] border border-line px-3 text-[13px] font-medium text-ink-2 hover:border-line-strong hover:text-ink">
+          <button onClick={onDiscard} className="inline-flex h-8 items-center justify-center gap-1.5 rounded-[9px] border border-line bg-surface px-3 text-[13px] font-medium text-ink-2 hover:text-ink">
             <X className="h-3.5 w-3.5" /> Discard
           </button>
         </div>
       )}
       {(entry.proposal === 'expired' || (pending && stale)) && (
-        <div className="mt-3 flex items-center gap-2">
-          <span className="text-[13px] text-ink-3">{stale ? 'The design changed since this was proposed.' : 'This proposal has expired.'}</span>
-          <button disabled={busy} onClick={onRetry} className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-line px-2.5 text-2xs font-medium text-ink-2 hover:text-ink disabled:opacity-40">
-            <RotateCcw className="h-3 w-3" /> Propose again
+        <div className="border-t border-line bg-raised px-3.5 py-2.5">
+          <button disabled={busy} onClick={onRetry} className="inline-flex h-8 items-center gap-1.5 rounded-[9px] border border-line bg-surface px-3 text-[13px] font-medium text-ink-2 hover:text-ink disabled:opacity-40">
+            <RotateCcw className="h-3.5 w-3.5" /> Propose again
           </button>
         </div>
       )}
-      <div className="mt-2.5 flex items-center gap-3">
-        <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
-          <Cpu className="h-3 w-3" /> {engine}
-        </span>
-        {entry.reasoning && (
-          <button onClick={() => setOpen(!open)} className="text-2xs font-medium text-accent hover:underline">
-            {open ? 'Hide reasoning' : 'Show reasoning'}
-          </button>
-        )}
-        {entry.proposal === 'applied' && <span className="text-2xs text-ink-3">Saved as a version · restore it from History</span>}
-      </div>
     </div>
+  );
+}
+
+function Steps({ items }: { items: string[] }) {
+  return (
+    <ul className="mt-2 space-y-1">
+      {items.slice(0, 8).map((c, i) => (
+        <li key={i} className="flex gap-2 text-[12.5px] leading-snug text-ink-2">
+          <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-ink-3" />
+          {c}
+        </li>
+      ))}
+    </ul>
   );
 }
 

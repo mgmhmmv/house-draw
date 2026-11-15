@@ -328,6 +328,12 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       }}
       sketchCount={sketch.length}
       onConvertSketch={convertSketch}
+      onOpenHistory={() => {
+        if (isDesktop) {
+          setPanel('history');
+          setPanelOpen(true);
+        } else setMobileSheet('history');
+      }}
       onSyncEngineering={syncEngineering}
     />
   );
