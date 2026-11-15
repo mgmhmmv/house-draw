@@ -1,4 +1,4 @@
-import { handleAi } from './ai';
+import { handleAi, handleAssist } from './ai';
 import { handleAuth, requireUser } from './auth';
 import { Env, HttpError, json } from './http';
 import { handleProjects } from './projects';
@@ -24,6 +24,7 @@ export default {
       const user = await requireUser(env, req);
       if (path === '/api/projects' || path.startsWith('/api/projects/')) return await handleProjects(env, req, user, path);
       if (path === '/api/ai/claude') return await handleAi(env, req);
+      if (path === '/api/ai/assist') return await handleAssist(env, req);
       throw new HttpError(404, 'not_found');
     } catch (err) {
       if (err instanceof HttpError) return json({ ok: false, error: err.code, message: err.message }, { status: err.status });

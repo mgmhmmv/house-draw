@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { ArrowUp, ChevronRight, Cpu, PenLine, Sparkles, Wand2 } from 'lucide-react';
 import type { BuildingProject } from '../../model/types';
 import { runPromptArchitect } from '../../ai/promptEngine';
+import { projectBrief } from './projectBrief';
 import { cx, Spinner } from '../ui';
 
 interface Entry {
@@ -13,6 +14,8 @@ interface Entry {
   engine?: string;
   error?: string;
   pending?: boolean;
+  /** A conversational reply to a question (no design change). */
+  answer?: string;
 }
 
 const SUGGESTIONS = [
@@ -78,10 +81,36 @@ export const Assistant = forwardRef<AssistantHandle, Props>(function Assistant(
     setInput('');
     setBusy(true);
     try {
-      const res = await runPromptArchitect(modelRef.current, prompt, { provider: 'claude' });
+      // First ask whether this is a question or a design change; questions never touch the model.
+      const history = entries
+        .filter((e) => !e.pending && !e.error)
+        .slice(-4)
+        .flatMap((e) => [
+          { role: 'user' as const, text: e.prompt },
+          { role: 'assistant' as const, text: e.answer ?? e.summary ?? '' },
+        ]);
+      const routed = await fetch('/api/ai/assist', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt, brief: projectBrief(modelRef.current), history }),
+      })
+        .then((r) => r.json() as Promise<{ ok: boolean; kind?: 'answer' | 'change'; text?: string; instruction?: string; summary?: string }>)
+        .catch(() => ({ ok: false }) as { ok: false; kind?: undefined; text?: undefined; instruction?: undefined; summary?: undefined });
+
+      if (routed.ok && routed.kind === 'answer') {
+        setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, answer: routed.text, engine: 'claude' } : e)));
+        return;
+      }
+      // A change (or no AI connection): hand the instruction to the design engine.
+      const instruction = routed.ok && routed.kind === 'change' && routed.instruction ? routed.instruction : prompt;
+      const res = await runPromptArchitect(modelRef.current, instruction, { provider: 'claude' });
       onCommit(res.project);
       setEntries((es) =>
-        es.map((e) => (e.id === id ? { id, prompt, summary: res.summary, reasoning: res.reasoning, changes: res.changes, engine: res.engineUsed } : e))
+        es.map((e) =>
+          e.id === id
+            ? { id, prompt, summary: routed.ok && routed.summary ? routed.summary : res.summary, reasoning: res.reasoning, changes: res.changes, engine: res.engineUsed }
+            : e
+        )
       );
     } catch (err) {
       setEntries((es) => es.map((e) => (e.id === id ? { id, prompt, error: err instanceof Error ? err.message : 'The assistant could not finish that.' } : e)));
@@ -196,7 +225,7 @@ function Reply({ entry }: { entry: Entry }) {
   const engine = entry.engine === 'claude' ? 'Claude' : entry.engine === 'tool' ? 'Tool' : entry.engine === 'gemini' ? 'Gemini' : 'Built-in rules';
   return (
     <div className="mr-4 rounded-[14px] rounded-bl-[4px] border border-line bg-surface px-3.5 py-3">
-      <p className="text-[13px] leading-relaxed text-ink">{entry.summary}</p>
+      {entry.answer ? <Markdown text={entry.answer} /> : <p className="text-[13px] leading-relaxed text-ink">{entry.summary}</p>}
       {entry.changes && entry.changes.length > 0 && (
         <ul className="mt-2 space-y-1">
           {entry.changes.slice(0, 6).map((c, i) => (
@@ -220,4 +249,106 @@ function Reply({ entry }: { entry: Entry }) {
       {open && entry.reasoning && <p className="mt-2 border-l-2 border-accent/30 pl-3 text-[13px] leading-relaxed text-ink-2">{entry.reasoning}</p>}
     </div>
   );
+}
+
+/** Just enough Markdown for chat replies: paragraphs, bullets, numbered lists, **bold**, `code`. Rendered as text, never HTML. */
+function Markdown({ text }: { text: string }) {
+  const inline = (s: string) =>
+    s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) =>
+      part.startsWith('**') && part.endsWith('**') ? (
+        <strong key={i} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      ) : part.startsWith('`') && part.endsWith('`') ? (
+        <code key={i} className="rounded bg-sunken px-1 font-mono text-[12px]">
+          {part.slice(1, -1)}
+        </code>
+      ) : (
+        part
+      )
+    );
+  const blocks: React.ReactNode[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  const flush = () => {
+    if (!list) return;
+    const Tag = list.ordered ? 'ol' : 'ul';
+    blocks.push(
+      <Tag key={blocks.length} className={cx('space-y-1 pl-4', list.ordered ? 'list-decimal' : 'list-disc')}>
+        {list.items.map((it, i) => (
+          <li key={i}>{inline(it)}</li>
+        ))}
+      </Tag>
+    );
+    list = null;
+  };
+  let table: string[][] | null = null;
+  const flushTable = () => {
+    if (!table) return;
+    const [head, ...body] = table;
+    blocks.push(
+      <div key={blocks.length} className="-mx-1 overflow-x-auto">
+        <table className="w-full border-collapse text-[12px]">
+          <thead>
+            <tr className="border-b border-line">
+              {head.map((c, i) => (
+                <th key={i} className="px-1.5 py-1 text-left font-semibold text-ink-2">
+                  {inline(c)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {body.map((r, i) => (
+              <tr key={i} className="border-b border-line/60 last:border-b-0">
+                {r.map((c, j) => (
+                  <td key={j} className="px-1.5 py-1 align-top tabular-nums">
+                    {inline(c)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+    table = null;
+  };
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('|')) {
+      flush();
+      // Separator rows (|---|:--:|) carry no data.
+      if (/^\|[\s:|-]+\|?$/.test(line)) continue;
+      (table ??= []).push(line.replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
+      continue;
+    }
+    if (!line && table) continue;
+    flushTable();
+    const bullet = line.match(/^[-*•]\s+(.*)$/);
+    const num = line.match(/^\d+[.)]\s+(.*)$/);
+    if (bullet || num) {
+      const ordered = !!num;
+      if (!list || list.ordered !== ordered) {
+        flush();
+        list = { ordered, items: [] };
+      }
+      list.items.push((bullet ?? num)![1]);
+      continue;
+    }
+    flush();
+    if (!line) continue;
+    const h = line.match(/^#{1,4}\s+(.*)$/);
+    blocks.push(
+      h ? (
+        <p key={blocks.length} className="font-semibold">
+          {inline(h[1])}
+        </p>
+      ) : (
+        <p key={blocks.length}>{inline(line)}</p>
+      )
+    );
+  }
+  flush();
+  flushTable();
+  return <div className="space-y-2 text-[13px] leading-relaxed text-ink marker:text-ink-3">{blocks}</div>;
 }
