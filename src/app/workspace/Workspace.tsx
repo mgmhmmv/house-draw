@@ -415,9 +415,9 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   }, [preview]);
 
   useEffect(() => {
-    if (doc.project) document.title = `${doc.project.name} · ArchStudio`;
+    if (doc.project) document.title = `${doc.project.name} · Maavadiyaa`;
     return () => {
-      document.title = 'ArchStudio';
+      document.title = 'Maavadiyaa';
     };
   }, [doc.project]);
 

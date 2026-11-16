@@ -534,7 +534,7 @@ function appendBoxOBJ(
 
 export function export3DToOBJ(project: BuildingProject): Promise<ExportResult> {
   const lines: string[] = [
-    `# ArchStudio BIM 3D Wavefront OBJ Export`,
+    `# Maavadiyaa 3D Wavefront OBJ Export`,
     `# Project: ${project.meta.title} (${project.meta.projectCode})`,
     `o ${safeProjectCode(project)}_Building`,
   ];
@@ -743,7 +743,7 @@ export function exportFullDrawingSetHTML(project: BuildingProject): Promise<Expo
 </head>
 <body>
   <div class="toolbar no-print">
-    <div><strong>ArchStudio BIM</strong> · Standards-Compliant Engineering Drawing Set (${escapeHtml(project.meta.projectCode)})</div>
+    <div><strong>Maavadiyaa</strong> · Standards-Compliant Engineering Drawing Set (${escapeHtml(project.meta.projectCode)})</div>
     <button class="btn" onclick="window.print()">Print / Save as PDF</button>
   </div>
 

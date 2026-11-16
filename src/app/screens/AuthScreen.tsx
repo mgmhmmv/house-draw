@@ -40,7 +40,7 @@ export function AuthScreen() {
             <p className="mt-6 text-center text-[13px] text-ink-3">Access is by invitation only.</p>
           </div>
         </div>
-        <p className="text-2xs text-ink-3">© {new Date().getFullYear()} ArchStudio</p>
+        <p className="text-2xs text-ink-3">© {new Date().getFullYear()} Maavadiyaa</p>
       </div>
 
       <AuthArt />

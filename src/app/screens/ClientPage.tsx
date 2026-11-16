@@ -50,7 +50,7 @@ const DocPill = ({ status }: { status: string }) => (
 const day = (iso?: string | number) => (iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
 
 /**
- * One client: their details from IslePOS, and only what ArchStudio holds for them —
+ * One client: their details from IslePOS, and only what Maavadiyaa holds for them —
  * projects linked to them and the quotes, invoices and payments raised from those projects.
  */
 export function ClientPage({ customerId }: { customerId: string }) {
@@ -190,15 +190,15 @@ export function ClientPage({ customerId }: { customerId: string }) {
             )}
           </Section>
 
-          <Section title="Quotes" empty="No quotes from ArchStudio yet." show={quotes.length > 0}>
+          <Section title="Quotes" empty="No quotes from Maavadiyaa yet." show={quotes.length > 0}>
             <DocTable rows={quotes} live={live} />
           </Section>
 
-          <Section title="Invoices" empty="No invoices from ArchStudio yet." show={invoices.length > 0}>
+          <Section title="Invoices" empty="No invoices from Maavadiyaa yet." show={invoices.length > 0}>
             <DocTable rows={invoices} live={live} invoice />
           </Section>
 
-          <Section title="Payments received" empty="No payments recorded against ArchStudio invoices yet." show={payments.length > 0}>
+          <Section title="Payments received" empty="No payments recorded against Maavadiyaa invoices yet." show={payments.length > 0}>
             <div className="overflow-hidden rounded-card border border-line bg-surface">
               {payments.map((p, i) => (
                 <div key={i} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-5 py-3 text-[13px] last:border-b-0">
@@ -214,7 +214,7 @@ export function ClientPage({ customerId }: { customerId: string }) {
             </div>
           </Section>
 
-          <p className="mt-8 text-2xs text-ink-3">Only projects, quotes and invoices made in ArchStudio are shown here. The rest of this client’s history stays in IslePOS.</p>
+          <p className="mt-8 text-2xs text-ink-3">Only projects, quotes and invoices made in Maavadiyaa are shown here. The rest of this client’s history stays in IslePOS.</p>
         </>
       )}
 

@@ -248,7 +248,7 @@ export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
     /* billing not connected */
   }
   const stage = stageFor(c.project.status);
-  const code = c.model.meta.projectCode && !/^archstudio$/i.test(c.model.meta.projectCode) ? c.model.meta.projectCode : c.project.id.replace(/\D/g, '').slice(0, 5) || c.project.id.slice(0, 5).toUpperCase();
+  const code = c.model.meta.projectCode && !/^(archstudio|maavadiyaa)$/i.test(c.model.meta.projectCode) ? c.model.meta.projectCode : c.project.id.replace(/\D/g, '').slice(0, 5) || c.project.id.slice(0, 5).toUpperCase();
   const prefix = (studio.prefix || studio.studioName.split(/\s+/).map((w) => w[0]).join('') || 'AS').toUpperCase().slice(0, 4);
   const lvl = c.levelIndex !== undefined && c.levelIndex > 0 ? `.${c.levelIndex}` : '';
   const rev = /^[A-Z]?\d+$/i.test(c.model.meta.revision ?? '') ? c.model.meta.revision.toUpperCase() : stage === 'concept' || stage === 'approval' ? 'P1' : 'C1';

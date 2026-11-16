@@ -1047,7 +1047,7 @@ function buildProjectFromSpec(
         projectCode: 'ARC-AI-' + String(Math.floor(100 + Math.random() * 899)),
         client: 'AI Architect Specification',
         architect:
-          spec.engineUsed === 'claude' ? 'ArchStudio BIM × Claude Architect' : 'ArchStudio BIM Spine Solver',
+          spec.engineUsed === 'claude' ? 'Maavadiyaa × Claude Architect' : 'Maavadiyaa Spine Solver',
         location: 'Parametric Lot',
         revision: 'R01 - AI Engineered BIM',
         date: '2026-11-15',
@@ -1166,7 +1166,7 @@ function synthesizeParametricHouse(prompt: string, baseRates = DEFAULT_BOQ_RATES
   return res;
 }
 
-const CLAUDE_DIRECT_SYSTEM_PROMPT = `You are a Senior Licensed Architect & Structural/MEP BIM Engineer for ArchStudio BIM.
+const CLAUDE_DIRECT_SYSTEM_PROMPT = `You are a Senior Licensed Architect & Structural/MEP BIM Engineer for Maavadiyaa.
 Respond with JSON ONLY matching:
 {"action":"new_building"|"modify_building","reasoning":string,"title":string,"width":number,"depth":number,"stories":1|2|3,"bedrooms":number,"hasGarage":boolean,"hasOffice":boolean,"roofType":"hip"|"gable"|"flat"|"shed","pitchDeg":number,"roofMaterial":"standing_seam"|"clay_tile"|"natural_slate"|"asphalt_shingle"|"cedar_shake"|"green_roof"|"corrugated_metal"|"marine_metal"|"thatch_palm"|"concrete_slab","wallMaterial":"brick"|"cmu"|"cinder_block"|"coral_stone"|"concrete"|"timber","exteriorFacade":"white_render"|"cement_plaster"|"coral_render"|"tropical_louvres"|"exposed_brick"|"charcoal_cladding"|"stone_veneer"|"timber_slats"|"travertine_stone","interiorWalls":"matte_white"|"smooth_cement_plaster"|"teak_paneling"|"warm_beige"|"sage_green"|"venetian_plaster"|"exposed_concrete"|"oak_paneling","windowFrame":"anthracite"|"matte_black"|"bronze"|"silver_anodized"|"timber_oak","doorMaterial":"walnut"|"oak"|"matte_black"|"white_lacquer"|"frosted_glass","floorFinish":"porcelain"|"hardwood"|"herringbone_oak"|"carrara_marble"|"terrazzo","climateZone":"maldives_tropical"|"temperate"|"arid_desert"|"mediterranean","solar":{"enabled":boolean,"panelCount":number,"inverterKW":number,"batteryKWh":number},"hvac":{"enabled":boolean,"ceilingFansEnabled":boolean},"equipment":{"mdb":{"x":number,"y":number},"utility_meter":{"x":number,"y":number},"solar_inv":{"x":number,"y":number},"solar_bess":{"x":number,"y":number},"dcRouteMode":"auto"|"north_wall"|"south_wall"|"west_wall"|"east_wall"|"corridor","acRouteMode":"auto"|"north_wall"|"south_wall"|"west_wall"|"east_wall"|"corridor"},"levels":[{"name":string,"rooms":[{"name":string,"category":"living"|"kitchen"|"dining"|"bedroom"|"bathroom"|"hallway"|"garage"|"office"|"utility"|"porch","x":number,"y":number,"w":number,"h":number}]}]}
 Rules: When moving electrical items (MDB, inverter, battery, meter) into an interior room or entrance/foyer, use "action":"modify_building", omit "levels", and set "equipment" coordinates inside that room's bounds. Every room inside [0,width]x[0,depth], ZERO overlaps, contiguous tiling, always include a "hallway" spine. For Maldives/tropical requests use "cinder_block", "cement_plaster", "marine_metal", and "maldives_tropical".`;

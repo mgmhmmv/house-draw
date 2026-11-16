@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /*
-  ArchStudio tokens. Warm paper neutrals, graphite ink, one blueprint-blue accent.
+  Maavadiyaa tokens. Warm paper neutrals, graphite ink, one blueprint-blue accent.
   Colors are RGB triplets so Tailwind opacity modifiers work (bg-accent/10).
 */
 @layer base {

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { forwardRef, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2, X } from 'lucide-react';
 import type { ProjectStatus } from '../lib/api';
@@ -7,15 +7,52 @@ export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Bool
 
 /* ── Brand ─────────────────────────────────────────────────────────── */
 
+/** The Maavadiyaa mark: an old claw hammer, forged head and worn hickory handle, on a dark tile. */
+export function LogoMark({ size = 28 }: { size?: number }) {
+  const id = useId().replace(/:/g, '');
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden className="shrink-0">
+      <defs>
+        <linearGradient id={`${id}w`} x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0" stopColor="#8F5C33" />
+          <stop offset="0.42" stopColor="#C99460" />
+          <stop offset="1" stopColor="#875630" />
+        </linearGradient>
+        <linearGradient id={`${id}i`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#A9AFB5" />
+          <stop offset="0.38" stopColor="#6C737A" />
+          <stop offset="1" stopColor="#363A3F" />
+        </linearGradient>
+        <linearGradient id={`${id}t`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#2A2722" />
+          <stop offset="1" stopColor="#151412" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="14" fill={`url(#${id}t)`} />
+      <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#D7B98A" strokeOpacity="0.32" />
+      <g transform="translate(32 32) rotate(-40) scale(0.86) translate(-32 -31)">
+        <path d="M29.4 22 H34.6 L35.8 52.8 Q35.9 57 32 57 Q28.1 57 28.2 52.8 Z" fill={`url(#${id}w)`} />
+        <path d="M30.7 24.5 L30.3 54.5 M33.3 24.5 L33.7 54" stroke="#6F4422" strokeWidth="0.4" opacity="0.55" fill="none" />
+        <path d="M28.5 46.2 H35.5 M28.4 48.4 H35.6 M28.3 50.6 H35.7" stroke="#5E391C" strokeWidth="0.55" opacity="0.55" />
+        <path d="M10.6 14.6 Q10.6 12.4 12.8 12.4 H16.6 V24 H12.8 Q10.6 24 10.6 21.8 Z" fill={`url(#${id}i)`} />
+        <path d="M16.6 14.8 L18 14.2 H26.2 V22.2 H18 L16.6 21.6 Z" fill={`url(#${id}i)`} />
+        <path d="M26.2 12.6 Q26.2 12 26.8 12 H37.4 V24.4 H26.8 Q26.2 24.4 26.2 23.8 Z" fill={`url(#${id}i)`} />
+        <path d="M37.4 13 Q46.4 12.2 53.2 18.9 Q54.1 19.9 52.9 20.5 Q46.8 17.7 37.4 21.6 Z" fill={`url(#${id}i)`} />
+        <path d="M42.6 15.9 Q47.4 16.6 51.6 19.4" stroke="#24272B" strokeWidth="0.85" fill="none" strokeLinecap="round" />
+        <path d="M12.2 12.9 H16.4 M18.2 14.7 H26 M27 12.5 H37.2 Q45.6 12.9 51.8 18.4" stroke="#D6DADE" strokeWidth="0.5" opacity="0.6" fill="none" />
+        <circle cx="22" cy="18.8" r="0.65" fill="#B07A44" opacity="0.65" />
+        <circle cx="33.2" cy="21.4" r="0.55" fill="#B07A44" opacity="0.55" />
+        <circle cx="13.6" cy="20.6" r="0.5" fill="#B07A44" opacity="0.55" />
+      </g>
+    </svg>
+  );
+}
+
 export function Logo({ size = 28, withWord = true }: { size?: number; withWord?: boolean }) {
   return (
     <span className="inline-flex items-center gap-2.5">
-      <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
-        <rect width="32" height="32" rx="8" className="fill-ink" />
-        <path d="M8 23V14l8-6 8 6v9" fill="none" className="stroke-page" strokeWidth="2.2" strokeLinejoin="round" />
-        <path d="M13 23v-5h6v5" fill="none" stroke="#7896FF" strokeWidth="2.2" strokeLinejoin="round" />
-      </svg>
-      {withWord && <span className="text-[15px] font-semibold tracking-tight">ArchStudio</span>}
+      <LogoMark size={size} />
+      {withWord && <span className="text-[16px] font-semibold tracking-tight">Maavadiyaa</span>}
     </span>
   );
 }

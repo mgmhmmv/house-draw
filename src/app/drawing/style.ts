@@ -1,5 +1,5 @@
 /**
- * ArchStudio drafting style. One place for paper, ink, line weights and room tints so every
+ * Maavadiyaa drafting style. One place for paper, ink, line weights and room tints so every
  * sheet reads as part of the same set. Weights are screen pixels (non-scaling strokes);
  * text sizes are metres on the sheet (0.22 m ≈ 2.2 mm at 1:100).
  */

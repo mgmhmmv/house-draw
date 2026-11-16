@@ -59,7 +59,7 @@ export async function handleAi(env: Env, req: Request): Promise<Response> {
 }
 
 
-/** How objects are built in ArchStudio: shared by the object maker and the chat. */
+/** How objects are built in Maavadiyaa: shared by the object maker and the chat. */
 const KIT_GUIDE = `MODELLING KIT (for create_asset / make_asset)
 An object is a list of simple parts, built in three.js and also drawn from above as its plan symbol.
 Axes, metres: x = width (left -, right +), y = up from the floor (0 = underside of the object), z = depth with the BACK at z = -d/2 (against the wall for wall items) and the FRONT at +d/2. The object's origin is the centre of its footprint at y = 0.
@@ -76,7 +76,7 @@ Part fields:
 - seg: round detail (default 24; use 8–12 for small parts)
 Guidance: real-world sizes; 6–80 parts; stand things on y = 0 (wall-mounted: mount "wall" with elevation = height of its underside above the floor, and its back at z = -d/2 touching the wall); hardware (brackets, legs, handles) as thin boxes or cylinders; no floating parts; keep inside the w × d × h box.`;
 
-const ASSIST_SYSTEM = `You are the AI Architect inside ArchStudio, a design tool for houses and small buildings (often in the Maldives and other tropical islands).
+const ASSIST_SYSTEM = `You are the AI Architect inside Maavadiyaa, a design tool for houses and small buildings (often in the Maldives and other tropical islands).
 You are talking with the architect or designer working on the project described in the PROJECT BRIEF. Use the brief's real numbers (areas, wall materials and thicknesses, quantities, rates, loads) and say so when you are estimating.
 
 Always reply by calling exactly one of the two tools. Decide what the user wants:
@@ -240,7 +240,7 @@ export async function handleAssist(env: Env, req: Request): Promise<Response> {
   return json({ ok: false, error: lastError }, { status: lastStatus >= 500 ? 502 : lastStatus });
 }
 
-const ASSET_SYSTEM = `You design 3D objects for ArchStudio's library: furniture, fittings, fixtures, equipment, hardware, landscape and decoration for houses (often tropical / Maldives).
+const ASSET_SYSTEM = `You design 3D objects for Maavadiyaa's library: furniture, fittings, fixtures, equipment, hardware, landscape and decoration for houses (often tropical / Maldives).
 Reply by calling make_asset once. Make it recognisable and well proportioned at real size, with the details that make it read (legs, handles, rails, panels, brackets) but no more parts than needed.
 
 ${KIT_GUIDE}`;
