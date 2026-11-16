@@ -367,12 +367,31 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
       plane([v(x1, y1, eaveZ), v(x0, y1, eaveZ), v(cxm, y1 - h, rz)]);
     }
   }
-  // Fascia boards along the eaves.
-  faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, -1, 0), pts: [v(x0, y0, eaveZ - fasciaH), v(x1, y0, eaveZ - fasciaH), v(x1, y0, eaveZ), v(x0, y0, eaveZ)] });
-  faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, 1, 0), pts: [v(x1, y1, eaveZ - fasciaH), v(x0, y1, eaveZ - fasciaH), v(x0, y1, eaveZ), v(x1, y1, eaveZ)] });
-  if (r.type === 'hip' || !alongX) {
+  // Fascia boards along the eaves only. A gable end has no eave: it gets sloping barge boards
+  // under its verges instead (a level fascia there would run straight across the gable).
+  const hip = r.type === 'hip';
+  if (hip || alongX) {
+    faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, -1, 0), pts: [v(x0, y0, eaveZ - fasciaH), v(x1, y0, eaveZ - fasciaH), v(x1, y0, eaveZ), v(x0, y0, eaveZ)] });
+    faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, 1, 0), pts: [v(x1, y1, eaveZ - fasciaH), v(x0, y1, eaveZ - fasciaH), v(x0, y1, eaveZ), v(x1, y1, eaveZ)] });
+  }
+  if (hip || !alongX) {
     faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(-1, 0, 0), pts: [v(x0, y1, eaveZ - fasciaH), v(x0, y0, eaveZ - fasciaH), v(x0, y0, eaveZ), v(x0, y1, eaveZ)] });
     faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(1, 0, 0), pts: [v(x1, y0, eaveZ - fasciaH), v(x1, y1, eaveZ - fasciaH), v(x1, y1, eaveZ), v(x1, y0, eaveZ)] });
+  }
+  if (r.type === 'gable') {
+    const barge = (a: V3, c: V3, n: V3) => faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n, pts: [v(a.x, a.y, a.z - fasciaH), v(c.x, c.y, c.z - fasciaH), c, a] });
+    if (alongX) {
+      // Gable ends at x0 and x1; verges run eave → ridge (y = cy) → eave.
+      for (const [x, nx] of [[x0, -1], [x1, 1]] as [number, number][]) {
+        barge(v(x, y0, eaveZ), v(x, cy, rz), v(nx, 0, 0));
+        barge(v(x, cy, rz), v(x, y1, eaveZ), v(nx, 0, 0));
+      }
+    } else {
+      for (const [y, ny] of [[y0, -1], [y1, 1]] as [number, number][]) {
+        barge(v(x0, y, eaveZ), v(cxm, y, rz), v(0, ny, 0));
+        barge(v(cxm, y, rz), v(x1, y, eaveZ), v(0, ny, 0));
+      }
+    }
   }
   return { faces, ridgeZ: rz, planes };
 }
@@ -493,6 +512,72 @@ function drainageFor(model: BuildingProject, top: FloorLevel, eaveZ: number): { 
     const x = x0 + W * t;
     pipes.push({ top: v(x, y1 + go, zg), wall: { x: Math.min(b.maxX, Math.max(b.minX, x)), y: b.maxY + 0.06 }, out: { x: 0, y: 1 } });
   }
+
+  // Each pipe's top sits on a gutter that exists (gable roofs only have gutters on two sides).
+  for (const pipe of pipes) {
+    let best: { pt: V3; d: number } | null = null;
+    for (const e of edges) {
+      const dx = e.b.x - e.a.x;
+      const dy = e.b.y - e.a.y;
+      const L = Math.hypot(dx, dy) || 1;
+      const t = Math.max(0.2, Math.min(L - 0.2, ((pipe.top.x - e.a.x) * dx + (pipe.top.y - e.a.y) * dy) / L));
+      const pt = v(e.a.x + (dx * t) / L, e.a.y + (dy * t) / L, zg);
+      const d = Math.hypot(pt.x - pipe.top.x, pt.y - pipe.top.y);
+      if (!best || d < best.d) best = { pt, d };
+    }
+    if (best) pipe.top = best.pt;
+  }
+
+  // Every downpipe runs down a real outside wall. At an open corner (a verandah or patio under
+  // the roof) there is no wall to fix it to: slide it along its gutter to the nearest wall face.
+  const ext = top.walls.filter((w) => w.isExterior);
+  const cx = (b.minX + b.maxX) / 2;
+  const cy = (b.minY + b.maxY) / 2;
+  const wallFace = (p: { x: number; y: number }) => {
+    let best: { q: { x: number; y: number }; d: number } | null = null;
+    for (const w of ext) {
+      const dx = w.end.x - w.start.x;
+      const dy = w.end.y - w.start.y;
+      const L2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((p.x - w.start.x) * dx + (p.y - w.start.y) * dy) / L2));
+      const c = { x: w.start.x + dx * t, y: w.start.y + dy * t };
+      // Out to the wall's outer face, away from the middle of the house.
+      const L = Math.sqrt(L2);
+      let n = { x: -dy / L, y: dx / L };
+      if ((c.x - cx) * n.x + (c.y - cy) * n.y < 0) n = { x: -n.x, y: -n.y };
+      const off = w.thickness / 2 + 0.06;
+      const q = { x: c.x + n.x * off, y: c.y + n.y * off };
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      if (!best || d < best.d) best = { q, d };
+    }
+    return best;
+  };
+  if (ext.length)
+    for (const pipe of pipes) {
+      const here = wallFace(pipe.wall);
+      if (here && here.d < 0.2) continue;
+      // Gutter points from this pipe outwards, nearest first; take the first above a wall face.
+      const samples: { pt: V3; dist: number }[] = [];
+      for (const e of edges) {
+        const L = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y);
+        for (let t = 0.3; t <= L - 0.3; t += 0.25) {
+          const pt = v(e.a.x + ((e.b.x - e.a.x) * t) / L, e.a.y + ((e.b.y - e.a.y) * t) / L, zg);
+          samples.push({ pt, dist: Math.hypot(pt.x - pipe.top.x, pt.y - pipe.top.y) });
+        }
+      }
+      samples.sort((p1, p2) => p1.dist - p2.dist);
+      for (const smp of samples) {
+        const f = wallFace(smp.pt);
+        if (f && f.d <= oh + go + 0.35) {
+          pipe.top = smp.pt;
+          pipe.wall = f.q;
+          const ox = f.q.x - smp.pt.x;
+          const oy = f.q.y - smp.pt.y;
+          pipe.out = Math.abs(ox) > Math.abs(oy) ? { x: ox > 0 ? -1 : 1, y: 0 } : { x: 0, y: oy > 0 ? -1 : 1 };
+          break;
+        }
+      }
+    }
 
   const faces: Face[] = [];
   for (const e of edges) {
