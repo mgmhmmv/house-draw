@@ -12,6 +12,8 @@ export interface Env {
   ALLOWED_EMAILS?: string;
   /** Public origin, if it differs from the request URL (behind a proxy). */
   APP_ORIGIN?: string;
+  /** Development only (.dev.vars): sign in as this allowed email on localhost without Google. */
+  LOCAL_LOGIN_EMAIL?: string;
 }
 
 export class HttpError extends Error {

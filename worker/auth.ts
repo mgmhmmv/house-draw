@@ -176,6 +176,40 @@ export async function handleAuth(env: Env, req: Request, path: string): Promise<
     return redirect('/', [clear, cookie(req, SESSION_COOKIE, token, SESSION_TTL_MS / 1000)]);
   }
 
+  // Local sign-in without Google, for development on this computer only. It needs both
+  // LOCAL_LOGIN_EMAIL and an APP_ORIGIN on localhost — settings that live only in .dev.vars and
+  // are never deployed — and the email must be on the allowlist. (Local wrangler rewrites the
+  // request's host to the production domain, so the request itself can't prove it is local.)
+  // Anywhere else the route does not exist.
+  if (path === '/api/auth/local') {
+    const originHost = (() => {
+      try {
+        return new URL(appOrigin(env, req)).hostname;
+      } catch {
+        return '';
+      }
+    })();
+    const local = (h: string) => h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+    const email = (env.LOCAL_LOGIN_EMAIL ?? '').trim().toLowerCase();
+    const ok = !!email && !!env.APP_ORIGIN && local(originHost) && allowed(env).has(email);
+    if (!ok) throw new HttpError(404, 'not_found');
+    if (req.method === 'GET') return json({ ok: true, email });
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    // A JSON request: a plain cross-site form can't send one.
+    if (!(req.headers.get('content-type') ?? '').includes('application/json')) throw new HttpError(415, 'json_required');
+    let user = await env.DB.prepare('SELECT id, email, name FROM users WHERE email = ?').bind(email).first<User>();
+    if (!user) {
+      user = { id: newId(), email, name: email.split('@')[0] };
+      await env.DB.prepare('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)').bind(user.id, email, user.name, 'local', now()).run();
+    }
+    const t = now();
+    const token = random();
+    await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+      .bind(await sha256(token), user.id, t, t + SESSION_TTL_MS)
+      .run();
+    return json({ ok: true }, { headers: { 'set-cookie': cookie(req, SESSION_COOKIE, token, SESSION_TTL_MS / 1000) } });
+  }
+
   if (path === '/api/auth/logout' && req.method === 'POST') {
     const token = readCookie(req, SESSION_COOKIE);
     if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await sha256(token)).run();

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 
 // three.js stays out of the first paint; the model streams in behind the form.
@@ -12,6 +12,34 @@ const ERRORS: Record<string, string> = {
   google: 'Google couldn’t confirm the sign-in. Try again.',
   not_configured: 'Google sign-in isn’t set up on this server yet.',
 };
+
+/** On this computer (localhost with a local sign-in set up), sign in without Google. */
+function LocalSignIn() {
+  const [email, setEmail] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!['localhost', '127.0.0.1'].includes(window.location.hostname)) return;
+    fetch('/api/auth/local')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j?.ok && setEmail(j.email))
+      .catch(() => {});
+  }, []);
+  if (!email) return null;
+  return (
+    <button
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        const r = await fetch('/api/auth/local', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null);
+        if (r?.ok) window.location.href = '/';
+        else setBusy(false);
+      }}
+      className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-ctl border border-dashed border-line-strong text-[14px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink disabled:opacity-50"
+    >
+      {busy ? 'Signing in…' : `Sign in as ${email} · this computer`}
+    </button>
+  );
+}
 
 export function AuthScreen() {
   const error = new URLSearchParams(window.location.search).get('error');
@@ -37,6 +65,7 @@ export function AuthScreen() {
               <GoogleMark />
               Continue with Google
             </a>
+            <LocalSignIn />
             <p className="mt-6 text-center text-[13px] text-ink-3">Access is by invitation only.</p>
           </div>
         </div>
