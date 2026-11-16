@@ -470,8 +470,10 @@ export function computeSolarArrayLayout(project: BuildingProject): ComputedSolar
   const modD = isSideways ? baseW : baseD;
   const gap = 0.08;
 
-  const count = Math.max(1, solar.panelCount || 1);
-  let cols = solar.columns && solar.columns > 0 ? Math.min(count, solar.columns) : 0;
+  // With strings set, one string per row (strings × panels per string).
+  const stringed = (solar.strings ?? 0) > 0 && (solar.panelsPerString ?? 0) > 0;
+  const count = stringed ? solar.strings! * solar.panelsPerString! : Math.max(1, solar.panelCount || 1);
+  let cols = stringed ? solar.panelsPerString! : solar.columns && solar.columns > 0 ? Math.min(count, solar.columns) : 0;
   if (!cols) {
     if (face === 'east' || face === 'west') {
       cols = Math.min(3, Math.max(2, Math.floor(count / 3) || 2));

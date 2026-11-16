@@ -3,6 +3,7 @@
  * building shell is merged by material, so walls, openings, rooms and solar panels are found
  * from where the ray hit.
  */
+import { siteLayout } from '../model3d/site';
 import * as THREE from 'three';
 import type { BuildingProject, FloorLevel, SelectableElementKind } from '../../../model/types';
 import { computeSolarArrayLayout } from '../../../engine/geometry';
@@ -175,6 +176,20 @@ export function selectionOutline(model: BuildingProject, id: string, kind: Selec
         const rot = n.rotation ?? (n.wallSide ? WALL_SIDE_ROT[n.wallSide] : 0);
         return boxAt(n.position.x, y, n.position.y, sz.w + 0.04, sz.h + 0.04, sz.d + 0.04, (-rot * Math.PI) / 180);
       }
+    }
+  }
+  if (kind === 'boundary' || kind === 'gate') {
+    const sl = siteLayout(model);
+    if (kind === 'boundary') {
+      const p = sl.plot;
+      return boxAt(p.x + p.w / 2, sl.height / 2, p.y + p.d / 2, p.w + 0.3, sl.height + 0.2, p.d + 0.3, 0);
+    }
+    const g = sl.gates.find((x) => `gate:${x.gate.id}` === id);
+    if (g) {
+      const len = Math.hypot(g.span.b.x - g.span.a.x, g.span.b.y - g.span.a.y) + 0.6;
+      const across = g.gate.canopy !== 'none' ? 1.7 : 0.6;
+      const horiz = Math.abs(g.span.a.y - g.span.b.y) < 1e-6;
+      return boxAt((g.span.a.x + g.span.b.x) / 2, 1.4, (g.span.a.y + g.span.b.y) / 2, horiz ? len : across, 2.9, horiz ? across : len, 0);
     }
   }
   if (kind === 'solar_panel') {

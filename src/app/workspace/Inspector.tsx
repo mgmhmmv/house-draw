@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { ASSETS, assetFor, CATEGORIES } from '../drawing/assets/catalog';
 import { computePlumbingRiser } from '../../engine/mepEngine';
+import { siteLayout } from '../drawing/model3d/site';
 
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, ChevronRight, FlipHorizontal, RotateCcw, Scissors, Trash2 } from 'lucide-react';
 import {
@@ -30,6 +31,8 @@ import {
   type WaterSupplyMode,
   getSite,
   type GateKind,
+  BOUNDARY_FINISHES,
+  type BoundaryFinish,
 } from '../../model/types';
 import { computeTotalFloorArea, polygonArea, uid, wallLength } from '../../engine/geometry';
 import { mepAsset } from '../drawing/assets/render';
@@ -486,6 +489,15 @@ export function Inspector({ model, levelIndex, selection, onCommit, onDelete, on
     }
   }
 
+  if (selection?.kind === 'boundary' || selection?.kind === 'gate') {
+    return (
+      <>
+        <SiteSelection model={model} gateId={selection.kind === 'gate' ? selection.id.replace(/^gate:/, '') : null} edit={edit} onSelect={onSelect} />
+        <BuildingPanel model={model} edit={edit} focusSolar={false} />
+      </>
+    );
+  }
+
   if (selection?.kind === 'solar_panel' || selection?.kind === 'solar_array') {
     const idx = selection.kind === 'solar_panel' ? Number(selection.id.replace('solar_panel_', '')) : null;
     return (
@@ -686,6 +698,167 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
   );
 }
 
+/** The boundary wall (finish, colour, height) or one of its gates (type, size, colour, canopy). */
+function SiteSelection({
+  model,
+  gateId,
+  edit,
+  onSelect,
+}: {
+  model: BuildingProject;
+  gateId: string | null;
+  edit: (fn: (m: BuildingProject) => void) => void;
+  onSelect?: (id: string, kind: SelectableElementKind) => void;
+}) {
+  const site = getSite(model);
+  const setSite = (patch: Partial<typeof site>) => edit((m) => (m.site = { ...getSite(m), ...patch }));
+  const gate = gateId ? site.gates.find((g) => g.id === gateId) : null;
+  const setGate = (patch: Partial<NonNullable<typeof gate>>) => gate && setSite({ gates: site.gates.map((g) => (g.id === gate.id ? { ...g, ...patch } : g)) });
+  const len = siteLayout(model).wallLength;
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
+        <div className="min-w-0">
+          <div className="text-2xs font-medium uppercase tracking-wide text-ink-3">Site</div>
+          <div className="mt-0.5 truncate text-[15px] font-semibold">{gate ? `Gate · ${gate.width.toFixed(1)} m` : `Boundary wall · ${len.toFixed(1)} m`}</div>
+        </div>
+      </div>
+      {gate ? (
+        <Section title="Gate">
+          <Row label="Type">
+            <Choice
+              value={gate.kind}
+              options={[
+                { value: 'sliding', label: 'Sliding' },
+                { value: 'swing_double', label: 'Double swing' },
+                { value: 'timber', label: 'Timber' },
+                { value: 'pedestrian', label: 'Pedestrian only' },
+              ]}
+              onChange={(v) => setGate({ kind: v as GateKind })}
+            />
+          </Row>
+          <Row label="Clear width">
+            <Num value={gate.width} unit="m" step={0.1} min={0.8} max={8} onChange={(v) => setGate({ width: v })} />
+          </Row>
+          <Row label="Position">
+            <Num value={Number(gate.at.toFixed(2))} unit="m" step={0.1} min={0} max={200} onChange={(v) => setGate({ at: v })} />
+          </Row>
+          <Row label="Nudge">
+            <Nudge onMove={(dx, dy) => setGate({ at: gate.at + (gate.side === 'N' || gate.side === 'S' ? dx : dy) })} />
+          </Row>
+          <Row label="Colour">
+            <Swatches value={gate.color} onChange={(v) => setGate({ color: v })} presets={['#1F1F1F', '#3B3F45', '#6B7078', '#F2F2EF', '#7A4E2D', '#2F5D50', '#8C2F2B']} />
+          </Row>
+          <Row label="Canopy">
+            <Choice
+              value={gate.canopy}
+              options={[
+                { value: 'gable', label: 'Gable (two-slope)' },
+                { value: 'flat', label: 'Flat' },
+                { value: 'none', label: 'None' },
+              ]}
+              onChange={(v) => setGate({ canopy: v as 'gable' | 'flat' | 'none' })}
+            />
+          </Row>
+          <Row label="Pedestrian door">
+            <Toggle label="Pedestrian door" checked={gate.pedestrianWidth > 0} onChange={(v) => setGate({ pedestrianWidth: v ? 0.9 : 0 })} />
+          </Row>
+          <Row label="Meter at gate">
+            <Toggle label="Meter at gate" checked={site.meterAtGate} onChange={(v) => setSite({ meterAtGate: v })} />
+          </Row>
+          <div className="flex justify-between px-4 pb-3">
+            <Button size="sm" variant="ghost" onClick={() => onSelect?.('boundary', 'boundary')}>
+              Boundary wall
+            </Button>
+            <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setSite({ gates: site.gates.filter((g) => g.id !== gate.id) })}>
+              Remove gate
+            </Button>
+          </div>
+        </Section>
+      ) : (
+        <Section title="Boundary wall">
+          <Row label="Finish">
+            <Choice
+              value={site.boundaryFinish}
+              options={(Object.keys(BOUNDARY_FINISHES) as BoundaryFinish[]).map((k) => ({ value: k, label: BOUNDARY_FINISHES[k].label }))}
+              onChange={(v) => setSite({ boundaryFinish: v as BoundaryFinish, boundaryColor: undefined })}
+            />
+          </Row>
+          <Row label="Colour">
+            <Swatches value={site.boundaryColor} onChange={(v) => setSite({ boundaryColor: v })} presets={['#F4F1EA', '#E6E1D6', '#D9D9D6', '#B9B6AF', '#DCCFB2', '#C8B79A', '#9E9385', '#A65A3E', '#5F6B66']} />
+          </Row>
+          <Row label="Height">
+            <Num value={site.boundaryHeight} unit="m" step={0.1} min={0.6} max={3.5} onChange={(v) => setSite({ boundaryHeight: v })} />
+          </Row>
+          <Row label="Thickness">
+            <Num value={site.boundaryThickness} unit="m" step={0.025} min={0.1} max={0.4} onChange={(v) => setSite({ boundaryThickness: v })} />
+          </Row>
+          <Row label="Plot">
+            <div className="flex items-center gap-1.5">
+              <Num value={Number(site.plot.w.toFixed(2))} unit="m" step={0.5} min={4} max={200} onChange={(v) => setSite({ plot: { ...site.plot, w: v } })} />
+              <span className="text-ink-3">×</span>
+              <Num value={Number(site.plot.d.toFixed(2))} unit="m" step={0.5} min={4} max={200} onChange={(v) => setSite({ plot: { ...site.plot, d: v } })} />
+            </div>
+          </Row>
+          <p className="px-4 pb-2 text-2xs text-ink-3">{BOUNDARY_FINISHES[site.boundaryFinish].spec}.</p>
+          <div className="flex justify-between px-4 pb-3">
+            {site.gates[0] ? (
+              <Button size="sm" variant="ghost" onClick={() => onSelect?.(`gate:${site.gates[0].id}`, 'gate')}>
+                Gate
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={() => setSite({ gates: [{ id: `gate${Date.now()}`, side: 'S', at: site.plot.w / 2, width: 3, kind: 'sliding', canopy: 'none', pedestrianWidth: 0.9 }] })}>
+                Add a gate
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setSite({ boundary: false })}>
+              Remove wall
+            </Button>
+          </div>
+        </Section>
+      )}
+    </>
+  );
+}
+
+/**
+ * Strings: how many, and panels in each. Setting them lays the array out one string per row and
+ * sets the panel count; Auto-arrange puts every panel back in its row (clears manual moves).
+ */
+function SolarStrings({ edit, solar }: { edit: (fn: (m: BuildingProject) => void) => void; solar: ReturnType<typeof getSolarConfig> }) {
+  const strings = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
+  const per = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / strings));
+  const voc = per * 41.5;
+  const set = (st: number, pp: number) =>
+    edit((m) => (m.solar = { ...getSolarConfig(m), strings: st, panelsPerString: pp, panelCount: st * pp, panelOffsets: {}, columns: undefined }));
+  return (
+    <>
+      <Row label="Strings">
+        <Num value={strings} step={1} min={1} max={8} onChange={(v) => set(Math.max(1, Math.round(v)), per)} />
+      </Row>
+      <Row label="Panels per string">
+        <Num value={per} step={1} min={1} max={24} onChange={(v) => set(strings, Math.max(1, Math.round(v)))} />
+      </Row>
+      <Row label="String voltage">
+        <Readout>
+          <span className={voc > 550 ? 'text-warn' : ''}>
+            {voc.toFixed(0)} V Voc{voc > 550 ? ' · over a typical 550 V input' : ''}
+          </span>
+        </Readout>
+      </Row>
+      <div className="flex justify-end px-4 pb-3">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => edit((m) => (m.solar = { ...getSolarConfig(m), strings, panelsPerString: per, panelCount: strings * per, panelOffsets: {}, columns: undefined, offsetX: 0, offsetY: 0 }))}
+        >
+          Auto-arrange · one string per row
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function SolarSection({ model, edit, solar, collapsed }: { model: BuildingProject; edit: (fn: (m: BuildingProject) => void) => void; solar: ReturnType<typeof getSolarConfig>; collapsed?: boolean }) {
   void model;
   const kWp = (solar.panelCount * solar.panelWattage) / 1000;
@@ -700,8 +873,9 @@ function SolarSection({ model, edit, solar, collapsed }: { model: BuildingProjec
             <Readout>{kWp.toFixed(2)} kWp</Readout>
           </Row>
           <Row label="Panels">
-            <Num value={solar.panelCount} step={1} min={1} max={60} onChange={(v) => edit((m) => (m.solar = { ...solar, panelCount: Math.round(v), panelOffsets: {} }))} />
+            <Num value={solar.panelCount} step={1} min={1} max={60} onChange={(v) => edit((m) => (m.solar = { ...solar, panelCount: Math.round(v), panelOffsets: {}, strings: undefined, panelsPerString: undefined }))} />
           </Row>
+          <SolarStrings edit={edit} solar={solar} />
           <Row label="Panel rating">
             <Num value={solar.panelWattage} unit="Wp" step={5} min={100} max={800} onChange={(v) => edit((m) => (m.solar = { ...solar, panelWattage: v }))} />
           </Row>
@@ -871,6 +1045,7 @@ function SolarSelection({
           <div className="mt-0.5 truncate text-[15px] font-semibold">{panelMode ? `Panel ${index! + 1} of ${solar.panelCount}` : `Array · ${solar.panelCount} panels`}</div>
         </div>
       </div>
+      <p className="px-5 pt-3 text-2xs leading-relaxed text-ink-3">In 3D with the select tool, drag {panelMode ? 'the panel' : 'any panel'} to slide {panelMode ? 'it' : 'the array'} along the roof.</p>
       <Section title="Position">
         <Row label="Moving">
           <div className="flex rounded-ctl border border-line p-0.5">
@@ -900,13 +1075,16 @@ function SolarSelection({
             </Button>
           </div>
         ) : (
-          <Row label="Turn array">
-            <Choice
-              value={String(solar.rotationDeg ?? 0) as '0'}
-              options={['0', '90', '180', '270'].map((v) => ({ value: v as '0', label: `${v}°` }))}
-              onChange={(v) => edit((m) => (m.solar = { ...getSolarConfig(m), rotationDeg: Number(v) }))}
-            />
-          </Row>
+          <>
+            <Row label="Turn array">
+              <Choice
+                value={String(solar.rotationDeg ?? 0) as '0'}
+                options={['0', '90', '180', '270'].map((v) => ({ value: v as '0', label: `${v}°` }))}
+                onChange={(v) => edit((m) => (m.solar = { ...getSolarConfig(m), rotationDeg: Number(v) }))}
+              />
+            </Row>
+            <SolarStrings edit={edit} solar={solar} />
+          </>
         )}
       </Section>
     </>

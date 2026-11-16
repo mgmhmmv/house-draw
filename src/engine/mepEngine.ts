@@ -2473,8 +2473,8 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
     );
 
   const solar = getSolarConfig(project);
-  const stringsCount = solar.panelCount >= 8 ? 2 : 1;
-  const panelsPerString = Math.max(1, Math.ceil(solar.panelCount / stringsCount));
+  const stringsCount = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
+  const panelsPerString = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / stringsCount));
   const arrayKwp = Number(((solar.panelCount * solar.panelWattage) / 1000).toFixed(2));
   const stringVocV = Number((panelsPerString * 41.5).toFixed(1));
   const stringIscA = 13.8;

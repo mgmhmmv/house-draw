@@ -197,7 +197,9 @@ export type SelectableElementKind =
   | 'furniture'
   | 'mep_node'
   | 'solar_array'
-  | 'solar_panel';
+  | 'solar_panel'
+  | 'boundary'
+  | 'gate';
 
 export interface SolarPVConfig {
   enabled: boolean;
@@ -210,6 +212,9 @@ export interface SolarPVConfig {
   rotationDeg?: number; // 0 | 90 | 180 | 270
   roofFace?: SolarRoofFace; // default 'south'
   columns?: number; // 0 or undefined = auto-fit to roof slope
+  /** Strings wired to the inverter, and panels in each: the array is laid out one string per row. */
+  strings?: number;
+  panelsPerString?: number;
   panelOffsets?: Record<number, Point2D>; // per-panel manual (x, y) offset in meters
   dcRouteMode?: WiringRouteMode; // PV array -> Inverter conduit route preset
   acRouteMode?: WiringRouteMode; // Inverter -> MDB feeder conduit route preset
@@ -663,7 +668,20 @@ export interface SiteGate {
   canopy: 'gable' | 'flat' | 'none';
   /** A pedestrian door beside the main gate (clear width, m); 0 for none. */
   pedestrianWidth: number;
+  /** Gate colour (bars, frame or slats). */
+  color?: string;
 }
+
+export type BoundaryFinish = 'painted_render' | 'fair_face_block' | 'coral_stone' | 'stone_cladding' | 'exposed_brick' | 'timber_slats';
+
+export const BOUNDARY_FINISHES: Record<BoundaryFinish, { label: string; color: string; spec: string }> = {
+  painted_render: { label: 'Painted render', color: '#EEEAE2', spec: 'cement render, primed and painted' },
+  fair_face_block: { label: 'Fair-face blockwork', color: '#B9B6AF', spec: 'fair-face cement blocks, struck joints, sealed' },
+  coral_stone: { label: 'Coral stone', color: '#DCCFB2', spec: 'coral stone facing, lime pointed' },
+  stone_cladding: { label: 'Stone cladding', color: '#9E9385', spec: 'natural stone cladding on render' },
+  exposed_brick: { label: 'Exposed brick', color: '#A65A3E', spec: 'facing brick, raked joints' },
+  timber_slats: { label: 'Timber slat screen', color: '#8A5A36', spec: 'hardwood slat screen on steel frame over a low wall' },
+};
 
 export interface SiteConfig {
   /** Plot outline in plan metres (same axes as the building). */
@@ -674,6 +692,9 @@ export interface SiteConfig {
   gates: SiteGate[];
   /** Utility electricity meter built into the boundary wall at a gate pier. */
   meterAtGate: boolean;
+  boundaryFinish: BoundaryFinish;
+  /** Wall colour (paint or a tint over the finish). */
+  boundaryColor?: string;
 }
 
 /** The site with defaults; a project made before sites existed gets a plot round the building. */
@@ -698,6 +719,8 @@ export function getSite(project: BuildingProject): SiteConfig {
     boundaryThickness: s.boundaryThickness ?? 0.15,
     gates: s.gates ?? [],
     meterAtGate: s.meterAtGate ?? false,
+    boundaryFinish: s.boundaryFinish ?? 'painted_render',
+    boundaryColor: s.boundaryColor,
   };
 }
 

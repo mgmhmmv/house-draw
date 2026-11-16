@@ -5,7 +5,7 @@
  * Plan axes (x east, y south, z up) map to three.js as (x, z, y): y is up in three.js.
  */
 import * as THREE from 'three';
-import { getDesignConfig, type BuildingProject } from '../../../model/types';
+import { BOUNDARY_FINISHES, getDesignConfig, getSite, type BuildingProject } from '../../../model/types';
 import { buildFrame, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
 import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
@@ -13,6 +13,7 @@ import { AssetMaterials } from '../assets/kit';
 import { furnitureObject, mepObject } from '../assets/render';
 import { roofFraming } from '../model3d/framing';
 import { siteLayout } from '../model3d/site';
+import { finishTexture } from './finishTextures';
 
 const T = (p: V3) => new THREE.Vector3(p.x, p.z, p.y);
 
@@ -341,7 +342,11 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   boundary.userData.kind = 'boundary';
   const sl = siteLayout(model);
   {
-    const wallMat = metalMat(clay ? '#F1EEE8' : tint(FACADE_MATERIAL_OPTIONS.find((o) => o.id === getDesignConfig(model).exteriorFacade)?.base ?? '#eef2f6', 0.25), 0.9, 0);
+    const st = getSite(model);
+    const fin = BOUNDARY_FINISHES[st.boundaryFinish];
+    const wallColor = clay ? '#F1EEE8' : st.boundaryColor ?? (st.boundaryFinish === 'painted_render' ? tint(FACADE_MATERIAL_OPTIONS.find((o) => o.id === getDesignConfig(model).exteriorFacade)?.base ?? '#eef2f6', 0.25) : fin.color);
+    const wallMat = metalMat(wallColor, st.boundaryFinish === 'exposed_brick' || st.boundaryFinish === 'coral_stone' ? 0.95 : 0.9, 0);
+    const boundaryPick = { id: 'boundary', kind: 'boundary' };
     const capMat = metalMat(clay ? '#E2DED7' : '#B9B4AA', 0.8, 0);
     const geos: THREE.BufferGeometry[] = [];
     const caps: THREE.BufferGeometry[] = [];
@@ -349,7 +354,16 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     const v3 = (p: { x: number; y: number }, z: number) => new THREE.Vector3(p.x, z, p.y);
     const piers: { x: number; y: number }[] = [];
     for (const r of sl.runs) {
-      geos.push(barBetween(v3(r.a, 0), v3(r.b, 0), up, sl.thickness, sl.height, sl.height / 2));
+      // Each run carries its finish at real size (one texture tile = one metre).
+      const runLen = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
+      const tex = clay ? null : finishTexture(st.boundaryFinish, runLen, sl.height);
+      const runMat = new THREE.MeshStandardMaterial({ color: wallColor, map: tex, roughness: 0.92, metalness: 0 });
+      materials.push(runMat);
+      const runMesh = new THREE.Mesh(barBetween(v3(r.a, 0), v3(r.b, 0), up, sl.thickness, sl.height, sl.height / 2), runMat);
+      runMesh.castShadow = true;
+      runMesh.receiveShadow = true;
+      runMesh.userData.pick = boundaryPick;
+      boundary.add(runMesh);
       caps.push(barBetween(v3(r.a, sl.height), v3(r.b, sl.height), up, sl.thickness + 0.06, 0.05, 0.025));
       const L = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
       const n = Math.max(1, Math.round(L / 3));
@@ -360,12 +374,21 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
       const m = new THREE.Mesh(mergeGeos(geos), wallMat);
       m.castShadow = true;
       m.receiveShadow = true;
+      m.userData.pick = boundaryPick;
       boundary.add(m);
     }
-    if (caps.length) boundary.add(new THREE.Mesh(mergeGeos(caps), capMat));
+    if (caps.length) {
+      const cm = new THREE.Mesh(mergeGeos(caps), capMat);
+      cm.userData.pick = boundaryPick;
+      boundary.add(cm);
+    }
     for (const g of sl.gates) {
-      boundary.add(furnitureObject({ id: `gate-${g.gate.id}`, type: g.main.asset, position: g.main.center, rotation: g.rot, width: g.main.width, depth: 0.3 }, 0, assetMats, 0));
-      if (g.ped) boundary.add(furnitureObject({ id: `ped-${g.gate.id}`, type: 'gate_pedestrian', position: g.ped.center, rotation: g.rot, width: g.ped.width, depth: 0.3 }, 0, assetMats, 0));
+      const gatePick = { id: `gate:${g.gate.id}`, kind: 'gate' };
+      const gateGroup = new THREE.Group();
+      gateGroup.userData.pick = gatePick;
+      boundary.add(gateGroup);
+      gateGroup.add(furnitureObject({ id: `gate-${g.gate.id}`, type: g.main.asset, position: g.main.center, rotation: g.rot, width: g.main.width, depth: 0.3, color: g.gate.color }, 0, assetMats, 0));
+      if (g.ped) gateGroup.add(furnitureObject({ id: `ped-${g.gate.id}`, type: 'gate_pedestrian', position: g.ped.center, rotation: g.rot, width: g.ped.width, depth: 0.3, color: g.gate.color }, 0, assetMats, 0));
       if (g.gate.canopy !== 'none') {
         // Posts at the ends of the entrance, then a two-slope (or flat) roof over it.
         const eave = 2.45;
@@ -374,7 +397,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
         const a = v3(g.span.a, 0).addScaledVector(along, -0.15);
         const b = v3(g.span.b, 0).addScaledVector(along, 0.15);
         const posts = [a, b].map((p) => barBetween(p.clone(), p.clone().setY(eave), new THREE.Vector3(1, 0, 0), 0.3, 0.3, 0));
-        boundary.add(new THREE.Mesh(mergeGeos(posts), wallMat));
+        gateGroup.add(new THREE.Mesh(mergeGeos(posts), wallMat));
         const half = 0.75; // canopy reaches this far each side of the wall line
         const rise = g.gate.canopy === 'gable' ? 0.45 : 0.05;
         const roofMatC = metalMat(clay ? '#E2DED7' : ribColor, 0.5, 0.3);
@@ -395,7 +418,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
           const mesh = new THREE.Mesh(geo, roofMatC);
           (roofMatC as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
           mesh.castShadow = true;
-          boundary.add(mesh);
+          gateGroup.add(mesh);
         }
         // Fascia under each eave edge.
         const fas = [1, -1].map((side) => {
@@ -403,7 +426,7 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
           const p2 = b2.clone().addScaledVector(outV, side * half).setY(eave - 0.08);
           return barBetween(p1, p2, up, 0.04, 0.16, 0);
         });
-        boundary.add(new THREE.Mesh(mergeGeos(fas), wallMat));
+        gateGroup.add(new THREE.Mesh(mergeGeos(fas), wallMat));
       }
     }
     if (sl.meter) {

@@ -4,7 +4,7 @@
  * so the result is exactly what was proposed, and every edit is reported back.
  */
 import type { BuildingProject, FloorLevel, GateKind, PlotSide, Point2D } from '../../model/types';
-import { getSite, getSolarConfig } from '../../model/types';
+import { BOUNDARY_FINISHES, getSite, getSolarConfig, type BoundaryFinish } from '../../model/types';
 import { uid } from '../../engine/geometry';
 import { ASSET_BY_ID, ASSETS, cleanSpec, registerCustomAssets } from '../drawing/assets/catalog';
 
@@ -300,6 +300,7 @@ export function applyEdits(model: BuildingProject, ops: EditOp[]): EditResult {
                 kind: (['sliding', 'swing_double', 'timber', 'pedestrian'].includes(g.kind as string) ? g.kind : 'sliding') as GateKind,
                 canopy: (['gable', 'flat', 'none'].includes(g.canopy as string) ? g.canopy : 'none') as 'gable' | 'flat' | 'none',
                 pedestrianWidth: num(g.pedestrianWidth, 0, 2) ?? 0,
+                color: typeof g.color === 'string' && /^#[0-9a-f]{6}$/i.test(g.color) ? g.color : undefined,
               }))
             : cur.gates;
           next.site = {
@@ -312,6 +313,8 @@ export function applyEdits(model: BuildingProject, ops: EditOp[]): EditResult {
             boundaryThickness: num(p.boundaryThickness, 0.1, 0.4) ?? cur.boundaryThickness,
             gates,
             meterAtGate: typeof p.meterAtGate === 'boolean' ? p.meterAtGate : cur.meterAtGate,
+            boundaryFinish: typeof p.boundaryFinish === 'string' && p.boundaryFinish in BOUNDARY_FINISHES ? (p.boundaryFinish as BoundaryFinish) : cur.boundaryFinish,
+            boundaryColor: typeof p.boundaryColor === 'string' && /^#[0-9a-f]{6}$/i.test(p.boundaryColor) ? p.boundaryColor : p.boundaryColor === null ? undefined : cur.boundaryColor,
           };
           applied.push('Changed the site (plot, boundary wall, gates)');
           break;

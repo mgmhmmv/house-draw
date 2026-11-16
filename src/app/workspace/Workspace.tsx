@@ -38,6 +38,7 @@ import {
 import {
   getHVACConfig,
   getSolarConfig,
+  getSite,
   type BuildingProject,
   type CADTool,
   type SelectableElementKind,
@@ -253,6 +254,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       delete offsets[Number(id.replace('solar_panel_', ''))];
       next.solar = { ...s, panelOffsets: offsets };
     } else if (kind === 'solar_array') next.solar = { ...getSolarConfig(next), enabled: false };
+    else if (kind === 'boundary') next.site = { ...getSite(next), boundary: false };
+    else if (kind === 'gate') next.site = { ...getSite(next), gates: getSite(next).gates.filter((g) => `gate:${g.id}` !== id) };
     commit(next);
     setSelection(null);
     toast('Deleted · ⌘Z to undo');
@@ -548,6 +551,17 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
             if (!selection) return;
             assistantRef.current?.attach(describeSelection(model, selection));
             openAssistant();
+          },
+          onSolarMove: (target, dx, dy) => {
+            if (!model) return;
+            const next = structuredClone(model);
+            const sv = getSolarConfig(next);
+            const r2 = (v: number) => Math.round(v * 100) / 100;
+            next.solar =
+              target.kind === 'array'
+                ? { ...sv, offsetX: r2((sv.offsetX ?? 0) + dx), offsetY: r2((sv.offsetY ?? 0) + dy) }
+                : { ...sv, panelOffsets: { ...(sv.panelOffsets ?? {}), [target.index]: { x: r2((sv.panelOffsets?.[target.index]?.x ?? 0) + dx), y: r2((sv.panelOffsets?.[target.index]?.y ?? 0) + dy) } } };
+            commit(next, { label: target.kind === 'array' ? 'Moved the solar array' : `Moved solar panel ${target.index + 1}` });
           },
           onPlaceAt: (def, hit, viewer) => {
             if (!model) return;
@@ -1300,5 +1314,10 @@ function describeSelection(model: BuildingProject | null, sel: Selection): About
   }
   if (sel.kind === 'solar_panel') return { ...ref, label: `Solar panel ${Number(sel.id.replace('solar_panel_', '')) + 1}` };
   if (sel.kind === 'solar_array') return { ...ref, label: 'Solar array' };
+  if (sel.kind === 'boundary') return { ...ref, label: 'Boundary wall', details: { ...getSite(model), note: 'Change with set_site' } };
+  if (sel.kind === 'gate') {
+    const g = getSite(model).gates.find((x) => `gate:${x.id}` === sel.id);
+    return { ...ref, label: 'Gate', details: { ...(g ?? {}), note: 'Change with set_site (gates list)' } };
+  }
   return ref;
 }

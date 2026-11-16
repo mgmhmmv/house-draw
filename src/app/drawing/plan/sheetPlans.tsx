@@ -509,7 +509,22 @@ export function SitePlan({ model, k }: { model: BuildingProject; k: number }) {
         const inward = r.side === 'N' ? 1 : r.side === 'S' ? -1 : r.side === 'W' ? 1 : -1;
         const x = horiz ? Math.min(r.a.x, r.b.x) : r.a.x + (inward > 0 ? 0 : -t);
         const y = horiz ? r.a.y + (inward > 0 ? 0 : -t) : Math.min(r.a.y, r.b.y);
-        return <rect key={i} x={x} y={y} width={horiz ? Math.abs(r.b.x - r.a.x) : t} height={horiz ? t : Math.abs(r.b.y - r.a.y)} fill="#8A857D" stroke={INK} strokeWidth={WEIGHT.medium} vectorEffect={NS} />;
+        return (
+          <rect
+            key={i}
+            data-kind="boundary"
+            data-id="boundary"
+            pointerEvents="all"
+            x={x}
+            y={y}
+            width={horiz ? Math.abs(r.b.x - r.a.x) : t}
+            height={horiz ? t : Math.abs(r.b.y - r.a.y)}
+            fill="#8A857D"
+            stroke={INK}
+            strokeWidth={WEIGHT.medium}
+            vectorEffect={NS}
+          />
+        );
       })}
       {/* Gates and pedestrian doors, with the canopy dashed overhead */}
       {sl.gates.map((g, i) => {
@@ -527,8 +542,12 @@ export function SitePlan({ model, k }: { model: BuildingProject; k: number }) {
         const c2 = { x: bx.x + u.x * over, y: bx.y + u.y * over };
         const corner = (q: P, s: number) => ({ x: q.x + g.out.x * half * s, y: q.y + g.out.y * half * s });
         const canopy = [corner(c1, 1), corner(c2, 1), corner(c2, -1), corner(c1, -1)];
+        const hx = Math.min(ax.x, bx.x) - 0.1;
+        const hy = Math.min(ax.y, bx.y) - 0.1;
         return (
           <g key={i}>
+            {/* Click target for the whole entrance */}
+            <rect data-kind="gate" data-id={`gate:${g.gate.id}`} pointerEvents="all" x={hx - Math.abs(g.out.x) * 0.4} y={hy - Math.abs(g.out.y) * 0.4} width={Math.abs(bx.x - ax.x) + 0.2 + Math.abs(g.out.x) * 0.8} height={Math.abs(bx.y - ax.y) + 0.2 + Math.abs(g.out.y) * 0.8} fill="transparent" />
             {main && (
               <g transform={`translate(${g.main.center.x + inset.x} ${g.main.center.y + inset.y}) rotate(${g.rot})`}>
                 <PlanPrims prims={assetPlan(main, g.main.width, 0.3)} ink={INK} width={WEIGHT.light} />

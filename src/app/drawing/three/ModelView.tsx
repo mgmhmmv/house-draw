@@ -8,6 +8,8 @@ import { ASSETS, type AssetDef } from '../assets/catalog';
 import { fitsSurface } from '../assets/placement';
 import { cx } from '../../ui';
 import { buildScene, type SceneParts } from './buildScene';
+import { buildFrame } from '../model3d/faces';
+import { getSolarConfig } from '../../../model/types';
 import { WalkController, type Move } from './walk';
 import { buildServices, type ServiceSystem } from './services';
 
@@ -33,6 +35,8 @@ export interface ModelViewSelect {
   onPlaceAt?: (def: AssetDef, hit: WalkHit, viewer: { x: number; y: number }) => void;
   /** Walk mode: ask the AI about a spot (e.g. to make a custom object for it). */
   onAskAt?: (hit: WalkHit, viewer: { x: number; y: number }) => void;
+  /** Solar panels dragged along the roof (plan metres, east and south positive). */
+  onSolarMove?: (target: { kind: 'array' } | { kind: 'panel'; index: number }, dx: number, dy: number) => void;
 }
 
 export function ModelView({ model, select }: { model: BuildingProject; select?: ModelViewSelect }) {
@@ -224,9 +228,87 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     if (!c) return;
     const el = c.renderer.domElement;
     let down: { x: number; y: number } | null = null;
-    const onDown = (e: PointerEvent) => (down = { x: e.clientX, y: e.clientY });
+    // Dragging a selected solar panel (or the whole array) slides it along the roof.
+    type SolarTarget = { kind: 'array' } | { kind: 'panel'; index: number };
+    let drag: { target: SolarTarget; start: THREE.Vector3; dx: number; dy: number; moved: boolean; controls: boolean } | null = null;
+    const ghostMat = new THREE.MeshBasicMaterial({ color: '#2F55D4', transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthTest: false });
+    const ghost = new THREE.Mesh(new THREE.BufferGeometry(), ghostMat);
+    ghost.renderOrder = 10;
+    ghost.visible = false;
+    c.scene.add(ghost);
+    let ghostFrame = 0;
+    const rayAt = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), c.camera);
+      return ray;
+    };
+    const roofHits = (e: PointerEvent) =>
+      c.parts?.roof.visible ? rayAt(e).intersectObjects([c.parts.roof], true).filter((h) => (h.object as THREE.Mesh).isMesh && h.object.visible) : [];
+    const showGhost = () => {
+      ghostFrame = 0;
+      if (!drag) return;
+      const m = modelRef.current;
+      const s = getSolarConfig(m);
+      const t = drag.target;
+      const temp: BuildingProject = {
+        ...m,
+        solar:
+          t.kind === 'array'
+            ? { ...s, offsetX: (s.offsetX ?? 0) + drag.dx, offsetY: (s.offsetY ?? 0) + drag.dy }
+            : { ...s, panelOffsets: { ...(s.panelOffsets ?? {}), [t.index]: { x: (s.panelOffsets?.[t.index]?.x ?? 0) + drag.dx, y: (s.panelOffsets?.[t.index]?.y ?? 0) + drag.dy } } },
+      };
+      const faces = buildFrame(temp).faces.filter((f) => f.kind === 'solar');
+      const pos: number[] = [];
+      faces.forEach((f, i) => {
+        if (t.kind === 'panel' && i !== t.index) return;
+        const q = f.pts.map((p) => new THREE.Vector3(p.x + f.n.x * 0.03, p.z + f.n.z * 0.03, p.y + f.n.y * 0.03));
+        for (const [a, b, d] of [[0, 1, 2], [0, 2, 3]]) pos.push(q[a].x, q[a].y, q[a].z, q[b].x, q[b].y, q[b].z, q[d].x, q[d].y, q[d].z);
+      });
+      ghost.geometry.dispose();
+      ghost.geometry = new THREE.BufferGeometry();
+      ghost.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      ghost.visible = true;
+    };
+    const onDown = (e: PointerEvent) => {
+      down = { x: e.clientX, y: e.clientY };
+      const sel = selectRef.current;
+      const s = sel?.selected;
+      if (!sel?.active || walkRef.current?.active || e.button !== 0 || !s || (s.kind !== 'solar_panel' && s.kind !== 'solar_array') || !sel.onSolarMove) return;
+      const h = roofHits(e)[0];
+      const p = h && resolvePick(modelRef.current, h);
+      if (!h || !p || p.kind !== 'solar_panel') return;
+      const index = Number(p.id.replace('solar_panel_', ''));
+      drag = { target: s.kind === 'solar_array' ? { kind: 'array' } : { kind: 'panel', index }, start: h.point.clone(), dx: 0, dy: 0, moved: false, controls: c.controls.enabled };
+      c.controls.enabled = false;
+      el.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!drag) return;
+      // Follow the roof under the pointer (the panels themselves sit on it).
+      const h = roofHits(e).find((x) => x.object.userData.kind !== 'solar') ?? roofHits(e)[0];
+      if (!h) return;
+      drag.dx = Math.round((h.point.x - drag.start.x) * 100) / 100;
+      drag.dy = Math.round((h.point.z - drag.start.z) * 100) / 100;
+      if (Math.hypot(drag.dx, drag.dy) > 0.03) drag.moved = true;
+      if (!ghostFrame) ghostFrame = requestAnimationFrame(showGhost);
+    };
     const onUp = (e: PointerEvent) => {
       const sel = selectRef.current;
+      if (drag) {
+        const d = drag;
+        drag = null;
+        down = null;
+        c.controls.enabled = d.controls;
+        cancelAnimationFrame(ghostFrame);
+        ghostFrame = 0;
+        ghost.visible = false;
+        if (d.moved && sel?.onSolarMove) {
+          sel.onSolarMove(d.target, d.dx, d.dy);
+          if (d.target.kind === 'panel' && sel.selected?.id !== `solar_panel_${d.target.index}`) sel.onPick(`solar_panel_${d.target.index}`, 'solar_panel');
+          return;
+        }
+      }
       const walkingNow = !!walkRef.current?.active;
       if (!down || !sel || (!sel.active && !walkingNow)) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -238,6 +320,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
       const targets: THREE.Object3D[] = [];
       c.parts?.levels.forEach((g) => g.visible && targets.push(g));
       if (c.parts?.roof.visible && !walkingNow) targets.push(c.parts.roof);
+      if (c.parts?.boundary.visible) targets.push(c.parts.boundary);
       if (walkingNow) targets.push(c.ground);
       const hits = ray.intersectObjects(targets, true).filter((h) => (h.object as THREE.Mesh).isMesh && h.object.visible && isShown(h, c.renderer));
       if (walkingNow) {
@@ -257,11 +340,17 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
       }
       sel.onPick(null);
     };
-    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerdown', onDown, true);
+    el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
     return () => {
-      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointerdown', onDown, true);
+      el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
+      cancelAnimationFrame(ghostFrame);
+      c.scene.remove(ghost);
+      ghost.geometry.dispose();
+      ghostMat.dispose();
     };
   }, []);
 
