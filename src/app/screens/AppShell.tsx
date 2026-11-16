@@ -17,9 +17,9 @@ export function AppShell({ children, onNewProject }: { children: ReactNode; onNe
   const { path } = useRouter();
 
   return (
-    <div className="flex min-h-screen-safe">
+    <div className="flex h-screen-safe overflow-hidden">
       {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-screen-safe w-[248px] shrink-0 flex-col border-r border-line bg-raised px-3 py-5 lg:flex">
+      <aside className="hidden h-full w-[248px] shrink-0 flex-col border-r border-line bg-raised px-3 py-5 lg:flex">
         <div className="px-3">
           <Logo />
         </div>
@@ -52,7 +52,7 @@ export function AppShell({ children, onNewProject }: { children: ReactNode; onNe
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain">
         {/* Mobile top bar */}
         <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-page/90 px-4 backdrop-blur lg:hidden">
           <Logo size={26} />

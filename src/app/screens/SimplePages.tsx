@@ -4,7 +4,7 @@ import { IsleposSettings } from './IsleposPages';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/hooks';
 import { TEMPLATES } from '../lib/templates';
-import { Avatar, Button, Field, Input, Segmented, toast } from '../ui';
+import { Avatar, Button, Field, Input, LogoMark, Segmented, toast } from '../ui';
 import { getStudio, saveStudio, type StudioProfile } from '../lib/studio';
 import { PlanGlyph } from './PlanGlyph';
 
@@ -98,12 +98,21 @@ function StudioSettings() {
   );
   return (
     <div className="space-y-4 p-5">
-      <div>
-        <div className="text-sm font-medium">Drawing title block</div>
-        <div className="text-[13px] text-ink-3">Printed in the sidebar of every exported sheet.</div>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-medium">Drawing title block</div>
+          <div className="text-[13px] text-ink-3">Printed in the sidebar of every exported sheet, with the Maavadiyaa mark.</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2.5 rounded-ctl border border-line bg-raised px-3 py-2">
+          <LogoMark size={30} />
+          <div className="leading-tight">
+            <div className="text-[13px] font-semibold">{p.studioName || 'Maavadiyaa'}</div>
+            <div className="text-2xs text-ink-3">{p.prefix || 'MV'}-…-A101</div>
+          </div>
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        {f('studioName', 'Studio name', 'e.g. Rajje Sol')}
+        {f('studioName', 'Studio name', 'Maavadiyaa')}
         {f('legalName', 'Company', 'e.g. PICAD PVT LTD')}
         {f('regNo', 'Registration no.')}
         {f('tin', 'GST TIN')}
@@ -112,7 +121,7 @@ function StudioSettings() {
         {f('email', 'Email')}
         {f('drawnBy', 'Drawn by')}
         {f('checkedBy', 'Checked by')}
-        {f('prefix', 'Drawing number prefix', 'e.g. RS')}
+        {f('prefix', 'Drawing number prefix', 'MV')}
       </div>
       <Field label="General notes (one per line)">
         <textarea

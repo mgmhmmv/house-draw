@@ -26,14 +26,32 @@ const EMPTY: StudioProfile = { studioName: '', legalName: '', regNo: '', tin: ''
 
 let cache: StudioProfile | null = null;
 
+/** Maavadiyaa's own details, used wherever the studio hasn't filled a field in. */
+async function defaults(): Promise<StudioProfile> {
+  const d: StudioProfile = { ...EMPTY, studioName: 'Maavadiyaa', prefix: 'MV' };
+  try {
+    const me = (await (await fetch('/api/auth/me')).json()) as { user?: { name?: string; email?: string } | null };
+    if (me.user?.name) d.drawnBy = me.user.name;
+    if (me.user?.email) d.email = me.user.email;
+  } catch {
+    /* offline: the fixed defaults still apply */
+  }
+  return d;
+}
+
+/** Saved values win; empty ones fall back to the defaults. */
+const fill = (saved: Partial<StudioProfile>, d: StudioProfile): StudioProfile =>
+  Object.fromEntries((Object.keys(d) as (keyof StudioProfile)[]).map((k) => [k, (saved[k] ?? '').trim() ? saved[k] : d[k]])) as unknown as StudioProfile;
+
 export async function getStudio(): Promise<StudioProfile> {
   if (cache) return cache;
+  const d = await defaults();
   try {
     const r = await fetch('/api/settings');
-    const d = (await r.json()) as { settings?: Partial<StudioProfile> };
-    cache = { ...EMPTY, ...(d.settings ?? {}) };
+    const s = (await r.json()) as { settings?: Partial<StudioProfile> };
+    cache = fill(s.settings ?? {}, d);
   } catch {
-    cache = { ...EMPTY };
+    cache = d;
   }
   return cache;
 }
@@ -41,6 +59,6 @@ export async function getStudio(): Promise<StudioProfile> {
 export async function saveStudio(p: StudioProfile): Promise<StudioProfile> {
   const r = await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: p }) });
   if (!r.ok) throw new Error('Could not save.');
-  cache = { ...EMPTY, ...((await r.json()) as { settings: Partial<StudioProfile> }).settings };
+  cache = fill(((await r.json()) as { settings: Partial<StudioProfile> }).settings ?? {}, await defaults());
   return cache;
 }

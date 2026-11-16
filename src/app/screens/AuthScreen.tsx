@@ -44,7 +44,7 @@ function LocalSignIn() {
 export function AuthScreen() {
   const error = new URLSearchParams(window.location.search).get('error');
   return (
-    <div className="grid min-h-screen-safe lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+    <div className="grid h-screen-safe overflow-y-auto lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <div className="flex flex-col px-6 py-8 sm:px-12 lg:px-16">
         <Logo />
         <div className="flex flex-1 items-center">

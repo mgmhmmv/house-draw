@@ -6,6 +6,8 @@
  * are measured in metres.
  */
 
+import { BRAND, logoMark } from './brand';
+
 export const PAPER = { w: 420, h: 297, name: 'A3' } as const;
 const M = 10; // outer margin
 const SIDE = 80; // sidebar width
@@ -313,15 +315,20 @@ export function composeSheet(content: SheetContent | null, info: SheetInfo, opts
   y += 2.4;
   parts.push(hline(y));
 
-  // Studio
+  // Studio, with the mark beside its name
   const studioTop = y;
+  const logo = 11;
+  parts.push(logoMark(L, y + 4, logo));
   y += 9;
-  parts.push(t((L + R) / 2, y, info.studio.name || 'Your studio', 3.2, { w: 700, a: 'middle' }));
+  parts.push(t(L + logo + 3, y, info.studio.name || BRAND.name, 3.2, { w: 700 }));
   info.studio.lines.slice(0, 4).forEach((ln) => {
     y += 2.6;
-    parts.push(t((L + R) / 2, y, ln, 1.85, { c: INK2, a: 'middle' }));
+    wrap(ln, 48).slice(0, 2).forEach((part, i) => {
+      if (i) y += 2.4;
+      parts.push(t(L + logo + 3, y, part, 1.85, { c: INK2 }));
+    });
   });
-  y = Math.max(y + 4, studioTop + 24);
+  y = Math.max(y + 4, studioTop + 19);
   parts.push(hline(y));
 
   // Client
