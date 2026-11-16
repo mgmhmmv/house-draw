@@ -553,6 +553,9 @@ export interface ProjectMeta {
   plotWidth: number;
   plotDepth: number;
   currency: string;
+  /** Title block: who drew and who checked this project's drawings. */
+  drawnBy?: string;
+  checkedBy?: string;
 }
 
 export interface BOQRateConfig {

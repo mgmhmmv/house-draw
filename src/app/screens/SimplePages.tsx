@@ -119,8 +119,6 @@ function StudioSettings() {
         <div className="sm:col-span-2">{f('address', 'Address', "e.g. G. Hazel House, Rah Dhebai Magu, Male'")}</div>
         {f('phone', 'Phone')}
         {f('email', 'Email')}
-        {f('drawnBy', 'Drawn by')}
-        {f('checkedBy', 'Checked by')}
         {f('prefix', 'Drawing number prefix', 'MV')}
       </div>
       <Field label="General notes (one per line)">

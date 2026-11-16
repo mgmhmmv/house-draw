@@ -56,6 +56,7 @@ import {
   triggerDownload,
 } from '../../export/exporters';
 import { downloadSheetsPDF } from '../../export/pdf';
+import { getStudio } from '../lib/studio';
 import { composePages, numberSheets, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
 import type { SheetInfo } from '../../export/sheet';
 import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
@@ -1218,6 +1219,12 @@ function ProjectDetailsForm({ doc, onDone }: { doc: Doc; onDone: () => void }) {
   const [client, setClient] = useState(p.client);
   const [location, setLocation] = useState(p.location);
   const [status, setStatus] = useState<ProjectStatus>(p.status);
+  const [drawnBy, setDrawnBy] = useState(doc.model?.meta.drawnBy ?? '');
+  const [checkedBy, setCheckedBy] = useState(doc.model?.meta.checkedBy ?? '');
+  const [me, setMe] = useState('');
+  useEffect(() => {
+    void getStudio().then((s) => setMe(s.drawnBy));
+  }, []);
   const [busy, setBusy] = useState(false);
   const statuses = STAGES;
 
@@ -1225,6 +1232,10 @@ function ProjectDetailsForm({ doc, onDone }: { doc: Doc; onDone: () => void }) {
     setBusy(true);
     try {
       await doc.updateMeta({ name: name.trim() || p.name, client, location, status });
+      // Drawn / checked are part of the drawings, so they are saved as a version of the project.
+      const m = doc.model;
+      if (m && ((m.meta.drawnBy ?? '') !== drawnBy.trim() || (m.meta.checkedBy ?? '') !== checkedBy.trim()))
+        await doc.commit({ ...m, meta: { ...m.meta, drawnBy: drawnBy.trim(), checkedBy: checkedBy.trim() } }, { label: 'Title block: drawn / checked', saveNow: true });
       toast('Project updated');
       onDone();
     } catch {
@@ -1245,6 +1256,12 @@ function ProjectDetailsForm({ doc, onDone }: { doc: Doc; onDone: () => void }) {
         </Field>
         <Field label="Site location">
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
+        <Field label="Drawn by">
+          <Input value={drawnBy} placeholder={me || 'Designer'} onChange={(e) => setDrawnBy(e.target.value)} />
+        </Field>
+        <Field label="Checked by">
+          <Input value={checkedBy} placeholder="Engineer / reviewer" onChange={(e) => setCheckedBy(e.target.value)} />
         </Field>
       </div>
       <div>

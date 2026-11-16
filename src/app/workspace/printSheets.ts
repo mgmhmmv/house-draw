@@ -270,8 +270,9 @@ export async function sheetInfo(c: SheetContext): Promise<SheetInfo> {
     studio: { name: studio.studioName, lines: studioLines },
     client: { name: c.project.client || c.model.meta.client, lines: [c.model.meta.clientPhone ?? ''].filter(Boolean) },
     project: { name: c.project.name, lines: [c.project.location || c.model.meta.location].filter(Boolean) },
-    drawn: studio.drawnBy,
-    checked: studio.checkedBy,
+    // Per project; drawn by falls back to the signed-in designer.
+    drawn: c.model.meta.drawnBy?.trim() || studio.drawnBy,
+    checked: c.model.meta.checkedBy?.trim() || '',
     date: today(),
     projectRef: code,
     quotation,
