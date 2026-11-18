@@ -38,7 +38,16 @@ export interface SolarExport {
     roofs: { name: string; heightM: number; polygon: [number, number][] }[];
     panels: { stringId: string; index: number; x: number; y: number; w: number; d: number; rotationDeg: number; zM: number }[];
     cables: { role: 'dc' | 'ac' | 'earth'; stringId?: string; polarity?: '+' | '-'; points: P3[] }[];
-    fixtures: { kind: 'inverter' | 'battery' | 'mdb' | 'meter'; x: number; y: number; zM: number; label: string }[];
+    fixtures: { kind: 'inverter' | 'battery' | 'mdb' | 'meter'; x: number; y: number; zM: number; label: string; floor: number }[];
+    /** Floor plans of the floors holding the meter, inverter or main board (each once). */
+    floors: {
+      index: number;
+      name: string;
+      elevationM: number;
+      walls: { id: string; a: [number, number]; b: [number, number]; thicknessM: number }[];
+      openings: { wallId: string; kind: 'door' | 'window'; t: number; widthM: number; hinge: 'start' | 'end'; swing: 'left' | 'right' }[];
+      rooms: { name: string; polygon: [number, number][] }[];
+    }[];
   };
   drawings: { slot: string; name: string; mime: 'image/svg+xml' | 'image/png'; data: string }[];
 }
@@ -88,20 +97,40 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
     });
   }
 
-  // Equipment: the inverter (its floor and spot), battery, main board, meter.
+  // Equipment: inverter, battery, the main board and the meter, wherever they are. Upper floors'
+  // distribution boards (MDB-2…) are not the main board.
   const fixtures: SolarExport['geometry']['fixtures'] = [];
   let inv: { x: number; y: number; z: number } | null = null;
-  // Only the floor with the inverter: that is where the main board, battery and meter sit.
-  const invFloor = Math.max(0, model.levels.findIndex((l) => l.mepNodes.some((n) => n.kind === 'solar_inv')));
+  const isMain = (label: string | undefined, li: number) => !label || /^MDB(-1)?$/i.test(label.trim()) || li === 0;
   model.levels.forEach((l, li) => {
-    if (li !== invFloor) return;
     for (const n of l.mepNodes) {
-      const kind = n.kind === 'solar_inv' ? 'inverter' : n.kind === 'solar_bess' ? 'battery' : n.kind === 'mdb' ? 'mdb' : n.kind === 'utility_meter' ? 'meter' : null;
+      const kind = n.kind === 'solar_inv' ? 'inverter' : n.kind === 'solar_bess' ? 'battery' : n.kind === 'mdb' && isMain(n.label, li) ? 'mdb' : n.kind === 'utility_meter' ? 'meter' : null;
       if (!kind) continue;
       const zM = r2(l.elevation + 1.5);
-      fixtures.push({ kind, x: r2(n.position.x), y: r2(n.position.y), zM, label: n.label ?? kind.toUpperCase() });
+      fixtures.push({ kind, x: r2(n.position.x), y: r2(n.position.y), zM, label: n.label ?? kind.toUpperCase(), floor: l.index ?? li });
       if (kind === 'inverter' && !inv) inv = { x: n.position.x, y: n.position.y, z: zM };
     }
+  });
+  // Floor plans: every floor holding the meter, the inverter or the main board.
+  const floorIdx = [...new Set(fixtures.filter((f) => f.kind !== 'battery').map((f) => f.floor))].sort((a, b) => a - b);
+  const floors: SolarExport['geometry']['floors'] = floorIdx.map((fi) => {
+    const l = model.levels.find((x, i) => (x.index ?? i) === fi)!;
+    const walls = l.walls.map((w) => ({ id: w.id, a: [r2(w.start.x), r2(w.start.y)] as [number, number], b: [r2(w.end.x), r2(w.end.y)] as [number, number], thicknessM: r2(w.thickness) }));
+    const ids = new Set(walls.map((w) => w.id));
+    const openings = l.openings
+      .filter((o) => ids.has(o.wallId))
+      .map((o) => ({
+        wallId: o.wallId,
+        kind: o.kind,
+        t: Math.round(o.offset * 1000) / 1000,
+        widthM: r2(o.width),
+        // As drawn on the plan: a leaf hangs on the opening's start jamb and opens to the wall's
+        // right (looking from its start to its end, y south) when swingDirection ≥ 0.
+        hinge: 'start' as const,
+        swing: (o.swingDirection >= 0 ? 'right' : 'left') as 'left' | 'right',
+      }));
+    const rooms = l.rooms.map((rm) => ({ name: rm.name, polygon: rm.polygon.map((p) => [r2(p.x), r2(p.y)] as [number, number]) }));
+    return { index: fi, name: l.name.replace(/\s*\(.*\)/, ''), elevationM: r2(l.elevation), walls, openings, rooms };
   });
   if (!inv) throw new Error('Place the inverter in the model first (Electrical): the cable runs are measured to it.');
   const I = inv as { x: number; y: number; z: number };
@@ -204,7 +233,7 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
       strings: perString.map((p, i) => ({ id: p.stringId, panelsInSeries: panels.filter((q) => q.stringId === p.stringId).length, parallelRuns: 1, mppt: i + 1 })),
     },
     runs: { method: '3d-route', dcRunM: r2(dcRunM), acRunM: r2(acRunM), earthRunM: r2(earthRunM), perString },
-    geometry: { roofs, panels, cables, fixtures },
+    geometry: { roofs, panels, cables, fixtures, floors },
     drawings: [],
   };
 }
