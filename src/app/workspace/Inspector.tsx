@@ -1,3 +1,4 @@
+import { PV_MODULE, PV_MODULE_LABEL, pvString } from '../../model/pvModule';
 import { useState, type ReactNode } from 'react';
 import { ASSETS, assetFor, CATEGORIES } from '../drawing/assets/catalog';
 import { computePlumbingRiser } from '../../engine/mepEngine';
@@ -828,7 +829,7 @@ function SiteSelection({
 function SolarStrings({ edit, solar }: { edit: (fn: (m: BuildingProject) => void) => void; solar: ReturnType<typeof getSolarConfig> }) {
   const strings = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
   const per = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / strings));
-  const voc = per * 41.5;
+  const voc = pvString(per).vocColdV;
   const set = (st: number, pp: number) =>
     edit((m) => (m.solar = { ...getSolarConfig(m), strings: st, panelsPerString: pp, panelCount: st * pp, panelOffsets: {}, columns: undefined }));
   return (
@@ -842,10 +843,25 @@ function SolarStrings({ edit, solar }: { edit: (fn: (m: BuildingProject) => void
       <Row label="String voltage">
         <Readout>
           <span className={voc > 550 ? 'text-warn' : ''}>
-            {voc.toFixed(0)} V Voc{voc > 550 ? ' · over a typical 550 V input' : ''}
+            {voc.toFixed(0)} V Voc at 20 °C · {pvString(per).vmpV.toFixed(0)} V Vmp{voc > 550 ? ' · over a typical 550 V input' : ''}
           </span>
         </Readout>
       </Row>
+      <Row label="Service gap every">
+        <Num
+          value={solar.serviceGapEvery ?? 0}
+          unit="cols"
+          step={1}
+          min={0}
+          max={12}
+          onChange={(v) => edit((m) => (m.solar = { ...getSolarConfig(m), serviceGapEvery: Math.max(0, Math.round(v)) }))}
+        />
+      </Row>
+      {(solar.serviceGapEvery ?? 0) > 0 && (
+        <Row label="Gap width">
+          <Num value={solar.serviceGapWidth ?? 0.6} unit="m" step={0.05} min={0.3} max={1.5} onChange={(v) => edit((m) => (m.solar = { ...getSolarConfig(m), serviceGapWidth: v }))} />
+        </Row>
+      )}
       <div className="flex justify-end px-4 pb-3">
         <Button
           size="sm"
@@ -876,6 +892,11 @@ function SolarSection({ model, edit, solar, collapsed }: { model: BuildingProjec
             <Num value={solar.panelCount} step={1} min={1} max={60} onChange={(v) => edit((m) => (m.solar = { ...solar, panelCount: Math.round(v), panelOffsets: {}, strings: undefined, panelsPerString: undefined }))} />
           </Row>
           <SolarStrings edit={edit} solar={solar} />
+          <Row label="Panel">
+            <Readout>
+              {PV_MODULE_LABEL} · {PV_MODULE.length * 1000} × {PV_MODULE.width * 1000} mm
+            </Readout>
+          </Row>
           <Row label="Panel rating">
             <Num value={solar.panelWattage} unit="Wp" step={5} min={100} max={800} onChange={(v) => edit((m) => (m.solar = { ...solar, panelWattage: v }))} />
           </Row>

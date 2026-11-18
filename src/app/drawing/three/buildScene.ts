@@ -6,7 +6,7 @@
  */
 import * as THREE from 'three';
 import { BOUNDARY_FINISHES, getDesignConfig, getSite, type BuildingProject } from '../../../model/types';
-import { buildFrame, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
+import { buildFrame, levelOutline, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
 import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
 import { AssetMaterials } from '../assets/kit';
@@ -301,10 +301,22 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   // when you walk inside but vanish when you look into a cutaway from above.
   const ceilMat = new THREE.MeshStandardMaterial({ color: clay ? '#F4F2EE' : '#F7F6F2', roughness: 0.95, side: THREE.FrontSide });
   materials.push(ceilMat);
+  // An open-air room (balcony, terrace, porch) only has a ceiling where the floor above covers it.
+  const outlines = model.levels.map((l) => levelOutline(l));
+  const inOutline = (k: number, x: number, y: number) =>
+    (outlines[k] ?? []).some((poly) => inPolygon(poly[0].map(([px, py]) => ({ x: px, y: py })), x, y) && !poly.slice(1).some((h) => inPolygon(h.map(([px, py]) => ({ x: px, y: py })), x, y)));
+  const openSky = (i: number, r: BuildingProject['levels'][number]['rooms'][number]) => {
+    if (r.category !== 'balcony' && r.category !== 'porch') return false;
+    // A deck (porch) on the top floor sits under the flat roof.
+    if (i === model.levels.length - 1 && r.category === 'porch' && model.roof.type === 'flat') return false;
+    const cx = r.polygon.reduce((s, p) => s + p.x, 0) / r.polygon.length;
+    const cy = r.polygon.reduce((s, p) => s + p.y, 0) / r.polygon.length;
+    return !inOutline(i + 1, cx, cy);
+  };
   model.levels.forEach((lvl, i) => {
     const wallTop = Math.max(...lvl.walls.map((w) => w.height), 2.4);
     for (const r of lvl.rooms) {
-      if (r.polygon.length < 3) continue;
+      if (r.polygon.length < 3 || openSky(i, r)) continue;
       const shape = new THREE.Shape(r.polygon.map((p) => new THREE.Vector2(p.x, p.y)));
       const geo = new THREE.ShapeGeometry(shape);
       geo.rotateX(Math.PI / 2); // plan (x, y) → (x, ·, y), normal pointing down
@@ -330,7 +342,10 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
     const inRooms = (x: number, y: number) => lvl.rooms.some((r) => inPolygon(r.polygon, x, y));
     const outside = (x: number, y: number) => !inRooms(x, y) && (x < ex.x0 || x > ex.x1 || y < ex.y0 || y > ex.y1 || lvl.rooms.length > 0);
     for (const f of lvl.furniture) levels[i].add(furnitureObject(f, lvl.elevation, assetMats, i === 0 ? 0 : null, outside));
+    const skyRooms = lvl.rooms.filter((r) => openSky(i, r));
     for (const n of lvl.mepNodes) {
+      // No ceiling light or fan hanging in the open air.
+      if ((n.kind === 'light_ceiling' || n.kind === 'ceiling_fan') && skyRooms.some((r) => inPolygon(r.polygon, n.position.x, n.position.y))) continue;
       const o = mepObject(n, lvl, lvl.elevation + wallTop, assetMats);
       if (o) levels[i].add(o);
     }

@@ -1,3 +1,4 @@
+import { PV_MODULE_LABEL, pvString } from '../model/pvModule';
 import {
   BuildingProject,
   FloorLevel,
@@ -93,11 +94,17 @@ export interface SolarPVReport {
   stringsCount: number;
   panelsPerString: number;
   stringVocV: number;
+  /** String Voc at the coolest cell temperature (20 °C). */
+  stringVocColdV: number;
+  stringVmpV: number;
   stringIscA: number;
+  /** Module make and model, e.g. "Luxen Solar LNVU-590ND". */
+  module: string;
   inverterKW: number;
   batteryKWh: number;
   dcCableSpec: string;
   dcIsolatorSpec: string;
+  stringFuseSpec: string;
   acBreakerSpec: string;
   estimatedDailyKWh: number;
   netGridDemandKW: number;
@@ -2476,8 +2483,9 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
   const stringsCount = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
   const panelsPerString = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / stringsCount));
   const arrayKwp = Number(((solar.panelCount * solar.panelWattage) / 1000).toFixed(2));
-  const stringVocV = Number((panelsPerString * 41.5).toFixed(1));
-  const stringIscA = 13.8;
+  const str = pvString(panelsPerString);
+  const stringVocV = str.vocV;
+  const stringIscA = str.iscA;
   const acBreakerAmps = solar.inverterKW > 7 ? 40 : 32;
   const acBreakerSpec = `${acBreakerAmps}A 2P Type B Bi-Dir RCBO (30mA)`;
   const sunHours = hvacCfg.climateZone === 'maldives_tropical' ? 5.3 : 4.4;
@@ -2543,11 +2551,15 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
       stringsCount,
       panelsPerString,
       stringVocV,
+      stringVocColdV: str.vocColdV,
+      stringVmpV: str.vmpV,
       stringIscA,
+      module: PV_MODULE_LABEL,
       inverterKW: solar.inverterKW,
       batteryKWh: solar.batteryKWh,
       dcCableSpec: '2×6.0mm² EN 50618 H1Z2Z2-K 1.5kV DC',
       dcIsolatorSpec: '32A 1000V DC 4P + Type-2 DC SPD',
+      stringFuseSpec: `${str.fuseA}A gPV 1000V DC string fuse`,
       acBreakerSpec,
       estimatedDailyKWh,
       netGridDemandKW,

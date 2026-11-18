@@ -1,3 +1,4 @@
+import { PV_MODULE } from '../../../model/pvModule';
 /**
  * Electrical single-line diagram on A3, from the supply to every point: utility supply, cut-out,
  * meter, isolator, main switch, RCD, SPD, busbar and earthing in the MDB; the solar PV, inverter
@@ -324,8 +325,8 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   if (pv.enabled) {
     p.push(pvArray(px - 10, 27, 20, 8));
     p.push(T(px + 13.5, 30, `PV GENERATOR ${pv.arrayKwp.toFixed(2)} kWp`, 1.5, { w: 700 }));
-    p.push(T(px + 13.5, 32.4, `${pv.panelCount} × ${pv.panelWattage} Wp, ${pv.stringsCount} string${pv.stringsCount > 1 ? 's' : ''} × ${pv.panelsPerString}`, 1.3, { c: INK2 }));
-    p.push(T(px + 13.5, 34.6, `Voc ${pv.stringVocV} V · Isc ${pv.stringIscA} A`, 1.3, { c: INK2 }));
+    p.push(T(px + 13.5, 32.4, `${pv.panelCount} × ${pv.module} ${pv.panelWattage} Wp, ${pv.stringsCount} string${pv.stringsCount > 1 ? 's' : ''} × ${pv.panelsPerString}`, 1.3, { c: INK2 }));
+    p.push(T(px + 13.5, 34.6, `Voc ${pv.stringVocV} V · Vmp ${pv.stringVmpV} V · Isc ${pv.stringIscA} A · ${pv.stringFuseSpec.split(' ').slice(0, 2).join(' ')} fuse`, 1.3, { c: INK2 }));
     p.push(L(px, 35, px, 39) + breaker(px, 39, 'isolator') + T(px + 3, 42.4, `DC switch-disconnector ${pv.dcIsolatorSpec.replace(/^\d+A\s*/, '')}`, 1.25, { c: INK2 }));
     p.push(T(px - 2, 37.6, pv.dcCableSpec.split(' ')[0] ?? '', 1.2, { c: INK3, a: 'end' }));
     p.push(L(px, 45, px, 48) + inverter(px, 48, 13, 8));
@@ -473,8 +474,10 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   if (pv.enabled) {
     const sol = dataBox(dx, dy, 74, 'Solar PV and battery', [
       ['Array', `${pv.panelCount} × ${pv.panelWattage} Wp = ${pv.arrayKwp.toFixed(2)} kWp`],
+      ['Module', `${pv.module}, ${PV_MODULE.length * 1000}×${PV_MODULE.width * 1000} mm`],
       ['Strings', `${pv.stringsCount} × ${pv.panelsPerString} panels`],
       ['String Voc / Isc', `${pv.stringVocV} V / ${pv.stringIscA} A`],
+      ['String fuse', pv.stringFuseSpec],
       ['DC cable', pv.dcCableSpec],
       ['DC isolator', pv.dcIsolatorSpec],
       ['Inverter', `${pv.inverterKW.toFixed(1)} kW hybrid`],

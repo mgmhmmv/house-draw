@@ -239,8 +239,11 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const deleteSelection = useCallback(() => {
     if (!model || !selection) return;
     const next = structuredClone(model);
-    const lvl = next.levels[safeLevel];
     const { id, kind } = selection;
+    // In the whole-building 3D view the item can be on any floor: delete it where it lives.
+    const has = (l: (typeof next.levels)[number]) =>
+      l.walls.some((x) => x.id === id) || l.openings.some((x) => x.id === id) || l.rooms.some((x) => x.id === id) || l.columns.some((x) => x.id === id) || l.furniture.some((x) => x.id === id) || l.mepNodes.some((x) => x.id === id);
+    const lvl = has(next.levels[safeLevel]) ? next.levels[safeLevel] : next.levels.find(has) ?? next.levels[safeLevel];
     if (kind === 'wall') {
       lvl.walls = lvl.walls.filter((w) => w.id !== id);
       lvl.openings = lvl.openings.filter((o) => o.wallId !== id);

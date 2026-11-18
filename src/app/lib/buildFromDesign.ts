@@ -10,6 +10,7 @@ import { autoPopulateMEPForLevel } from '../../engine/mepEngine';
 import { DEFAULT_BOQ_RATES } from '../../model/presets';
 import { DEFAULT_SOLAR_CONFIG, type BuildingProject, type FloorLevel, type FurnitureItem, type GateKind, type MEPNode, type Opening, type PlotSide, type Room, type RoomCategory, type RoofType, type Wall } from '../../model/types';
 import { siteLayout } from '../drawing/model3d/site';
+import { withRailings } from '../../engine/railings';
 
 export interface AiRoom {
   name: string;
@@ -357,6 +358,8 @@ export function buildFromDesign(d: AiDesign, meta: { title: string; client: stri
     const name = f.name || (i === 0 ? 'Ground Floor' : `Level ${i}`);
     levels.push(buildLevel(f.rooms, i, i === 0 ? `${name} (FGL +${PLINTH.toFixed(2)}m)` : name, levels[i - 1] ?? null));
   });
+  // Railings round every balcony and roof terrace above the ground floor.
+  levels.forEach((l, i) => (levels[i] = withRailings(l)));
   // Stairs: a room named "Stair" on a floor and the floor above.
   for (let i = 0; i < levels.length - 1; i++) {
     const st = d.floors[i].rooms.find((r) => /stair/i.test(r.name));

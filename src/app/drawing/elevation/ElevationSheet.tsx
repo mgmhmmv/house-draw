@@ -656,7 +656,8 @@ function wrap(text: string, max: number): string[] {
 
 /**
  * A man (1.78 m), a woman (1.65 m) and a child (1.20 m) from the library, standing on the
- * ground in front of the facade that faces the viewer, turned towards them. Drawing only.
+ * ground beside the building (left of the facade that faces the viewer), turned towards them.
+ * Drawing only.
  */
 function scaleFigures(b: { minX: number; maxX: number; minY: number; maxY: number }, look: { x: number; y: number }, mats: AssetMaterials) {
   const g = new THREE.Group();
@@ -675,9 +676,11 @@ function scaleFigures(b: { minX: number; maxX: number; minY: number; maxY: numbe
     o.rotation.y = yaw;
     g.add(o);
   };
-  place('person_man', -halfWidth + 1.0);
-  place('person_woman', -halfWidth + 1.6);
-  place('person_child', halfWidth - 1.1);
+  // Clear of the building, beside it on the left, so they read as a scale reference and never
+  // cover the facade.
+  place('person_man', -halfWidth - 1.4);
+  place('person_woman', -halfWidth - 2.1);
+  place('person_child', -halfWidth - 2.8);
   g.updateMatrixWorld(true);
   return g;
 }

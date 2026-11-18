@@ -204,7 +204,7 @@ export type SelectableElementKind =
 export interface SolarPVConfig {
   enabled: boolean;
   panelCount: number; // e.g. 12 panels
-  panelWattage: number; // e.g. 450 Wp
+  panelWattage: number; // e.g. 590 Wp (Luxen LNVU-590ND)
   inverterKW: number; // e.g. 6.0 kW hybrid
   batteryKWh: number; // e.g. 10.0 kWh LiFePO4 (0 = no battery)
   offsetX?: number; // East (+) / West (-) offset in meters from default slope anchor
@@ -215,6 +215,10 @@ export interface SolarPVConfig {
   /** Strings wired to the inverter, and panels in each: the array is laid out one string per row. */
   strings?: number;
   panelsPerString?: number;
+  /** Open service gap between blocks of this many columns (0 = none), for cleaning and maintenance. */
+  serviceGapEvery?: number;
+  /** Width of each service gap, metres (default 0.6). */
+  serviceGapWidth?: number;
   panelOffsets?: Record<number, Point2D>; // per-panel manual (x, y) offset in meters
   dcRouteMode?: WiringRouteMode; // PV array -> Inverter conduit route preset
   acRouteMode?: WiringRouteMode; // Inverter -> MDB feeder conduit route preset
@@ -258,6 +262,10 @@ export interface Opening {
   frameColor?: string;
   /** Finish name for the leaf or frame, e.g. 'oak', 'white', 'anodised'. */
   finish?: string;
+  /** Door with a glass leaf in a slim frame (and a glass transom above when the opening runs to the ceiling). */
+  glazed?: boolean;
+  /** A plain open void in the wall (no glass, no frame), e.g. a ventilation opening to a stair. */
+  open?: boolean;
 }
 
 export interface Room {
@@ -410,6 +418,8 @@ export interface RoofConfig {
   overhang: number; // meters (e.g., 0.6m)
   material: RoofMaterial;
   parapetHeight: number; // meters if flat roof
+  /** Flat roof used as a deck: glass balustrade round the edge, and a stair from the top floor comes up through it. */
+  deck?: boolean;
   gutterEnabled?: boolean;
   gutterProfile?: GutterProfile;
   downpipeCount?: number;
@@ -609,8 +619,9 @@ export interface BuildingProject {
 
 export const DEFAULT_SOLAR_CONFIG: SolarPVConfig = {
   enabled: true,
-  panelCount: 12,
-  panelWattage: 450,
+  // Luxen LNVU-590ND (see pvModule.ts): 10 × 590 Wp = 5.9 kWp on the 6 kW inverter.
+  panelCount: 10,
+  panelWattage: 590,
   inverterKW: 6.0,
   batteryKWh: 10.0,
   offsetX: 0,

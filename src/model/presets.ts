@@ -713,8 +713,8 @@ export function createMaldivesTropicalVilla(): BuildingProject {
     },
     solar: {
       enabled: true,
-      panelCount: 16,
-      panelWattage: 450,
+      panelCount: 12,
+      panelWattage: 590,
       inverterKW: 6.0,
       batteryKWh: 15.0,
     },

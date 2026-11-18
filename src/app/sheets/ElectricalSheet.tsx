@@ -97,8 +97,11 @@ function ElectricalSheetReport({ model }: { model: BuildingProject }) {
             <Specs
               rows={[
                 ['Array', `${pv.panelCount} × ${pv.panelWattage} Wp = ${fmt(pv.arrayKwp, 2)} kWp`],
+                ['Module', pv.module],
                 ['Strings', `${pv.stringsCount} × ${pv.panelsPerString} panels`],
-                ['String Voc / Isc', `${fmt(pv.stringVocV, 0)} V / ${fmt(pv.stringIscA, 1)} A`],
+                ['String Voc / Isc', `${fmt(pv.stringVocV, 0)} V (${fmt(pv.stringVocColdV, 0)} V at 20 °C) / ${fmt(pv.stringIscA, 2)} A`],
+                ['String Vmp', `${fmt(pv.stringVmpV, 0)} V`],
+                ['String fuse', pv.stringFuseSpec],
                 ['Estimated yield', `${fmt(pv.estimatedDailyKWh, 1)} kWh per day`],
               ]}
             />

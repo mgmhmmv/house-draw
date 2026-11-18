@@ -19,6 +19,7 @@ import {
 } from '../../../model/types';
 import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { wallFrame } from '../plan/kernel';
+import polygonClipping, { type MultiPolygon, type Polygon as PCPolygon } from 'polygon-clipping';
 import { computeSolarArrayLayout } from '../../../engine/geometry';
 
 export interface V3 {
@@ -96,6 +97,224 @@ export function levelBounds(level: FloorLevel) {
   return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
+/**
+ * A floor's outline: every room and wall, joined. An L-shaped plan gives an L-shaped slab,
+ * and balconies and terraces sit on the slab rather than outside it.
+ */
+export function levelOutline(level: FloorLevel, includeRoom: (r: FloorLevel['rooms'][number]) => boolean = () => true): MultiPolygon {
+  const parts: PCPolygon[] = [];
+  const rect = (x0: number, y0: number, x1: number, y1: number): PCPolygon => [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]];
+  for (const w of level.walls) {
+    const t = w.thickness / 2;
+    parts.push(rect(Math.min(w.start.x, w.end.x) - t, Math.min(w.start.y, w.end.y) - t, Math.max(w.start.x, w.end.x) + t, Math.max(w.start.y, w.end.y) + t));
+  }
+  for (const r of level.rooms) {
+    if (r.polygon.length < 3 || !includeRoom(r)) continue;
+    parts.push([[...r.polygon.map((p) => [p.x, p.y] as [number, number]), [r.polygon[0].x, r.polygon[0].y]]]);
+  }
+  if (!parts.length) return [];
+  try {
+    return polygonClipping.union(parts[0], ...parts.slice(1));
+  } catch {
+    const b = levelBounds(level);
+    return [rect(b.minX, b.minY, b.maxX, b.maxY)];
+  }
+}
+
+/** A flat slab the shape of `outline`, from z0 to z1: sides, top and soffit. */
+function slabFaces(outline: MultiPolygon, z0: number, z1: number, kind: FaceKind, fill: string): Face[] {
+  const out: Face[] = [];
+  for (const poly of outline) {
+    const rings = poly.map((ring) => ring.slice(0, -1).map(([x, y]) => ({ x, y })));
+    if (!rings.length || rings[0].length < 3) continue;
+    for (const ring of rings) {
+      // Outward normal from the ring's winding (outer rings come counter-clockwise, holes clockwise).
+      let area = 0;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        area += a.x * b.y - b.x * a.y;
+      }
+      const sgn = area > 0 ? 1 : -1;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-6) continue;
+        const n = v((sgn * dy) / len, (-sgn * dx) / len, 0);
+        out.push({ kind, fill, order: 0, n, pts: [v(a.x, a.y, z0), v(b.x, b.y, z0), v(b.x, b.y, z1), v(a.x, a.y, z1)] });
+      }
+    }
+    const [outer, ...holes] = rings;
+    out.push({ kind, fill, order: 0, n: v(0, 0, 1), pts: outer.map((p) => v(p.x, p.y, z1)), holes: holes.map((h) => h.map((p) => v(p.x, p.y, z1))) });
+    out.push({ kind, fill, order: 0, n: v(0, 0, -1), pts: [...outer].reverse().map((p) => v(p.x, p.y, z0)), holes: holes.map((h) => [...h].reverse().map((p) => v(p.x, p.y, z0))) });
+  }
+  return out;
+}
+
+/** A stair's plan rectangle, and the edge you step off at the top. */
+export function stairFootprint(s: FloorLevel['stairs'][number]) {
+  const along = s.direction === 'N' || s.direction === 'S';
+  const w = along ? s.width : s.length;
+  const h = along ? s.length : s.width;
+  const x0 = s.origin.x;
+  const y0 = s.origin.y;
+  // A U-stair turns back and arrives on its starting side; a straight one arrives at the far end.
+  const opposite = { N: 'S', S: 'N', E: 'W', W: 'E' } as const;
+  const arrival = s.shape === 'u_shape' ? opposite[s.direction] : s.direction;
+  return { x0, y0, x1: x0 + w, y1: y0 + h, arrival };
+}
+
+/**
+ * Concrete steps for a stair, from z0 up `rise` metres: one block per tread (a waist under each
+ * step), and for a U-stair two flights side by side with a half landing at the far end.
+ */
+function stairFaces(s: FloorLevel['stairs'][number], z0: number, rise: number, fill: string): Face[] {
+  const out: Face[] = [];
+  const n = Math.max(2, s.risers);
+  const r = rise / n;
+  const fp = stairFootprint(s);
+  const along = s.direction === 'N' || s.direction === 'S';
+  // Work in stair coordinates: u across the stair, t up the run (0 at the start).
+  const U = along ? fp.x1 - fp.x0 : fp.y1 - fp.y0;
+  const T = along ? fp.y1 - fp.y0 : fp.x1 - fp.x0;
+  const toPlan = (u: number, t: number) => {
+    switch (s.direction) {
+      case 'N': return { x: fp.x0 + u, y: fp.y1 - t };
+      case 'S': return { x: fp.x0 + u, y: fp.y0 + t };
+      case 'E': return { x: fp.x0 + t, y: fp.y0 + u };
+      default: return { x: fp.x1 - t, y: fp.y0 + u };
+    }
+  };
+  const block = (u0: number, u1: number, t0: number, t1: number, zb: number, zt: number) => {
+    const a = toPlan(u0, t0);
+    const b = toPlan(u1, t1);
+    out.push(...box(Math.min(a.x, b.x), Math.min(a.y, b.y), zb, Math.max(a.x, b.x), Math.max(a.y, b.y), zt, 'slab', fill));
+  };
+  const waist = 0.18;
+  // Balustrade: steel posts about every metre, a handrail at 900 mm above the pitch line and a
+  // mid rail, along a run from (u, t0, za) to (u, t1, zb); and a level one along a landing edge.
+  const STEEL = '#3A3F44';
+  const pt = (u: number, t: number, z: number) => { const q = toPlan(u, t); return v(q.x, q.y, z); };
+  const flightRail = (u: number, t0: number, t1: number, za: number, zb: number) => {
+    out.push(...slopedMember(pt(u, t0, za + 0.9), pt(u, t1, zb + 0.9), 0.05, 0.05, 'frame', STEEL));
+    out.push(...slopedMember(pt(u, t0, za + 0.45), pt(u, t1, zb + 0.45), 0.03, 0.03, 'frame', STEEL));
+    const len = Math.abs(t1 - t0);
+    const k = Math.max(1, Math.round(len / 1.0));
+    for (let i = 0; i <= k; i++) {
+      const t = t0 + ((t1 - t0) * i) / k;
+      const z = za + ((zb - za) * i) / k;
+      const q = toPlan(u, t);
+      out.push(...box(q.x - 0.02, q.y - 0.02, z, q.x + 0.02, q.y + 0.02, z + 0.9, 'frame', STEEL, 2));
+    }
+  };
+  const landingRail = (t: number, u0: number, u1: number, z: number) => {
+    const a = toPlan(u0, t);
+    const b = toPlan(u1, t);
+    out.push(...box(Math.min(a.x, b.x) - 0.025, Math.min(a.y, b.y) - 0.025, z + 0.85, Math.max(a.x, b.x) + 0.025, Math.max(a.y, b.y) + 0.025, z + 0.9, 'frame', STEEL, 2));
+    out.push(...box(Math.min(a.x, b.x) - 0.015, Math.min(a.y, b.y) - 0.015, z + 0.43, Math.max(a.x, b.x) + 0.015, Math.max(a.y, b.y) + 0.015, z + 0.46, 'frame', STEEL, 2));
+    for (const q of [a, b, toPlan((u0 + u1) / 2, t)]) out.push(...box(q.x - 0.02, q.y - 0.02, z, q.x + 0.02, q.y + 0.02, z + 0.9, 'frame', STEEL, 2));
+  };
+  const edge = 0.04;
+  if (s.shape === 'u_shape') {
+    const half = U / 2;
+    const landing = Math.min(Math.max(1.0, half), T * 0.4);
+    const run = T - landing;
+    const n1 = Math.ceil(n / 2);
+    const n2 = n - n1;
+    const g1 = run / n1;
+    for (let k = 0; k < n1; k++) block(0, half - 0.02, k * g1, (k + 1) * g1, z0 + Math.max(0, (k + 1) * r - waist - r), z0 + (k + 1) * r);
+    block(0, U, run, T, z0 + n1 * r - waist, z0 + n1 * r);
+    const g2 = run / Math.max(1, n2);
+    for (let k = 0; k < n2; k++) {
+      const zt = z0 + (n1 + k + 1) * r;
+      block(half + 0.02, U, run - (k + 1) * g2, run - k * g2, zt - waist - r, zt);
+    }
+    // Both sides of each flight (the well between them and the outer edges), and round the landing.
+    const zl = z0 + n1 * r;
+    flightRail(edge, 0, run, z0, zl);
+    flightRail(half - edge, 0, run, z0, zl);
+    flightRail(half + edge, run, 0, zl, z0 + n * r);
+    flightRail(U - edge, run, 0, zl, z0 + n * r);
+    landingRail(T - edge, edge, U - edge, zl);
+  } else {
+    const g = T / n;
+    for (let k = 0; k < n; k++) block(0, U, k * g, (k + 1) * g, z0 + Math.max(0, (k + 1) * r - waist - r), z0 + (k + 1) * r);
+    flightRail(edge, 0, T, z0, z0 + rise);
+    flightRail(U - edge, 0, T, z0, z0 + rise);
+  }
+  return out;
+}
+
+/** `outline` with the stair openings cut out. */
+function cutStairs(outline: MultiPolygon, stairs: FloorLevel['stairs']): MultiPolygon {
+  if (!stairs.length || !outline.length) return outline;
+  const holes: PCPolygon[] = stairs.map((s) => {
+    const f = stairFootprint(s);
+    return [[[f.x0, f.y0], [f.x1, f.y0], [f.x1, f.y1], [f.x0, f.y1], [f.x0, f.y0]]];
+  });
+  try {
+    return polygonClipping.difference(outline, ...holes);
+  } catch {
+    return outline;
+  }
+}
+
+/**
+ * Glass balustrade along the edges of a deck: 12 mm toughened glass between steel posts at no
+ * more than 1.2 m, a base channel and a round-section handrail, 1.1 m high, set 100 mm in from
+ * the edge. Edges listed in `skip` (the stair arrival) are left open.
+ */
+function glassRailingFaces(outline: MultiPolygon, z: number, skip: (a: { x: number; y: number }, b: { x: number; y: number }) => boolean): Face[] {
+  const out: Face[] = [];
+  const H = 1.1;
+  const inset = 0.1;
+  const steel = '#3A3F44';
+  const glass = '#CFE3EA';
+  for (const poly of outline)
+    for (const ring0 of poly) {
+      const ring = ring0.slice(0, -1).map(([x, y]) => ({ x, y }));
+      let area = 0;
+      for (let i = 0; i < ring.length; i++) area += ring[i].x * ring[(i + 1) % ring.length].y - ring[(i + 1) % ring.length].x * ring[i].y;
+      const sgn = area > 0 ? 1 : -1;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        const horiz = Math.abs(a.y - b.y) < 1e-6;
+        const vert = Math.abs(a.x - b.x) < 1e-6;
+        if (!horiz && !vert) continue;
+        if (skip(a, b)) continue;
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 0.3) continue;
+        // Inward = opposite the outward normal of the solid.
+        const nx = (sgn * (b.y - a.y)) / len;
+        const ny = (-sgn * (b.x - a.x)) / len;
+        const ox = -nx * inset;
+        const oy = -ny * inset;
+        const p = (q: { x: number; y: number }, t: number) => ({ x: q.x + (b.x - a.x) * t + ox, y: q.y + (b.y - a.y) * t + oy });
+        const bar = (t0: number, t1: number, thick: number, z0: number, z1: number, kind: FaceKind, fill: string) => {
+          const s0 = p(a, t0);
+          const s1 = p(a, t1);
+          const h = thick / 2;
+          out.push(...box(Math.min(s0.x, s1.x) - (horiz ? 0 : h), Math.min(s0.y, s1.y) - (vert ? 0 : h), z0, Math.max(s0.x, s1.x) + (horiz ? 0 : h), Math.max(s0.y, s1.y) + (vert ? 0 : h), z1, kind, fill, 2));
+        };
+        const e = 0.06 / len; // keep corners tidy
+        bar(e, 1 - e, 0.06, z, z + 0.1, 'frame', steel); // base channel
+        bar(e, 1 - e, 0.012, z + 0.1, z + H - 0.06, 'glass', glass); // glass panels
+        bar(e, 1 - e, 0.06, z + H - 0.06, z + H, 'frame', steel); // handrail
+        const posts = Math.max(1, Math.ceil(len / 1.2));
+        for (let k = 0; k <= posts; k++) {
+          const t = Math.min(1 - e, Math.max(e, k / posts));
+          const c = p(a, t);
+          out.push(...box(c.x - 0.025, c.y - 0.025, z, c.x + 0.025, c.y + 0.025, z + H, 'frame', steel, 2));
+        }
+      }
+    }
+  return out;
+}
+
 /** Six faces of an axis-aligned box. */
 function box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, kind: FaceKind, fill: string, order = 0): Face[] {
   return [
@@ -159,13 +378,15 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette, exterior: boo
     const outward = (mid.x - center.x) * n.x + (mid.y - center.y) * n.y > 0;
     const tag = exterior && outward && o.label ? o.label : undefined;
 
+    if (o.open) continue; // a plain void: only the reveals below
     if (o.kind === 'window') {
       faces.push({ kind: 'glass', pts: R(s0, s1, z0, z1, back), n, fill: GLASS, order: 1 });
       // Frame: outer rectangle with the daylight opening cut out, plus mullion and transom bars.
       const holes: V3[][] = [];
       const panes: [number, number, number, number][] = [];
       const split = o.style === 'casement' || o.style === 'sliding' ? 2 : o.style === 'bay' ? 3 : 1;
-      const transom = o.style === 'casement' && o.height > 1.25 ? z1 - fw - 0.42 : null;
+      // Casements get a top light; a floor-to-ceiling fixed pane is divided at mid-height.
+      const transom = o.style === 'casement' && o.height > 1.25 ? z1 - fw - 0.42 : o.style === 'picture' && o.height > 2.6 ? z0 + o.height / 2 - bar / 2 : null;
       const inner0 = s0 + fw;
       const inner1 = s1 - fw;
       const paneW = (inner1 - inner0 - bar * (split - 1)) / split;
@@ -197,6 +418,19 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette, exterior: boo
       faces.push({ kind: 'frame', pts: R(s0, s1, z0, z1, front), holes: [R(s0 + fw, s1 - fw, z0, z1 - fw, front)], n, fill: pal.frame, order: 2 });
       const lines: [V3, V3][] = [];
       const lz1 = z1 - fw;
+      if (o.glazed) {
+        // Glass leaf in a slim frame; above a 2.4 m leaf, a fixed glass transom up to the head.
+        const leafTop = o.height > 2.6 ? z0 + 2.4 : lz1;
+        const a0 = s0 + fw;
+        const a1 = s1 - fw;
+        faces.push({ kind: 'glass', pts: R(a0, a1, z0, lz1, back), n, fill: GLASS, order: 1 });
+        const stile = 0.09;
+        const holes = [R(a0 + stile, a1 - stile, z0 + 0.14, leafTop - stile, back + side * 0.006)];
+        if (leafTop < lz1 - 0.05) holes.push(R(a0, a1, leafTop + bar, lz1, back + side * 0.006));
+        const hx = a1 - stile - 0.06;
+        faces.push({ kind: 'door', pts: R(a0, a1, z0, lz1, back + side * 0.006), holes, n, fill: pal.door, order: 1, lines: [[P(hx, back + side * 0.01, z0 + 0.98), P(hx, back + side * 0.01, z0 + 1.12)]], tag });
+        continue;
+      }
       if (o.style === 'garage') {
         for (let z = z0 + 0.25; z < lz1 - 0.05; z += 0.25) lines.push([P(s0 + fw, back, z), P(s1 - fw, back, z)]);
       } else {
@@ -216,6 +450,16 @@ function openingFaces(level: FloorLevel, o: Opening, pal: Palette, exterior: boo
       }
       faces.push({ kind: 'door', pts: R(s0 + fw, s1 - fw, z0, lz1, back), n, fill: pal.door, order: 1, lines, tag });
     }
+  }
+  // A void is lined right through the wall: both jambs, the head and the cill.
+  if (o.open) {
+    const a = t;
+    const b = -t;
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(f.dir.x, f.dir.y, 0), pts: [P(s0, a, z0), P(s0, b, z0), P(s0, b, z1), P(s0, a, z1)] });
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(-f.dir.x, -f.dir.y, 0), pts: [P(s1, b, z0), P(s1, a, z0), P(s1, a, z1), P(s1, b, z1)] });
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(0, 0, -1), pts: [P(s0, a, z1), P(s0, b, z1), P(s1, b, z1), P(s1, a, z1)] });
+    faces.push({ kind: 'reveal', fill: pal.wall, order: 0, n: v(0, 0, 1), pts: [P(s1, a, z0), P(s1, b, z0), P(s0, b, z0), P(s0, a, z0)] });
+    return faces;
   }
   // Reveals from the wall face back to the glass.
   for (const side of [1, -1]) {
@@ -282,6 +526,7 @@ function wallFaces(level: FloorLevel, pal: Palette): Face[] {
 function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { faces: Face[]; ridgeZ: number; planes: { pts: V3[] }[] } {
   const r = model.roof;
   const b = levelBounds(top);
+  const topLevel = top;
   const oh = r.overhang;
   const x0 = b.minX - oh;
   const x1 = b.maxX + oh;
@@ -311,7 +556,32 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
   if (r.type === 'flat') {
     const top = eaveZ + 0.2;
     const para = top + Math.max(0, r.parapetHeight);
-    faces.push(...box(b.minX, b.minY, eaveZ, b.maxX, b.maxY, para, 'fascia', wallFill, 2));
+    // The roof slab covers the top floor's rooms and walls, but not its open terraces (balconies);
+    // a covered deck (porch) on the top floor is under it.
+    const covered = levelOutline(topLevel, (rm) => rm.category !== 'balcony');
+    const outline = r.deck ? cutStairs(covered, topLevel.stairs) : covered;
+    faces.push(...slabFaces(outline, eaveZ, para, 'fascia', wallFill).map((f) => ({ ...f, order: 2 })));
+    if (r.deck) {
+      // Leave the balustrade open where the stair arrives on the deck.
+      const arrivals = topLevel.stairs.map(stairFootprint);
+      const onArrival = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+        arrivals.some((f) => {
+          const c = f.arrival === 'N' ? { y: f.y0 } : f.arrival === 'S' ? { y: f.y1 } : f.arrival === 'W' ? { x: f.x0 } : { x: f.x1 };
+          if ('y' in c && c.y !== undefined) return Math.abs(a.y - c.y) < 0.02 && Math.abs(b.y - c.y) < 0.02 && Math.min(a.x, b.x) >= f.x0 - 0.02 && Math.max(a.x, b.x) <= f.x1 + 0.02;
+          return Math.abs(a.x - c.x!) < 0.02 && Math.abs(b.x - c.x!) < 0.02 && Math.min(a.y, b.y) >= f.y0 - 0.02 && Math.max(a.y, b.y) <= f.y1 + 0.02;
+        });
+      faces.push(...glassRailingFaces(outline, para, onArrival));
+    }
+    // Panels over the roof stand on it; panels moved out over the open terrace below stand on the terrace floor.
+    const onRoof = (x: number, y: number) =>
+      covered.some((poly) => {
+        const ring = poly[0];
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++)
+          if (ring[i][1] > y !== ring[j][1] > y && x < ((ring[j][0] - ring[i][0]) * (y - ring[i][1])) / (ring[j][1] - ring[i][1]) + ring[i][0]) inside = !inside;
+        return inside;
+      });
+    faces.push(...flatSolarFaces(model, para, !!r.deck, onRoof, topLevel.elevation));
     planes.push({ pts: [v(b.minX, b.minY, top), v(b.maxX, b.minY, top), v(b.maxX, b.maxY, top), v(b.minX, b.maxY, top)] });
     return { faces, ridgeZ: para, planes };
   }
@@ -615,6 +885,136 @@ function drainageFor(model: BuildingProject, top: FloorLevel, eaveZ: number): { 
 }
 
 /** Solar panels sitting on the roof planes, using the engine's array layout. */
+/** A straight member from a to b (its top edge on the line a–b), w wide and h deep, hanging below the line. */
+function slopedMember(a: V3, b: V3, w: number, h: number, kind: FaceKind, fill: string): Face[] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const L = Math.hypot(dx, dy) || 1;
+  // Sideways (horizontal, across the member) and the top/bottom offset.
+  const sx = (-dy / L) * (w / 2);
+  const sy = (dx / L) * (w / 2);
+  const P = (q: V3, side: number, down: number) => v(q.x + side * sx, q.y + side * sy, q.z - down);
+  const tA = [P(a, -1, 0), P(a, 1, 0)];
+  const tB = [P(b, -1, 0), P(b, 1, 0)];
+  const bA = [P(a, -1, h), P(a, 1, h)];
+  const bB = [P(b, -1, h), P(b, 1, h)];
+  const mid = v((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2 - h / 2);
+  const quad = (pts: V3[]): Face => {
+    const [p0, p1, p2] = pts;
+    const u = v(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
+    const t = v(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
+    let n = v(u.y * t.z - u.z * t.y, u.z * t.x - u.x * t.z, u.x * t.y - u.y * t.x);
+    const l = Math.hypot(n.x, n.y, n.z) || 1;
+    n = v(n.x / l, n.y / l, n.z / l);
+    // Point the normal away from the member's centre.
+    const fc = v(pts.reduce((q, p) => q + p.x, 0) / 4, pts.reduce((q, p) => q + p.y, 0) / 4, pts.reduce((q, p) => q + p.z, 0) / 4);
+    if (n.x * (fc.x - mid.x) + n.y * (fc.y - mid.y) + n.z * (fc.z - mid.z) < 0) return { kind, fill, order: 2, n: v(-n.x, -n.y, -n.z), pts: [...pts].reverse() };
+    return { kind, fill, order: 2, n, pts };
+  };
+  return [
+    quad([tA[0], tA[1], tB[1], tB[0]]),
+    quad([bA[1], bA[0], bB[0], bB[1]]),
+    quad([tA[0], tB[0], bB[0], bA[0]]),
+    quad([tB[1], tA[1], bA[1], bB[1]]),
+    quad([tA[1], tA[0], bA[0], bA[1]]),
+    quad([tB[0], tB[1], bB[1], bB[0]]),
+  ];
+}
+
+/**
+ * Solar on a flat roof. On a roof deck the array is a canopy on a steel frame, 2.6 m clear above
+ * the deck so the deck stays usable (and shaded); otherwise the modules sit on low frames. Either
+ * way they tilt 5° to the south so rain runs off.
+ */
+function flatSolarFaces(model: BuildingProject, roofZ: number, deck: boolean, onRoof: (x: number, y: number) => boolean = () => true, lowerZ = roofZ): Face[] {
+  const cfg = getSolarConfig(model);
+  if (!cfg.enabled) return [];
+  const layout = computeSolarArrayLayout(model);
+  if (!layout.panels.length) return [];
+  // Panels moved apart (e.g. a few over another part of the roof) get their own canopy. Rows
+  // (panels sharing a y) join a canopy only when they line up with it, end to end, and sit next to it.
+  type P = (typeof layout.panels)[number];
+  const byRow = new Map<number, P[]>();
+  for (const p of layout.panels) {
+    const k = Math.round(p.y * 20) / 20;
+    byRow.set(k, [...(byRow.get(k) ?? []), p]);
+  }
+  const ext = (ps: P[]) => ({ x0: Math.min(...ps.map((p) => p.x - p.width / 2)), x1: Math.max(...ps.map((p) => p.x + p.width / 2)), y0: Math.min(...ps.map((p) => p.y - p.depth / 2)), y1: Math.max(...ps.map((p) => p.y + p.depth / 2)) });
+  const groups: P[][] = [];
+  for (const [, row] of [...byRow.entries()].sort((q, r) => q[0] - r[0])) {
+    const e = ext(row);
+    const g = groups.find((gr) => {
+      const c = ext(gr);
+      return Math.abs(c.x0 - e.x0) < 0.7 && Math.abs(c.x1 - e.x1) < 0.7 && e.y0 - c.y1 < 0.7;
+    });
+    if (g) g.push(...row);
+    else groups.push([...row]);
+  }
+  return groups.flatMap((g) => {
+    const cx = g.reduce((s, p) => s + p.x, 0) / g.length;
+    const cy = g.reduce((s, p) => s + p.y, 0) / g.length;
+    // Off the roof: a canopy on the terrace floor below (always raised, so people walk under it).
+    return onRoof(cx, cy) ? canopyFaces(g, roofZ, deck) : canopyFaces(g, lowerZ, true);
+  });
+}
+
+/** One canopy (or low frame) under a group of panels. */
+function canopyFaces(panels: ReturnType<typeof computeSolarArrayLayout>['panels'], roofZ: number, deck: boolean): Face[] {
+  const faces: Face[] = [];
+  const tilt = Math.tan((5 * Math.PI) / 180);
+  const ys = panels.flatMap((p) => [p.y - p.depth / 2, p.y + p.depth / 2]);
+  const xs = panels.flatMap((p) => [p.x - p.width / 2, p.x + p.width / 2]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const base = roofZ + (deck ? 2.6 : 0.25);
+  // Higher at the north edge, falling to the south.
+  const zAt = (y: number) => base + (maxY - y) * tilt;
+  for (const p of panels) {
+    const rot = (p.rotationDeg * Math.PI) / 180;
+    const hw = p.width / 2;
+    const hd = p.depth / 2;
+    const corner = (sx: number, sy: number) => {
+      const x = p.x + sx * Math.cos(rot) - sy * Math.sin(rot);
+      const y = p.y + sx * Math.sin(rot) + sy * Math.cos(rot);
+      return v(x, y, zAt(y) + 0.04);
+    };
+    const pts = [corner(-hw, hd), corner(hw, hd), corner(hw, -hd), corner(-hw, -hd)];
+    const lines: [V3, V3][] = [];
+    const lerp = (q: V3, r: V3, t: number) => v(q.x + (r.x - q.x) * t, q.y + (r.y - q.y) * t, q.z + (r.z - q.z) * t);
+    for (let i = 1; i < 3; i++) lines.push([lerp(pts[0], pts[1], i / 3), lerp(pts[3], pts[2], i / 3)]);
+    for (let i = 1; i < 6; i++) lines.push([lerp(pts[0], pts[3], i / 6), lerp(pts[1], pts[2], i / 6)]);
+    const l = Math.hypot(0, tilt, 1);
+    faces.push({ kind: 'solar', pts, n: v(0, tilt / l, 1 / l), fill: '#23324A', order: 5, lines });
+  }
+  // Mount, from the panels down: aluminium rails across the slope (two per module row) clamp the
+  // modules; they sit on hot-dip galvanised (GI) steel rafters that follow the 5° tilt; the rafters
+  // bear on level GI beams; GI posts carry the beams down to the roof slab.
+  const GI = '#A3AAB0';
+  const ALU = '#CDD2D6';
+  const railH = 0.04;
+  const rafterH = 0.15;
+  const beamH = 0.15;
+  const rows = [...new Set(panels.map((p) => Math.round(p.y * 100) / 100))].sort((a, b) => a - b);
+  for (const ry of rows) {
+    const d = panels.find((p) => Math.abs(p.y - ry) < 0.02)!.depth;
+    for (const y of [ry - d / 4, ry + d / 4]) faces.push(...box(minX - 0.05, y - 0.02, zAt(y) - railH, maxX + 0.05, y + 0.02, zAt(y), 'frame', ALU, 2));
+  }
+  const spanX = maxX - minX;
+  const bays = Math.max(1, Math.ceil(spanX / (deck ? 3.6 : 1.8)));
+  const lineXs = Array.from({ length: bays + 1 }, (_, k) => minX + 0.2 + ((spanX - 0.4) * k) / bays);
+  const y0 = minY + 0.1;
+  const y1 = maxY - 0.1;
+  // Rafters: sloped members, top face just under the rails.
+  for (const x of lineXs) faces.push(...slopedMember(v(x, y0, zAt(y0) - railH), v(x, y1, zAt(y1) - railH), 0.075, rafterH, 'frame', GI));
+  // Beams and posts on lines across the array (north, middle on a deck canopy, south).
+  const beamYs = deck ? [minY + 0.4, (minY + maxY) / 2, maxY - 0.4] : [minY + 0.4, maxY - 0.4];
+  for (const y of beamYs) {
+    const top = zAt(y) - railH - rafterH;
+    faces.push(...box(minX + 0.1, y - 0.05, top - beamH, maxX - 0.1, y + 0.05, top, 'frame', GI, 2));
+    for (const x of lineXs) faces.push(...box(x - 0.05, y - 0.05, roofZ, x + 0.05, y + 0.05, top - beamH, 'frame', GI, 2));
+  }
+  return faces;
+}
+
 function solarFaces(model: BuildingProject, planes: { pts: V3[] }[]): Face[] {
   const cfg = getSolarConfig(model);
   if (!cfg.enabled || !planes.length) return [];
@@ -659,10 +1059,9 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
   const pal: Palette = { wall: wallFill, frame: FRAME_COLOR[design.windowFrame] ?? '#3A3F44', door: tint(DOOR_COLOR[design.doorMaterial] ?? '#B8925E', 0.12) };
   const faces: Face[] = [];
   const first = model.levels[0];
-  const b0 = levelBounds(first);
 
   // Plinth from ground up to the ground-floor level.
-  if (first && first.elevation > 0.02) faces.push(...box(b0.minX - 0.05, b0.minY - 0.05, 0, b0.maxX + 0.05, b0.maxY + 0.05, first.elevation, 'plinth', PLINTH));
+  if (first && first.elevation > 0.02) faces.push(...slabFaces(levelOutline(first), 0, first.elevation, 'plinth', PLINTH));
 
   let eaveZ = 3;
   model.levels.forEach((lvl, i) => {
@@ -670,10 +1069,14 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
     const top = lvl.elevation + Math.max(...lvl.walls.map((w) => w.height), 2.8);
     eaveZ = Math.max(eaveZ, top);
     if (i > 0) {
-      const lb = levelBounds(lvl);
       // Slab edge is finished like the wall, so it merges into one facade with a single floor line.
-      faces.push(...box(lb.minX, lb.minY, lvl.elevation - lvl.slabThickness, lb.maxX, lb.maxY, lvl.elevation, 'wall', wallFill));
+      // The slab is open where the stair from the floor below comes up.
+      faces.push(...slabFaces(cutStairs(levelOutline(lvl), model.levels[i - 1].stairs), lvl.elevation - lvl.slabThickness, lvl.elevation, 'wall', wallFill));
     }
+    // Stairs up from this floor: to the next floor, or from the top floor up onto a roof deck.
+    const next = model.levels[i + 1];
+    const rise = next ? next.elevation - lvl.elevation : lvl.floorToFloorHeight + 0.2;
+    if (next || (model.roof.type === 'flat' && model.roof.deck)) for (const st of lvl.stairs) faces.push(...stairFaces(st, lvl.elevation, rise, wallFill));
   });
 
   const top = model.levels[model.levels.length - 1];

@@ -1,3 +1,4 @@
+import { PV_MODULE } from '../model/pvModule';
 import {
   BuildingProject,
   FloorLevel,
@@ -464,11 +465,12 @@ export function computeSolarArrayLayout(project: BuildingProject): ComputedSolar
   const rotDeg = (((solar.rotationDeg ?? 0) % 360) + 360) % 360;
   const isSideways = rotDeg === 90 || rotDeg === 270;
 
-  const baseW = 1.0;
-  const baseD = 1.55;
+  // Portrait module: short side across the row, long side up the slope (Luxen LNVU-590ND).
+  const baseW = PV_MODULE.width;
+  const baseD = PV_MODULE.length;
   const modW = isSideways ? baseD : baseW;
   const modD = isSideways ? baseW : baseD;
-  const gap = 0.08;
+  const gap = PV_MODULE.clampGap;
 
   // With strings set, one string per row (strings × panels per string).
   const stringed = (solar.strings ?? 0) > 0 && (solar.panelsPerString ?? 0) > 0;
@@ -486,6 +488,10 @@ export function computeSolarArrayLayout(project: BuildingProject): ComputedSolar
     }
   }
   const rows = Math.max(1, Math.ceil(count / cols));
+  // Service walkways: a gap after every `every` columns.
+  const every = solar.serviceGapEvery && solar.serviceGapEvery > 0 ? Math.round(solar.serviceGapEvery) : 0;
+  const gapW = every ? Math.max(0.3, solar.serviceGapWidth ?? 0.6) : 0;
+  const gapsBefore = (c: number) => (every ? Math.floor(c / every) : 0);
 
   const rad = (rotDeg * Math.PI) / 180;
   const cosR = Math.cos(rad);
@@ -502,10 +508,10 @@ export function computeSolarArrayLayout(project: BuildingProject): ComputedSolar
     const r = Math.floor(idx / cols);
     const c = idx % cols;
     const colsInRow = Math.min(cols, count - r * cols);
-    const rowW = colsInRow * modW + (colsInRow - 1) * gap;
+    const rowW = colsInRow * modW + (colsInRow - 1) * gap + gapsBefore(colsInRow - 1) * gapW;
 
     // Local coordinates unrotated before array rotation
-    const lxBase = -rowW / 2 + modW / 2 + c * (modW + gap);
+    const lxBase = -rowW / 2 + modW / 2 + c * (modW + gap) + gapsBefore(c) * gapW;
     const lyBase = -totalGridD / 2 + modD / 2 + r * (modD + gap);
     // Keep grid orientation steady around array center when rotating module layout
     const rx = isSideways ? lxBase : lxBase * cosR - lyBase * sinR;

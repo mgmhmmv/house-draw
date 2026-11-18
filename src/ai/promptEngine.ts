@@ -1,3 +1,4 @@
+import { PV_MODULE } from '../model/pvModule';
 import {
   BuildingProject,
   ClimateZone,
@@ -936,11 +937,11 @@ function extractMaterialAndSolarFromPrompt(prompt: string): {
     const panelCount = panelMatch
       ? Math.max(4, Math.min(24, parseInt(panelMatch[1], 10)))
       : kwMatch
-      ? Math.max(4, Math.min(24, Math.round((parseFloat(kwMatch[1]) * 1000) / 450)))
-      : 12;
+      ? Math.max(4, Math.min(24, Math.round((parseFloat(kwMatch[1]) * 1000) / PV_MODULE.wattage)))
+      : 10;
     const batteryKWh = kwhMatch ? Math.max(0, Math.min(20, parseInt(kwhMatch[1], 10))) : 10;
-    const inverterKW = Math.max(5, Math.min(10, Math.ceil((panelCount * 450) / 1000)));
-    out.solar = { enabled: true, panelCount, inverterKW, batteryKWh };
+    const inverterKW = Math.max(5, Math.min(10, Math.ceil((panelCount * PV_MODULE.wattage) / 1000)));
+    out.solar = { enabled: true, panelCount, panelWattage: PV_MODULE.wattage, inverterKW, batteryKWh };
   }
 
   return out;

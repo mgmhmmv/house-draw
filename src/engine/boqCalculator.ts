@@ -1,3 +1,4 @@
+import { PV_MODULE, PV_MODULE_LABEL } from '../model/pvModule';
 import {
   BuildingProject,
   getDesignConfig,
@@ -293,7 +294,7 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
     add(
       '06.03',
       '06 MEP Systems',
-      `Solar PV Array (${solar.panelCount}×${solar.panelWattage}Wp = ${arrayKwp}kWp), ${solar.inverterKW}kW Hybrid Inverter & ${solar.batteryKWh}kWh LiFePO4 BESS`,
+      `Solar PV Array (${solar.panelCount}×${solar.panelWattage}Wp ${PV_MODULE_LABEL} bifacial, ${PV_MODULE.length * 1000}×${PV_MODULE.width * 1000} mm = ${arrayKwp}kWp), ${solar.inverterKW}kW Hybrid Inverter & ${solar.batteryKWh}kWh LiFePO4 BESS`,
       'sys',
       1,
       solarCost
