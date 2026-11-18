@@ -17,6 +17,8 @@ interface Props {
   model: BuildingProject;
   sheet: SheetId;
   projectId: string;
+  /** The project's public 3D view link (added to IslePOS quotes). */
+  publicLink?: string | null;
   stage: ProjectStatus;
   onStage: (s: ProjectStatus) => void;
   levelIndex: number;
@@ -59,7 +61,7 @@ export function SheetView(p: Props) {
       view = <HvacSheet model={p.model} />;
       break;
     case 'BILL':
-      view = <BillingSheet projectId={p.projectId} model={p.model} stage={p.stage} onStage={p.onStage} />;
+      view = <BillingSheet projectId={p.projectId} model={p.model} stage={p.stage} onStage={p.onStage} publicLink={p.publicLink ?? null} />;
       break;
     case 'Q-101':
       view = <BoqSheet model={p.model} onCommit={p.onCommit} />;

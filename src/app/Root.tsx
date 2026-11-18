@@ -12,6 +12,8 @@ import { ClientPage } from './screens/ClientPage';
 
 // The workspace carries three.js and the drawing engines; the dashboard should not wait for them.
 const Workspace = lazy(() => import('./workspace/Workspace'));
+// The public 3D view link: no login, no app chrome.
+const PublicViewer = lazy(() => import('./screens/PublicViewer'));
 
 function FullPageSpinner() {
   return (
@@ -28,12 +30,22 @@ function Routes() {
   const [newTemplate, setNewTemplate] = useState('blank');
 
   const isAuthRoute = path === '/login' || path === '/signup';
+  const shared = matchPath('/v/:token', path);
 
   useEffect(() => {
+    if (shared) return;
     if (!ready) return;
     if (!user && !isAuthRoute) navigate('/login', { replace: true });
     if (user && isAuthRoute) navigate('/', { replace: true });
-  }, [ready, user, isAuthRoute, navigate]);
+  }, [ready, user, isAuthRoute, navigate, shared]);
+
+  if (shared) {
+    return (
+      <Suspense fallback={<FullPageSpinner />}>
+        <PublicViewer token={shared.token} />
+      </Suspense>
+    );
+  }
 
   if (!ready) return <FullPageSpinner />;
   if (!user) return <AuthScreen />;

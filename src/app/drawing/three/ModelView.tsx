@@ -39,7 +39,8 @@ export interface ModelViewSelect {
   onSolarMove?: (target: { kind: 'array' } | { kind: 'panel'; index: number }, dx: number, dy: number) => void;
 }
 
-export function ModelView({ model, select }: { model: BuildingProject; select?: ModelViewSelect }) {
+/** `lookOnly`: the public, look-only view (orbit, zoom, camera presets, sun); no tools, levels, X-ray or services. */
+export function ModelView({ model, select, lookOnly }: { model: BuildingProject; select?: ModelViewSelect; lookOnly?: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const compassRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<Style>('rendered');
@@ -506,6 +507,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
     <div className="relative h-full w-full overflow-hidden" style={{ background: '#F6F5F2' }}>
       <div ref={hostRef} className="absolute inset-0" />
 
+      {!lookOnly && (
       <div className="absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2">
         <Chips
           value={style}
@@ -538,6 +540,7 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
           options={[{ id: 'all', label: 'Whole building' }, ...(model.roof.type !== 'flat' ? [{ id: 'frame', label: 'Roof frame' }] : []), ...levelNames.map((n, i) => ({ id: String(i), label: n }))]}
         />
       </div>
+      )}
 
       {walking && (
         <>
@@ -645,9 +648,11 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
               <MousePointer2 className="h-4 w-4" />
             </button>
           )}
+          {!lookOnly && (
           <button onClick={() => setWalking(true)} className="flex h-9 items-center gap-1.5 border-r border-line px-3 text-[13px] font-medium text-ink-2 hover:bg-sunken hover:text-ink" title="Walk through">
             <Footprints className="h-4 w-4" /> Walk
           </button>
+          )}
           {(['iso', 'front', 'side', 'top'] as Preset[]).map((p) => (
             <button
               key={p}
@@ -657,9 +662,11 @@ export function ModelView({ model, select }: { model: BuildingProject; select?: 
               {p === 'iso' ? '3D' : p}
             </button>
           ))}
+          {!lookOnly && (
           <button aria-label="Section height" title="Section height" onClick={() => setShowCut((s) => !s)} className={cx('flex h-9 w-9 items-center justify-center border-l border-line hover:bg-sunken', showCut || cutZ !== null ? 'text-accent' : 'text-ink-2')}>
             <Scissors className="h-4 w-4" />
           </button>
+          )}
           <button aria-label="Sun position" title="Sun position" onClick={() => setShowSun((s) => !s)} className={cx('flex h-9 w-9 items-center justify-center border-l border-line hover:bg-sunken', showSun ? 'text-accent' : 'text-ink-2')}>
             <Sun className="h-4 w-4" />
           </button>

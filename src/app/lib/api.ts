@@ -47,7 +47,12 @@ export interface Project {
   updatedAt: number;
   /** When the 3D cover render was last updated, or null if there is none yet. */
   coverAt: number | null;
+  /** Token of the public 3D view link (/v/<token>); every project has one. */
+  shareToken?: string | null;
 }
+
+/** The public 3D view link for a project. */
+export const shareUrl = (token: string) => `${location.origin}/v/${token}`;
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -86,4 +91,6 @@ export const api = {
     request<{ current: number; versions: ProjectVersion[] }>('GET', `/api/projects/${id}/versions${before ? `?before=${before}` : ''}`),
   versionModel: (id: string, v: number) => request<BuildingProject>('GET', `/api/projects/${id}/versions/${v}`),
   deleteProject: (id: string) => request<{ ok: true }>('DELETE', `/api/projects/${id}`),
+  /** A new public 3D link; the old one stops working. */
+  rotateShare: (id: string) => request<{ project: Project }>('POST', `/api/projects/${id}/share`),
 };

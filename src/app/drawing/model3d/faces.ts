@@ -104,13 +104,27 @@ export function levelBounds(level: FloorLevel) {
 export function levelOutline(level: FloorLevel, includeRoom: (r: FloorLevel['rooms'][number]) => boolean = () => true): MultiPolygon {
   const parts: PCPolygon[] = [];
   const rect = (x0: number, y0: number, x1: number, y1: number): PCPolygon => [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]];
-  for (const w of level.walls) {
-    const t = w.thickness / 2;
-    parts.push(rect(Math.min(w.start.x, w.end.x) - t, Math.min(w.start.y, w.end.y) - t, Math.max(w.start.x, w.end.x) + t, Math.max(w.start.y, w.end.y) + t));
-  }
+  // Rooms, widened to the outside face of an exterior wall, give a clean slab edge: column stubs
+  // and wall ends don't poke out of it, and corners don't leave notches.
+  const EXT = 0.115;
+  const roomRects: { x0: number; y0: number; x1: number; y1: number }[] = [];
   for (const r of level.rooms) {
     if (r.polygon.length < 3 || !includeRoom(r)) continue;
-    parts.push([[...r.polygon.map((p) => [p.x, p.y] as [number, number]), [r.polygon[0].x, r.polygon[0].y]]]);
+    const xs = r.polygon.map((p) => p.x);
+    const ys = r.polygon.map((p) => p.y);
+    const axisRect = r.polygon.length === 4 && r.polygon.every((p) => xs.some((x) => Math.abs(x - p.x) < 1e-6)) && new Set(xs.map((x) => x.toFixed(3))).size === 2 && new Set(ys.map((y) => y.toFixed(3))).size === 2;
+    if (axisRect) {
+      const q = { x0: Math.min(...xs) - EXT, y0: Math.min(...ys) - EXT, x1: Math.max(...xs) + EXT, y1: Math.max(...ys) + EXT };
+      roomRects.push(q);
+      parts.push(rect(q.x0, q.y0, q.x1, q.y1));
+    } else parts.push([[...r.polygon.map((p) => [p.x, p.y] as [number, number]), [r.polygon[0].x, r.polygon[0].y]]]);
+  }
+  // Walls only where no room accounts for them (a drawing with walls but no rooms, a free-standing wall).
+  const covered = (x: number, y: number) => roomRects.some((q) => x >= q.x0 - 1e-6 && x <= q.x1 + 1e-6 && y >= q.y0 - 1e-6 && y <= q.y1 + 1e-6);
+  for (const w of level.walls) {
+    if (covered(w.start.x, w.start.y) && covered(w.end.x, w.end.y)) continue;
+    const t = w.thickness / 2;
+    parts.push(rect(Math.min(w.start.x, w.end.x) - t, Math.min(w.start.y, w.end.y) - t, Math.max(w.start.x, w.end.x) + t, Math.max(w.start.y, w.end.y) + t));
   }
   if (!parts.length) return [];
   try {
@@ -1005,7 +1019,8 @@ function canopyFaces(panels: ReturnType<typeof computeSolarArrayLayout>['panels'
   const y1 = maxY - 0.1;
   // Rafters: sloped members, top face just under the rails.
   for (const x of lineXs) faces.push(...slopedMember(v(x, y0, zAt(y0) - railH), v(x, y1, zAt(y1) - railH), 0.075, rafterH, 'frame', GI));
-  // Beams and posts on lines across the array (north, middle on a deck canopy, south).
+  // Beams and posts on lines across the array (north, middle on a deck canopy, south): the
+  // solar frame is its own steel structure, standing on the roof slab.
   const beamYs = deck ? [minY + 0.4, (minY + maxY) / 2, maxY - 0.4] : [minY + 0.4, maxY - 0.4];
   for (const y of beamYs) {
     const top = zAt(y) - railH - rafterH;

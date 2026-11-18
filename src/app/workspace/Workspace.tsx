@@ -34,6 +34,8 @@ import {
   SquareStack,
   Undo2,
   X,
+  Link2,
+  Box,
 } from 'lucide-react';
 import {
   getHVACConfig,
@@ -59,7 +61,7 @@ import { downloadSheetsPDF } from '../../export/pdf';
 import { getStudio } from '../lib/studio';
 import { composePages, numberSheets, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
 import type { SheetInfo } from '../../export/sheet';
-import { api, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
+import { api, shareUrl, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
 import { Link, useRouter } from '../lib/router';
 import { Button, cx, Dialog, Field, IconButton, Input, Kbd, Menu, MenuItem, Spinner, STATUS_META, StatusPill, toast } from '../ui';
@@ -95,6 +97,8 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
 
   const sheet = sheetBySlug(sheetParam);
   const [levelIndex, setLevelIndex] = useState(0);
+  // A freshly made public 3D link (after "New link"), until the project reloads.
+  const [shareOverride, setShareOverride] = useState<string | null>(null);
   const [tool, setTool] = useState<CADTool>('select');
   const [selection, setSelection] = useState<Selection | null>(null);
   const [sketch, setSketch] = useState<SketchStroke[]>([]);
@@ -477,6 +481,30 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
 
   const library = <LibraryPanel onPick={pickAsset} placingId={placing?.def.id ?? null} />;
 
+  // Public 3D view link: the facade in 3D for anyone with the link (clients, IslePOS documents).
+  const shareToken = shareOverride ?? project.shareToken ?? null;
+  const publicLink = shareToken ? shareUrl(shareToken) : null;
+  const copyLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Public 3D link copied');
+    } catch {
+      toast(url);
+    }
+  };
+  const resetLink = async () => {
+    try {
+      const r = await api.rotateShare(projectId);
+      if (r.project.shareToken) {
+        setShareOverride(r.project.shareToken);
+        await copyLink(shareUrl(r.project.shareToken));
+        toast('New link made and copied; the old link no longer works');
+      }
+    } catch {
+      toast('Could not make a new link');
+    }
+  };
+
   const exportMenu = (
     <Menu
       trigger={(t) =>
@@ -493,6 +521,20 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     >
       {(close) => (
         <>
+          {publicLink && (
+            <>
+              <MenuItem icon={<Link2 />} onClick={() => (close(), copyLink(publicLink))}>
+                Copy public 3D link
+              </MenuItem>
+              <MenuItem icon={<Box />} onClick={() => (close(), window.open(publicLink, '_blank', 'noopener'))}>
+                Open public 3D view
+              </MenuItem>
+              <MenuItem icon={<RotateCcw />} onClick={() => (close(), resetLink())}>
+                New link (old one stops working)
+              </MenuItem>
+              <div className="my-1 h-px bg-line" />
+            </>
+          )}
           <MenuItem icon={<FileText />} onClick={() => (close(), runExport('sheet-pdf'))}>
             This sheet · A3 PDF
           </MenuItem>
@@ -529,6 +571,7 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
       <SheetView
         model={preview?.model ?? model}
         projectId={projectId}
+        publicLink={publicLink}
         stage={project.status}
         onStage={(st) => doc.updateMeta({ status: st }).then(() => toast(`Stage: ${STATUS_META[st].label}`)).catch(() => toast('Could not change the stage'))}
         sheet={sheet.id}

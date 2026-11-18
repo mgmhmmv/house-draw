@@ -36,7 +36,7 @@ function Pill({ status }: { status: string }) {
   return <span className={cx('rounded-full px-2.5 py-0.5 text-2xs font-medium capitalize', STATUS_STYLE[status] ?? 'bg-sunken text-ink-2')}>{STATUS_LABEL[status] ?? status}</span>;
 }
 
-export function BillingSheet({ projectId, model, stage, onStage }: { projectId: string; model: BuildingProject; stage: ProjectStatus; onStage: (s: ProjectStatus) => void }) {
+export function BillingSheet({ projectId, model, stage, onStage, publicLink }: { projectId: string; model: BuildingProject; stage: ProjectStatus; onStage: (s: ProjectStatus) => void; publicLink?: string | null }) {
   const stageRef = useRef(stage);
   stageRef.current = stage;
   const [conn, setConn] = useState<Connection | null>(null);
@@ -126,7 +126,7 @@ export function BillingSheet({ projectId, model, stage, onStage }: { projectId: 
 
       <ClientCard customer={customer} onLink={linkCustomer} />
 
-      {customer && <NewQuote customer={customer} model={model} onCreated={onDoc} />}
+      {customer && <NewQuote customer={customer} model={model} onCreated={onDoc} publicLink={publicLink ?? null} />}
 
       <Card title="Quotes and invoices" flush>
         {records.length === 0 ? (
@@ -240,7 +240,7 @@ function ClientCard({ customer, onLink }: { customer: IsleCustomer | null; onLin
   );
 }
 
-function NewQuote({ customer, model, onCreated }: { customer: IsleCustomer; model: BuildingProject; onCreated: (d: IsleDoc) => void }) {
+function NewQuote({ customer, model, onCreated, publicLink }: { customer: IsleCustomer; model: BuildingProject; onCreated: (d: IsleDoc) => void; publicLink: string | null }) {
   const [lines, setLines] = useState<IsleLine[]>([]);
   const [discount, setDiscount] = useState(0);
   const [notes, setNotes] = useState('');
@@ -264,7 +264,8 @@ function NewQuote({ customer, model, onCreated }: { customer: IsleCustomer; mode
         customer_id: customer.id,
         items: lines.map((l) => (l.sku ? { sku: l.sku, quantity: l.quantity } : { name: l.name, description: l.description ?? undefined, unit_price: l.unit_price, quantity: l.quantity })) as IsleLine[],
         discount: discount || undefined,
-        notes: notes || `${model.meta.title}${model.meta.location ? ` — ${model.meta.location}` : ''}`,
+        // Every quote carries the project's public 3D view link.
+        notes: [notes || `${model.meta.title}${model.meta.location ? ` — ${model.meta.location}` : ''}`, publicLink ? `View the building in 3D: ${publicLink}` : ''].filter(Boolean).join('\n'),
         valid_days: 14,
       });
       onCreated(doc);

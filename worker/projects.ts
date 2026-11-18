@@ -20,6 +20,7 @@ interface ProjectRow {
   created_at: number;
   updated_at: number;
   cover_at: number | null;
+  share_token: string | null;
 }
 
 const modelKey = (id: string) => `projects/${id}/model.json`;
@@ -53,6 +54,7 @@ function toProject(row: ProjectRow) {
     summary,
     version: row.version,
     coverAt: row.cover_at ?? null,
+    shareToken: row.share_token ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -68,6 +70,21 @@ function cleanSummary(input: unknown): string {
     }
   }
   return JSON.stringify(out);
+}
+
+/** 24 random bytes, URL-safe: the public 3D link's token. */
+export function newShareToken(): string {
+  const b = crypto.getRandomValues(new Uint8Array(18));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Every project has a public 3D link; older projects get theirs the first time they are opened. */
+async function ensureShare(env: Env, row: ProjectRow): Promise<ProjectRow> {
+  if (row.share_token) return row;
+  const token = newShareToken();
+  await env.DB.prepare('UPDATE projects SET share_token = ? WHERE id = ? AND share_token IS NULL').bind(token, row.id).run();
+  const fresh = await env.DB.prepare('SELECT * FROM projects WHERE id = ?').bind(row.id).first<ProjectRow>();
+  return fresh ?? { ...row, share_token: token };
 }
 
 async function ownedProject(env: Env, user: User, id: string): Promise<ProjectRow> {
@@ -104,17 +121,23 @@ export async function handleProjects(env: Env, req: Request, user: User, path: s
       httpMetadata: { contentType: 'application/json' },
     });
     await env.DB.prepare(
-      `INSERT INTO projects (id, owner_id, name, client, location, status, template, summary, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'brief', ?, ?, 1, ?, ?)`
+      `INSERT INTO projects (id, owner_id, name, client, location, status, template, summary, version, created_at, updated_at, share_token)
+       VALUES (?, ?, ?, ?, ?, 'brief', ?, ?, 1, ?, ?, ?)`
     )
-      .bind(pid, user.id, name, str(body.client, 120), str(body.location, 120), str(body.template, 40) || 'blank', cleanSummary(body.summary), t, t)
+      .bind(pid, user.id, name, str(body.client, 120), str(body.location, 120), str(body.template, 40) || 'blank', cleanSummary(body.summary), t, t, newShareToken())
       .run();
     await snapshot(env, pid, 1, text, cleanSummary(body.summary), 'create', 'Project created', t);
     return json({ project: toProject(await ownedProject(env, user, pid)) }, { status: 201 });
   }
 
   if (!id) throw new HttpError(405, 'method_not_allowed');
-  const row = await ownedProject(env, user, id);
+  const row = await ensureShare(env, await ownedProject(env, user, id));
+
+  // POST /api/projects/:id/share — a new public 3D link (the old one stops working).
+  if (sub === 'share' && req.method === 'POST') {
+    await env.DB.prepare('UPDATE projects SET share_token = ? WHERE id = ?').bind(newShareToken(), id).run();
+    return json({ project: toProject(await ownedProject(env, user, id)) });
+  }
 
   if (!sub) {
     if (req.method === 'GET') {
