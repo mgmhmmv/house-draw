@@ -14,6 +14,7 @@ import { ClientPage } from './screens/ClientPage';
 const Workspace = lazy(() => import('./workspace/Workspace'));
 // The public 3D view link: no login, no app chrome.
 const PublicViewer = lazy(() => import('./screens/PublicViewer'));
+const SharePage = lazy(() => import('./screens/SharePage'));
 
 function FullPageSpinner() {
   return (
@@ -31,13 +32,22 @@ function Routes() {
 
   const isAuthRoute = path === '/login' || path === '/signup';
   const shared = matchPath('/v/:token', path);
+  const isleShare = matchPath('/s/:token', path);
 
   useEffect(() => {
-    if (shared) return;
+    if (shared || isleShare) return;
     if (!ready) return;
     if (!user && !isAuthRoute) navigate('/login', { replace: true });
     if (user && isAuthRoute) navigate('/', { replace: true });
-  }, [ready, user, isAuthRoute, navigate, shared]);
+  }, [ready, user, isAuthRoute, navigate, shared, isleShare]);
+
+  if (isleShare) {
+    return (
+      <Suspense fallback={<FullPageSpinner />}>
+        <SharePage />
+      </Suspense>
+    );
+  }
 
   if (shared) {
     return (

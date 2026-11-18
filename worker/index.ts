@@ -6,7 +6,7 @@ import { handleAuth, requireUser } from './auth';
 import { Env, HttpError, json } from './http';
 import { handleProjects } from './projects';
 import { handleClient, handleIslepos } from './islepos';
-import { handlePublic } from './public';
+import { handlePublic, handleShare } from './public';
 
 /**
  * Requests that change state must come from this site. With SameSite=Lax cookies this
@@ -24,6 +24,7 @@ function secure(resp: Response, req: Request): Response {
   r.headers.set('x-content-type-options', 'nosniff');
   // The public 3D view (/v/<token>) may be embedded, e.g. in IslePOS; everything else may not.
   const path = new URL(req.url).pathname;
+  // (IslePOS on the web, its desktop app and local development all frame it.)
   if (path.startsWith('/v/')) r.headers.set('content-security-policy', 'frame-ancestors *');
   else r.headers.set('x-frame-options', 'DENY');
   r.headers.set('referrer-policy', 'strict-origin-when-cross-origin');
@@ -47,6 +48,8 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (path.startsWith('/api/auth/')) return await handleAuth(env, req, path);
     // Public 3D view links: no login, facade only.
     if (path.startsWith('/api/public/')) return await handlePublic(env, req, path);
+    // "Share to IslePOS" links: the design export, read by the IslePOS Solar Suite.
+    if (path.startsWith('/api/share/')) return await handleShare(env, req, path);
     const user = await requireUser(env, req);
     if (path === '/api/projects' || path.startsWith('/api/projects/')) return await handleProjects(env, req, user, path);
     if (path === '/api/integrations/islepos' || path.startsWith('/api/islepos/')) return await handleIslepos(env, req, user, path);

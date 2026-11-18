@@ -47,3 +47,9 @@ export const newId = () => crypto.randomUUID();
 export function str(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
+
+/** This site's origin for links handed to other apps: always https outside local development. */
+export function publicOrigin(req: Request): string {
+  const u = new URL(req.url);
+  return /^(localhost|127\.0\.0\.1)$/.test(u.hostname) ? u.origin : `https://${u.host}`;
+}

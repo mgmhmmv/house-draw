@@ -93,4 +93,9 @@ export const api = {
   deleteProject: (id: string) => request<{ ok: true }>('DELETE', `/api/projects/${id}`),
   /** A new public 3D link; the old one stops working. */
   rotateShare: (id: string) => request<{ project: Project }>('POST', `/api/projects/${id}/share`),
+  /** "Share to IslePOS": the link (null = off), and storing the export it serves. */
+  isleposShare: (id: string) => request<{ url: string | null; updatedAt: number | null }>('GET', `/api/projects/${id}/islepos-share`),
+  putIsleposShare: (id: string, body: { export: unknown; keepDrawings?: boolean }) =>
+    request<{ url: string; updatedAt: number }>('PUT', `/api/projects/${id}/islepos-share`, body),
+  stopIsleposShare: (id: string) => request<{ url: null }>('DELETE', `/api/projects/${id}/islepos-share`),
 };

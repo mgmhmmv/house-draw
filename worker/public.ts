@@ -4,7 +4,7 @@
  * every other project detail; room names and finishes; interior walls; services (MEP);
  * furniture (railings stay, they are part of the facade); costs, notes and custom objects.
  */
-import { Env, HttpError, json } from './http';
+import { Env, HttpError, json, publicOrigin } from './http';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -62,6 +62,26 @@ export async function handlePublic(env: Env, req: Request, path: string): Promis
   const model = (await obj.json()) as Obj;
   const r = json({ name: row.name, model: facadeOnly(model, row.name) });
   r.headers.set('cache-control', 'public, max-age=60');
+  r.headers.set('x-robots-tag', 'noindex');
+  return r;
+}
+
+/**
+ * GET /api/share/<token> — the "Share to IslePOS" export (version 1), for the IslePOS Solar Suite
+ * to import. No login: the token is the secret. 404 when unknown or turned off.
+ */
+export async function handleShare(env: Env, req: Request, path: string): Promise<Response> {
+  const m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{16,200})$/);
+  if (!m || req.method !== 'GET') throw new HttpError(404, 'not_found');
+  const row = await env.DB.prepare('SELECT id, name, share_token FROM projects WHERE islepos_token = ?').bind(m[1]).first<{ id: string; name: string; share_token: string | null }>();
+  if (!row) throw new HttpError(404, 'not_found', 'This share link is unknown or has been turned off.');
+  const obj = await env.FILES.get(`projects/${row.id}/islepos-export.json`);
+  if (!obj) throw new HttpError(404, 'not_found', 'Nothing has been shared from this design yet.');
+  const exp = (await obj.json()) as Obj;
+  // The 3D view link is always the project's current one.
+  const src = isObj(exp.source) ? exp.source : {};
+  exp.source = { ...src, projectName: row.name, viewUrl: row.share_token ? `${publicOrigin(req)}/v/${row.share_token}` : null };
+  const r = json(exp);
   r.headers.set('x-robots-tag', 'noindex');
   return r;
 }

@@ -36,6 +36,7 @@ import {
   X,
   Link2,
   Box,
+  Sun,
 } from 'lucide-react';
 import {
   getHVACConfig,
@@ -60,6 +61,8 @@ import {
 import { downloadSheetsPDF } from '../../export/pdf';
 import { getStudio } from '../lib/studio';
 import { composePages, numberSheets, PAPER_SHEETS, PER_LEVEL, PRINTABLE, sheetInfo } from './printSheets';
+import { ShareToIsleposDialog } from './ShareToIsleposDialog';
+import { solarExport, svgToPngBase64, type SolarExport } from '../lib/solarExport';
 import type { SheetInfo } from '../../export/sheet';
 import { api, shareUrl, STAGES, type ProjectStatus, type ProjectVersion } from '../lib/api';
 import { useIsDesktop } from '../lib/hooks';
@@ -99,6 +102,10 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   const [levelIndex, setLevelIndex] = useState(0);
   // A freshly made public 3D link (after "New link"), until the project reloads.
   const [shareOverride, setShareOverride] = useState<string | null>(null);
+  // Send to the IslePOS Solar Suite.
+  const [solarOpen, setSolarOpen] = useState(false);
+  // The "Share to IslePOS" link, if on: its runs and layout are refreshed after every save.
+  const [isleposShare, setIsleposShare] = useState<string | null>(null);
   const [tool, setTool] = useState<CADTool>('select');
   const [selection, setSelection] = useState<Selection | null>(null);
   const [sketch, setSketch] = useState<SketchStroke[]>([]);
@@ -201,6 +208,31 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
   useEffect(() => {
     void loadCustomAssets();
   }, []);
+
+  // "Share to IslePOS": is the link on? While it is, every saved version refreshes the runs,
+  // strings and layout IslePOS reads (the drawings stay as last shared until Update drawings).
+  useEffect(() => {
+    api
+      .isleposShare(projectId)
+      .then((r) => setIsleposShare(r.url))
+      .catch(() => setIsleposShare(null));
+  }, [projectId]);
+  const savedVersion = doc.project?.version;
+  useEffect(() => {
+    if (!isleposShare || !model || !doc.project || !getSolarConfig(model).enabled) return;
+    const p = doc.project;
+    const t = setTimeout(() => {
+      try {
+        const data = solarExport(model, { projectId: p.id, projectName: p.name, modelVersion: p.version, viewUrl: null });
+        api.putIsleposShare(p.id, { export: data, keepDrawings: true }).catch(() => {});
+      } catch {
+        /* nothing exportable right now (e.g. the inverter was removed): IslePOS keeps the last good one */
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+    // Only on a new saved version (not on every edit).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedVersion, isleposShare]);
 
   // Choosing a drawing tool ends placing.
   useEffect(() => {
@@ -310,6 +342,47 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
 
   const [printing, setPrinting] = useState<string | null>(null);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * The drawings the Solar Suite takes, as they are: each elevation, the roof plan and the 3D
+   * view, captured as A3 sheets (SVG) the same way the drawing set is, then back to where we were.
+   */
+  const captureSolarDrawings = async (onStep: (msg: string) => void): Promise<SolarExport['drawings']> => {
+    if (!model || !doc.project) return [];
+    const project = doc.project;
+    const back = { sheet, level: safeLevel };
+    setSelection(null);
+    setPlacing(null);
+    const out: SolarExport['drawings'] = [];
+    const jobs: { id: string; slots: string[] }[] = [
+      { id: 'A-201', slots: ['elevation_south', 'elevation_north', 'elevation_east', 'elevation_west'] },
+      { id: 'R-101', slots: ['roof_plan'] },
+      { id: '3D-VIEW', slots: ['view_3d'] },
+    ];
+    try {
+      for (const j of jobs) {
+        const def = SHEETS.find((x) => x.id === j.id);
+        if (!def) continue;
+        onStep(`Drawing ${def.name.toLowerCase()}…`);
+        navigate(`/p/${projectId}/${def.slug}`, { replace: true });
+        setLevelIndex(0);
+        await sleep(def.id === '3D-VIEW' ? 1600 : 900);
+        const pages = await composePages({ project, model, sheetId: def.id, sheetCode: def.code, levelName: levels[0]?.name, levelIndex: 0 });
+        for (const [i, svg] of pages.entries()) {
+          const slot = j.slots[i] ?? `${j.slots[0]}_${i + 1}`;
+          const label = `${project.name} — ${slot.replace(/_/g, ' ')}`;
+          // Vector where it is light; a heavy sheet (an elevation full of 3D linework, the 3D
+          // render) goes as a print-resolution PNG so the whole share stays within IslePOS's 5 MB.
+          if (svg.length <= 450 * 1024) out.push({ slot, name: `${label}.svg`, mime: 'image/svg+xml', data: `<?xml version="1.0" encoding="UTF-8"?>\n${svg}` });
+          else out.push({ slot, name: `${label}.png`, mime: 'image/png', data: await svgToPngBase64(svg, 2480) });
+        }
+      }
+    } finally {
+      navigate(`/p/${projectId}/${back.sheet.slug}`, { replace: true });
+      setLevelIndex(back.level);
+    }
+    return out;
+  };
 
   /** Write A3 sheets to a vector PDF file and download it. */
   const showSheets = async (title: string, svgs: string[]) => {
@@ -521,6 +594,14 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     >
       {(close) => (
         <>
+          {model?.solar?.enabled && (
+            <>
+              <MenuItem icon={<Sun />} onClick={() => (close(), setSolarOpen(true))}>
+                Share to IslePOS…
+              </MenuItem>
+              <div className="my-1 h-px bg-line" />
+            </>
+          )}
           {publicLink && (
             <>
               <MenuItem icon={<Link2 />} onClick={() => (close(), copyLink(publicLink))}>
@@ -644,6 +725,16 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
           <Spinner className="h-4 w-4 text-page" /> {printing}
         </div>
       )}
+
+      <ShareToIsleposDialog
+        open={solarOpen}
+        onClose={() => setSolarOpen(false)}
+        model={model}
+        project={{ id: projectId, name: project.name, version: project.version }}
+        viewUrl={publicLink}
+        captureDrawings={captureSolarDrawings}
+        onShared={setIsleposShare}
+      />
 
       {doc.held > 0 && !preview && (
         <div className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-[14px] border border-warn/40 bg-surface/95 py-1.5 pl-3.5 pr-1.5 shadow-float backdrop-blur animate-fade-up">

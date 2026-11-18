@@ -1,5 +1,5 @@
 import type { User } from './auth';
-import { Env, HttpError, json, newId, now, readJson, str } from './http';
+import { Env, HttpError, json, newId, now, publicOrigin, readJson, str } from './http';
 import { handleProjectBilling } from './islepos';
 
 /** Design-studio stages; a project is finished ('done') once handed over and paid. */
@@ -21,6 +21,7 @@ interface ProjectRow {
   updated_at: number;
   cover_at: number | null;
   share_token: string | null;
+  islepos_token?: string | null;
 }
 
 const modelKey = (id: string) => `projects/${id}/model.json`;
@@ -132,6 +133,42 @@ export async function handleProjects(env: Env, req: Request, user: User, path: s
 
   if (!id) throw new HttpError(405, 'method_not_allowed');
   const row = await ensureShare(env, await ownedProject(env, user, id));
+
+  // /api/projects/:id/islepos-share — the "Share to IslePOS" link and the export it serves.
+  //   GET    → { url | null, updatedAt }
+  //   PUT    { export, keepDrawings? } → stores the export (keeping the last drawings when asked), turns the link on
+  //   DELETE → turns the link off (the old link answers 410 Gone from then on)
+  if (sub === 'islepos-share') {
+    const key = `projects/${id}/islepos-export.json`;
+    const origin = publicOrigin(req);
+    if (req.method === 'GET') {
+      const head = row.islepos_token ? await env.FILES.head(key) : null;
+      return json({ url: row.islepos_token ? `${origin}/s/${row.islepos_token}` : null, updatedAt: head?.uploaded?.getTime() ?? null });
+    }
+    if (req.method === 'PUT') {
+      const body = await readJson<{ export?: Record<string, unknown>; keepDrawings?: boolean }>(req, 6 * 1024 * 1024);
+      const exp = body.export;
+      if (!exp || typeof exp !== 'object' || exp.version !== 1) throw new HttpError(400, 'invalid_export');
+      if (body.keepDrawings) {
+        const prev = await env.FILES.get(key);
+        const old = prev ? ((await prev.json()) as Record<string, unknown>) : null;
+        exp.drawings = Array.isArray(old?.drawings) ? old.drawings : [];
+      }
+      await env.FILES.put(key, JSON.stringify(exp), { httpMetadata: { contentType: 'application/json' } });
+      let token = row.islepos_token;
+      if (!token) {
+        token = newShareToken() + newShareToken();
+        await env.DB.prepare('UPDATE projects SET islepos_token = ? WHERE id = ?').bind(token, id).run();
+      }
+      return json({ url: `${origin}/s/${token}`, updatedAt: Date.now() });
+    }
+    if (req.method === 'DELETE') {
+      await env.DB.prepare('UPDATE projects SET islepos_token = NULL WHERE id = ?').bind(id).run();
+      await env.FILES.delete(key);
+      return json({ url: null, updatedAt: null });
+    }
+    throw new HttpError(405, 'method_not_allowed');
+  }
 
   // POST /api/projects/:id/share — a new public 3D link (the old one stops working).
   if (sub === 'share' && req.method === 'POST') {
