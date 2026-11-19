@@ -246,12 +246,14 @@ function stairFaces(s: FloorLevel['stairs'][number], z0: number, rise: number, f
       const zt = z0 + (n1 + k + 1) * r;
       block(half + 0.02, U, run - (k + 1) * g2, run - k * g2, zt - waist - r, zt);
     }
-    // Both sides of each flight (the well between them and the outer edges), and round the landing.
+    // Both sides of each flight (the well between them and the outer edges), and all three outer edges of the half landing.
     const zl = z0 + n1 * r;
     flightRail(edge, 0, run, z0, zl);
     flightRail(half - edge, 0, run, z0, zl);
     flightRail(half + edge, run, 0, zl, z0 + n * r);
     flightRail(U - edge, run, 0, zl, z0 + n * r);
+    flightRail(edge, run, T - edge, zl, zl);
+    flightRail(U - edge, run, T - edge, zl, zl);
     landingRail(T - edge, edge, U - edge, zl);
   } else {
     const g = T / n;

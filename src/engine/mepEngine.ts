@@ -2184,38 +2184,81 @@ export function autoPopulateMEPForLevel(
     }
   });
 
-  // Outdoor Condenser Units (CDU) + Copper Refrigerant & Condensate Lines
+  // Outdoor Condenser Units (CDU) — stacked vertically at one clear location on the East exterior wall,
+  // mounted parallel to the wall on L-brackets with a 10-inch (0.254 m) wall gap.
   const cduPositions: Point2D[] = [];
   if (hvacEnabled && splitPositions.length > 0 && level.walls.length > 0) {
-    const cdu1: Point2D = {
-      x: Number((bb.maxX + 0.35).toFixed(2)),
-      y: Number((bb.minY + Math.min(2.2, bb.depth * 0.3)).toFixed(2)),
-    };
-    cduPositions.push(cdu1);
-    nodes.push({
-      id: uid('mep'),
-      kind: 'ac_condenser',
-      system: 'electrical',
-      position: cdu1,
-      circuitId: `AC${level.index + 1}`,
-      wattage: 0,
-      label: `CDU-${level.index + 1}A`,
-    });
+    const AC_WALL_GAP_M = 0.254; // 10 inches
+    const AC_UNIT_W = 0.8;
+    const AC_UNIT_D = Number((0.3 + AC_WALL_GAP_M).toFixed(3)); // 0.554 m (0.30 m unit + 0.254 m gap)
+    const AC_UNIT_H = 0.96;
 
-    if (splitPositions.length >= 3) {
-      const cdu2: Point2D = {
-        x: Number((bb.maxX + 0.35).toFixed(2)),
-        y: Number((bb.maxY - Math.min(2.2, bb.depth * 0.3)).toFixed(2)),
-      };
-      cduPositions.push(cdu2);
+    const eastVertWalls = level.walls.filter(
+      (w) => w.isExterior && Math.abs(w.start.x - w.end.x) < 0.08
+    );
+    const eastMaxX = eastVertWalls.length
+      ? Math.max(...eastVertWalls.map((w) => (w.start.x + w.end.x) / 2))
+      : bb.maxX;
+    const eastFaceWalls = eastVertWalls.filter(
+      (w) => Math.abs((w.start.x + w.end.x) / 2 - eastMaxX) < 0.15
+    );
+    const eastThick = eastFaceWalls[0]?.thickness ?? 0.23;
+    const eastOuterX = eastMaxX + eastThick / 2;
+
+    // Pick one solid stretch on the East wall clear of windows/doors (needs >= 0.85 m along Y)
+    const blockedSpans: [number, number][] = [];
+    for (const w of eastFaceWalls) {
+      const yMin = Math.min(w.start.y, w.end.y);
+      const yMax = Math.max(w.start.y, w.end.y);
+      const wLen = yMax - yMin;
+      for (const o of level.openings) {
+        if (o.wallId !== w.id) continue;
+        const cy = w.start.y + (w.end.y - w.start.y) * o.offset;
+        const half = o.width / 2 + 0.12;
+        if (wLen > 0) blockedSpans.push([cy - half, cy + half]);
+      }
+    }
+    const wallYMin = eastFaceWalls.length
+      ? Math.min(...eastFaceWalls.map((w) => Math.min(w.start.y, w.end.y)))
+      : bb.minY;
+    const wallYMax = eastFaceWalls.length
+      ? Math.max(...eastFaceWalls.map((w) => Math.max(w.start.y, w.end.y)))
+      : bb.maxY;
+    const halfW = AC_UNIT_W / 2 + 0.08;
+    const preferredY = wallYMin + Math.min(2.6, (wallYMax - wallYMin) * 0.45);
+    let stackY = preferredY;
+    let bestDist = Infinity;
+    for (let y = wallYMin + halfW; y <= wallYMax - halfW + 1e-6; y += 0.1) {
+      const clear = blockedSpans.every(([a, b]) => y + halfW <= a || y - halfW >= b);
+      if (clear) {
+        const d = Math.abs(y - preferredY);
+        if (d < bestDist) {
+          bestDist = d;
+          stackY = y;
+        }
+      }
+    }
+
+    const cduCount = splitPositions.length >= 3 ? 2 : 1;
+    const cduPos: Point2D = {
+      x: Number((eastOuterX + AC_UNIT_D / 2).toFixed(3)),
+      y: Number(stackY.toFixed(2)),
+    };
+    for (let idx = 0; idx < cduCount; idx++) {
+      cduPositions.push(cduPos);
       nodes.push({
         id: uid('mep'),
         kind: 'ac_condenser',
+        model: 'ac_condenser_wall',
         system: 'electrical',
-        position: cdu2,
+        position: { ...cduPos },
+        rotation: 270,
+        wallSide: 'east',
+        elevation: Number((0.45 + idx * 1.05).toFixed(2)),
+        size: { w: AC_UNIT_W, d: AC_UNIT_D, h: AC_UNIT_H },
         circuitId: `AC${level.index + 1}`,
         wattage: 0,
-        label: `CDU-${level.index + 1}B`,
+        label: `CDU-${level.index + 1}${String.fromCharCode(65 + idx)}`,
       });
     }
   }

@@ -5,8 +5,9 @@
  * Plan axes (x east, y south, z up) map to three.js as (x, z, y): y is up in three.js.
  */
 import * as THREE from 'three';
+import polygonClipping, { type Polygon as PCPolygon } from 'polygon-clipping';
 import { BOUNDARY_FINISHES, getDesignConfig, getSite, type BuildingProject } from '../../../model/types';
-import { buildFrame, levelOutline, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
+import { buildFrame, levelOutline, stairFootprint, tint, type Face, type FaceKind, type V3 } from '../model3d/faces';
 import { FACADE_MATERIAL_OPTIONS, ROOF_MATERIAL_OPTIONS } from '../../../components/Viewport3D';
 import { ROOM_TINT } from '../style';
 import { AssetMaterials } from '../assets/kit';
@@ -140,11 +141,35 @@ export function buildScene(model: BuildingProject, clay: boolean): SceneParts {
   }
 
   // Floors: each room as a tinted slab top, visible when the roof or upper floors are hidden.
+  // Cut out stair openings from the floor below so no floor sheet spans across open stairwells.
   model.levels.forEach((lvl, i) => {
+    const belowStairs = i > 0 ? model.levels[i - 1].stairs : [];
+    const stairHoles: PCPolygon[] = belowStairs.map((s) => {
+      const f = stairFootprint(s);
+      return [[[f.x0, f.y0], [f.x1, f.y0], [f.x1, f.y1], [f.x0, f.y1], [f.x0, f.y0]]];
+    });
+    const z = lvl.elevation + 0.005;
     for (const r of lvl.rooms) {
       if (r.polygon.length < 3) continue;
-      const pts = r.polygon.map((p) => ({ x: p.x, y: p.y, z: lvl.elevation + 0.005 }));
-      triangulate({ pts, n: { x: 0, y: 0, z: 1 } }, bucket(levelBuckets[i], 'floor', r.floorColor ?? ROOM_TINT[r.category] ?? '#EEEDE8'));
+      const color = r.floorColor ?? ROOM_TINT[r.category] ?? '#EEEDE8';
+      const bkt = bucket(levelBuckets[i], 'floor', color);
+      if (stairHoles.length) {
+        const ring: [number, number][] = [...r.polygon.map((p) => [p.x, p.y] as [number, number]), [r.polygon[0].x, r.polygon[0].y]];
+        try {
+          const clipped = polygonClipping.difference([[ring]], ...stairHoles);
+          for (const poly of clipped) {
+            const rings = poly.map((rg) => rg.slice(0, -1).map(([x, y]) => ({ x, y, z })));
+            if (!rings.length || rings[0].length < 3) continue;
+            const [outer, ...holes] = rings;
+            triangulate({ pts: outer, holes, n: { x: 0, y: 0, z: 1 } }, bkt);
+          }
+          continue;
+        } catch {
+          /* fall through to unclipped room polygon */
+        }
+      }
+      const pts = r.polygon.map((p) => ({ x: p.x, y: p.y, z }));
+      triangulate({ pts, n: { x: 0, y: 0, z: 1 } }, bkt);
     }
   });
 

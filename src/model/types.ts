@@ -714,7 +714,19 @@ export interface SiteConfig {
 /** The site with defaults; a project made before sites existed gets a plot round the building. */
 export function getSite(project: BuildingProject): SiteConfig {
   const s = project.site ?? {};
-  let plot = s.plot;
+  const hasValidPlot =
+    s.plot &&
+    typeof s.plot.w === 'number' &&
+    Number.isFinite(s.plot.w) &&
+    s.plot.w > 0 &&
+    typeof s.plot.d === 'number' &&
+    Number.isFinite(s.plot.d) &&
+    s.plot.d > 0 &&
+    typeof s.plot.x === 'number' &&
+    Number.isFinite(s.plot.x) &&
+    typeof s.plot.y === 'number' &&
+    Number.isFinite(s.plot.y);
+  let plot = hasValidPlot ? s.plot! : undefined;
   if (!plot) {
     const lvl = project.levels[0];
     const xs = lvl?.walls.flatMap((w) => [w.start.x, w.end.x]) ?? [0];

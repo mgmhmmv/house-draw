@@ -1525,6 +1525,34 @@ export const ASSETS: AssetDef[] = [
     keywords: 'balcony balustrade fence',
     parts: (w, _d, h) => [...Array.from({ length: Math.round(w / 1.5) + 1 }, (_, i) => B(-w / 2 + i * (w / Math.round(w / 1.5)), 0, 0, 0.05, 0.05, h, 'black')), B(0, 0, h - 0.04, w, 0.06, 0.04, 'black'), B(0, 0, 0.08, w, 0.03, 0.03, 'black', { plan: false }), ...bars(-w / 2 + 0.06, w / 2 - 0.06, 0, 0.11, h - 0.04, 0.11)],
   },
+  {
+    id: 'fence_glass',
+    name: 'Glass railing (chrome)',
+    category: 'boundary',
+    w: 3.0,
+    d: 0.1,
+    h: 1.1,
+    keywords: 'balcony balustrade glass chrome stainless modern',
+    parts: (w, _d, h) => {
+      const spans = Math.max(1, Math.round(w / 1.2));
+      const posts = Array.from({ length: spans + 1 }, (_, i) => {
+        const px = -w / 2 + i * (w / spans);
+        return [
+          C(px, 0, 0, 0.045, 0.018, 'chrome'),
+          C(px, 0, 0.018, 0.022, h - 0.058, 'chrome'),
+          B(px, 0, 0.2, 0.065, 0.045, 0.045, 'chrome', { plan: false }),
+          B(px, 0, h - 0.24, 0.065, 0.045, 0.045, 'chrome', { plan: false }),
+        ];
+      }).flat();
+      return [
+        ...posts,
+        B(0, 0, h - 0.04, w, 0.05, 0.04, 'chrome'),
+        B(0, 0, 0.04, w, 0.032, 0.03, 'chrome', { plan: false }),
+        B(0, 0, 0.07, Math.max(0.1, w - 0.04), 0.014, Math.max(0.2, h - 0.12), 'glass'),
+      ];
+    },
+    symbol: (w) => [line(-w / 2, -0.02, w / 2, -0.02), line(-w / 2, 0.02, w / 2, 0.02)],
+  },
 
   /* People, to scale */
   { id: 'person_man', name: 'Man, 1.78 m', category: 'people', w: 0.5, d: 0.3, h: 1.78, keywords: 'person adult figure scale', parts: (_w, _d, h) => person(h, 'man') },
