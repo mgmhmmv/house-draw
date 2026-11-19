@@ -114,6 +114,36 @@ export function ModelView({ model, select, lookOnly }: { model: BuildingProject;
     window.addEventListener('keyup', onSpaceUp);
     window.addEventListener('blur', onBlur);
 
+    // IslePOS frames the public 3D view and may ask for a picture of what is on
+    // screen ("Save 3D preview"): drawn again at about 2400 px across and sent
+    // back as a PNG. Only to the page that frames it, and only from IslePOS.
+    const snapshotFrom = (origin: string) =>
+      /^https:\/\/([a-z0-9-]+\.)*islepos\.com$/.test(origin) ||
+      /^https:\/\/([a-z0-9-]+\.)?islepos-app\.pages\.dev$/.test(origin) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+      origin === 'tauri://localhost' || /^https?:\/\/tauri\.localhost$/.test(origin);
+    const onSnapshot = (e: MessageEvent) => {
+      const d = e.data as { type?: string; requestId?: string } | null;
+      if (!d || d.type !== 'maavadiyaa:snapshot' || window.parent === window || e.source !== window.parent || !snapshotFrom(e.origin)) return;
+      const ratio = renderer.getPixelRatio();
+      const w = renderer.domElement.clientWidth || 1;
+      try {
+        renderer.setPixelRatio(Math.max(ratio, Math.min(4, 2400 / w)));
+        renderer.setSize(renderer.domElement.clientWidth, renderer.domElement.clientHeight, false);
+        renderer.render(scene, camera);
+        const canvas = renderer.domElement;
+        const dataUrl = canvas.toDataURL('image/png');
+        window.parent.postMessage({ type: 'maavadiyaa:snapshot', requestId: d.requestId, dataUrl, width: canvas.width, height: canvas.height }, e.origin);
+      } catch (err) {
+        window.parent.postMessage({ type: 'maavadiyaa:snapshot', requestId: d.requestId, error: String(err) }, e.origin);
+      } finally {
+        renderer.setPixelRatio(ratio);
+        renderer.setSize(renderer.domElement.clientWidth, renderer.domElement.clientHeight, false);
+        renderer.render(scene, camera);
+      }
+    };
+    window.addEventListener('message', onSnapshot);
+
     scene.add(new THREE.HemisphereLight('#FFFFFF', '#D9D2C3', 1.35));
     const sun = new THREE.DirectionalLight('#FFF4E2', 2.4);
     sun.castShadow = true;
@@ -191,6 +221,7 @@ export function ModelView({ model, select, lookOnly }: { model: BuildingProject;
       window.removeEventListener('keydown', onSpaceDown);
       window.removeEventListener('keyup', onSpaceUp);
       window.removeEventListener('blur', onBlur);
+      window.removeEventListener('message', onSnapshot);
       disposeParts(c);
       ground.geometry.dispose();
       (ground.material as THREE.Material).dispose();
