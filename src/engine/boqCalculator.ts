@@ -70,8 +70,10 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
     });
   };
 
-  // Ground footprint & gross floor area
-  const ground = project.levels[0];
+  // Ground footprint & gross floor area (in-scope non-decorative floors only)
+  const activeLevels = project.levels.filter((l) => !l.decorative);
+  const scope = activeLevels.length ? activeLevels : project.levels;
+  const ground = scope[0];
   const groundBB = ground ? levelBoundingBox(ground) : { width: 12, depth: 10, minX: 0, minY: 0, maxX: 12, maxY: 10 };
   const footprintArea = Math.max(20, groundBB.width * groundBB.depth);
 
@@ -92,7 +94,7 @@ export function calculateBOQ(project: BuildingProject): BOQReport {
   let totalMepElectricalPts = 0;
   let totalMepPlumbingPts = 0;
 
-  for (const lvl of project.levels) {
+  for (const lvl of scope) {
     let lvlRoomArea = 0;
     for (const room of lvl.rooms) {
       const area = polygonArea(room.polygon);

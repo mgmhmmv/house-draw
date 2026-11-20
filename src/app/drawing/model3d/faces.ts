@@ -212,16 +212,22 @@ function stairFaces(s: FloorLevel['stairs'][number], z0: number, rise: number, f
   // mid rail, along a run from (u, t0, za) to (u, t1, zb); and a level one along a landing edge.
   const STEEL = '#3A3F44';
   const pt = (u: number, t: number, z: number) => { const q = toPlan(u, t); return v(q.x, q.y, z); };
+  const capZ = z0 + rise - 0.06;
   const flightRail = (u: number, t0: number, t1: number, za: number, zb: number) => {
-    out.push(...slopedMember(pt(u, t0, za + 0.9), pt(u, t1, zb + 0.9), 0.05, 0.05, 'frame', STEEL));
-    out.push(...slopedMember(pt(u, t0, za + 0.45), pt(u, t1, zb + 0.45), 0.03, 0.03, 'frame', STEEL));
+    const zaTop = Math.min(capZ, za + 0.9);
+    const zbTop = Math.min(capZ, zb + 0.9);
+    const zaMid = Math.min(capZ - 0.25, za + 0.45);
+    const zbMid = Math.min(capZ - 0.25, zb + 0.45);
+    out.push(...slopedMember(pt(u, t0, zaTop), pt(u, t1, zbTop), 0.05, 0.05, 'frame', STEEL));
+    out.push(...slopedMember(pt(u, t0, zaMid), pt(u, t1, zbMid), 0.03, 0.03, 'frame', STEEL));
     const len = Math.abs(t1 - t0);
     const k = Math.max(1, Math.round(len / 1.0));
     for (let i = 0; i <= k; i++) {
       const t = t0 + ((t1 - t0) * i) / k;
       const z = za + ((zb - za) * i) / k;
+      const zt = Math.min(capZ, z + 0.9);
       const q = toPlan(u, t);
-      out.push(...box(q.x - 0.02, q.y - 0.02, z, q.x + 0.02, q.y + 0.02, z + 0.9, 'frame', STEEL, 2));
+      if (zt > z + 0.05) out.push(...box(q.x - 0.02, q.y - 0.02, z, q.x + 0.02, q.y + 0.02, zt, 'frame', STEEL, 2));
     }
   };
   const landingRail = (t: number, u0: number, u1: number, z: number) => {
@@ -555,7 +561,7 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
   const faces: Face[] = [];
   const planes: { pts: V3[] }[] = [];
   const fasciaH = 0.2;
-  const plane = (pts: V3[]) => {
+  const plane = (pts: V3[], matId = r.material, fillCol = fill) => {
     // Normal from the first three points; flip so it points up.
     const a = pts[0], bb = pts[1], c = pts[2];
     const u = v(bb.x - a.x, bb.y - a.y, bb.z - a.z);
@@ -564,10 +570,136 @@ function roofFaces(model: BuildingProject, top: FloorLevel, eaveZ: number): { fa
     if (n.z < 0) n = v(-n.x, -n.y, -n.z);
     const l = Math.hypot(n.x, n.y, n.z) || 1;
     const nn = v(n.x / l, n.y / l, n.z / l);
-    const pat = roofPattern(pts, nn, r.material);
-    faces.push({ kind: 'roof', pts, n: nn, fill, order: 2, lines: pat.lines, ribs: pat.ribs });
+    const pat = roofPattern(pts, nn, matId);
+    faces.push({ kind: 'roof', pts, n: nn, fill: fillCol, order: 2, lines: pat.lines, ribs: pat.ribs });
     planes.push({ pts });
   };
+
+  // Multi-wing / multi-level pitched roof sections (e.g. L-shaped hip roof + lower-floor shed roof)
+  if (r.sections && r.sections.length > 0) {
+    let maxRidge = eaveZ;
+    for (const sec of r.sections) {
+      const soh = sec.overhang ?? r.overhang;
+      const sx0 = sec.x0 - soh;
+      const sx1 = sec.x1 + soh;
+      const sy0 = sec.y0 - soh;
+      const sy1 = sec.y1 + soh;
+      const sW = sx1 - sx0;
+      const sD = sy1 - sy0;
+      const sTan = Math.tan((Math.max(2, sec.pitchDeg) * Math.PI) / 180);
+      const ez = sec.eaveZ;
+      const sMat = sec.material ?? r.material;
+      const sColor = ROOF_MATERIAL_OPTIONS.find((o) => o.id === sMat)?.base ?? roofColor;
+      const sFill = tint(sColor, 0.55);
+
+      if (sec.type === 'plane' && sec.pts && sec.pts.length >= 3) {
+        const pts3 = sec.pts.map((p) => v(p.x, p.y, p.z));
+        for (const p of pts3) maxRidge = Math.max(maxRidge, p.z);
+        plane(pts3, sMat, sFill);
+        // Add fascia along horizontal eave edges of the custom plane
+        for (let i = 0; i < pts3.length; i++) {
+          const a = pts3[i];
+          const b2 = pts3[(i + 1) % pts3.length];
+          if (Math.abs(a.z - ez) < 0.02 && Math.abs(b2.z - ez) < 0.02) {
+            const dx = b2.x - a.x;
+            const dy = b2.y - a.y;
+            const L = Math.hypot(dx, dy) || 1;
+            const n = v(dy / L, -dx / L, 0);
+            faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n, pts: [v(a.x, a.y, ez - fasciaH), v(b2.x, b2.y, ez - fasciaH), v(b2.x, b2.y, ez), v(a.x, a.y, ez)] });
+          }
+        }
+        // Close requested gable / clerestory edges down to eaveZ with solid wall faces (both sides)
+        for (const [ia, ib] of sec.gableEdges ?? []) {
+          const a = pts3[ia];
+          const b2 = pts3[ib];
+          if (!a || !b2) continue;
+          const dx = b2.x - a.x;
+          const dy = b2.y - a.y;
+          const L = Math.hypot(dx, dy) || 1;
+          const n = v(dy / L, -dx / L, 0);
+          const quad = [v(a.x, a.y, ez), v(b2.x, b2.y, ez), v(b2.x, b2.y, b2.z), v(a.x, a.y, a.z)];
+          faces.push({ kind: 'wall', fill: wallFill, order: 1, n, pts: quad });
+          faces.push({ kind: 'wall', fill: wallFill, order: 1, n: v(-n.x, -n.y, 0), pts: [...quad].reverse() });
+        }
+        continue;
+      }
+
+      if (sec.type === 'shed') {
+        const dir = sec.slopeTo ?? 'S';
+        if (dir === 'S') {
+          const hz = ez + sD * sTan;
+          maxRidge = Math.max(maxRidge, hz);
+          plane([v(sx0, sy1, ez), v(sx1, sy1, ez), v(sx1, sy0, hz), v(sx0, sy0, hz)], sMat, sFill);
+          for (const x of [sec.x0, sec.x1]) {
+            const pts = [v(x, sec.y1, ez), v(x, sec.y0, ez), v(x, sec.y0, ez + (sec.y1 - sec.y0 + soh) * sTan)];
+            faces.push({ kind: 'wall', pts: x === sec.x0 ? pts : [...pts].reverse(), n: v(x === sec.x0 ? -1 : 1, 0, 0), fill: wallFill, order: 1 });
+          }
+          faces.push(...box(sx0, sy1 - 0.02, ez - fasciaH, sx1, sy1, ez, 'fascia', '#FFFFFF', 3));
+        } else if (dir === 'N') {
+          const hz = ez + sD * sTan;
+          maxRidge = Math.max(maxRidge, hz);
+          plane([v(sx1, sy0, ez), v(sx0, sy0, ez), v(sx0, sy1, hz), v(sx1, sy1, hz)], sMat, sFill);
+          faces.push(...box(sx0, sy0, ez - fasciaH, sx1, sy0 + 0.02, ez, 'fascia', '#FFFFFF', 3));
+        } else if (dir === 'E') {
+          const hz = ez + sW * sTan;
+          maxRidge = Math.max(maxRidge, hz);
+          plane([v(sx1, sy1, ez), v(sx1, sy0, ez), v(sx0, sy0, hz), v(sx0, sy1, hz)], sMat, sFill);
+          faces.push(...box(sx1 - 0.02, sy0, ez - fasciaH, sx1, sy1, ez, 'fascia', '#FFFFFF', 3));
+        } else {
+          const hz = ez + sW * sTan;
+          maxRidge = Math.max(maxRidge, hz);
+          plane([v(sx0, sy0, ez), v(sx0, sy1, ez), v(sx1, sy1, hz), v(sx1, sy0, hz)], sMat, sFill);
+          faces.push(...box(sx0, sy0, ez - fasciaH, sx0 + 0.02, sy1, ez, 'fascia', '#FFFFFF', 3));
+        }
+        continue;
+      }
+
+      const sAlongX = sW >= sD;
+      const sSpan = sAlongX ? sD : sW;
+      const sRise = (sSpan / 2) * sTan;
+      const sRz = ez + sRise;
+      const sCy = (sy0 + sy1) / 2;
+      const sCxm = (sx0 + sx1) / 2;
+      maxRidge = Math.max(maxRidge, sRz);
+
+      if (sAlongX) {
+        if (sec.type === 'gable') {
+          plane([v(sx0, sy0, ez), v(sx1, sy0, ez), v(sx1, sCy, sRz), v(sx0, sCy, sRz)], sMat, sFill);
+          plane([v(sx1, sy1, ez), v(sx0, sy1, ez), v(sx0, sCy, sRz), v(sx1, sCy, sRz)], sMat, sFill);
+          const gz = ez + ((sec.y1 - sec.y0) / 2) * sTan;
+          faces.push({ kind: 'wall', fill: wallFill, order: 1, n: v(-1, 0, 0), pts: [v(sec.x0, sec.y1, ez), v(sec.x0, sec.y0, ez), v(sec.x0, sCy, gz)] });
+          faces.push({ kind: 'wall', fill: wallFill, order: 1, n: v(1, 0, 0), pts: [v(sec.x1, sec.y0, ez), v(sec.x1, sec.y1, ez), v(sec.x1, sCy, gz)] });
+        } else {
+          const h = sD / 2;
+          plane([v(sx0, sy0, ez), v(sx1, sy0, ez), v(sx1 - h, sCy, sRz), v(sx0 + h, sCy, sRz)], sMat, sFill);
+          plane([v(sx1, sy1, ez), v(sx0, sy1, ez), v(sx0 + h, sCy, sRz), v(sx1 - h, sCy, sRz)], sMat, sFill);
+          plane([v(sx0, sy1, ez), v(sx0, sy0, ez), v(sx0 + h, sCy, sRz)], sMat, sFill);
+          plane([v(sx1, sy0, ez), v(sx1, sy1, ez), v(sx1 - h, sCy, sRz)], sMat, sFill);
+        }
+      } else {
+        if (sec.type === 'gable') {
+          plane([v(sx0, sy1, ez), v(sx0, sy0, ez), v(sCxm, sy0, sRz), v(sCxm, sy1, sRz)], sMat, sFill);
+          plane([v(sx1, sy0, ez), v(sx1, sy1, ez), v(sCxm, sy1, sRz), v(sCxm, sy0, sRz)], sMat, sFill);
+        } else {
+          const h = sW / 2;
+          plane([v(sx0, sy1, ez), v(sx0, sy0, ez), v(sCxm, sy0 + h, sRz), v(sCxm, sy1 - h, sRz)], sMat, sFill);
+          plane([v(sx1, sy0, ez), v(sx1, sy1, ez), v(sCxm, sy1 - h, sRz), v(sCxm, sy0 + h, sRz)], sMat, sFill);
+          plane([v(sx0, sy0, ez), v(sx1, sy0, ez), v(sCxm, sy0 + h, sRz)], sMat, sFill);
+          plane([v(sx1, sy1, ez), v(sx0, sy1, ez), v(sCxm, sy1 - h, sRz)], sMat, sFill);
+        }
+      }
+      // Eave fascia
+      if (sec.type === 'hip' || sAlongX) {
+        faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, -1, 0), pts: [v(sx0, sy0, ez - fasciaH), v(sx1, sy0, ez - fasciaH), v(sx1, sy0, ez), v(sx0, sy0, ez)] });
+        faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(0, 1, 0), pts: [v(sx1, sy1, ez - fasciaH), v(sx0, sy1, ez - fasciaH), v(sx0, sy1, ez), v(sx1, sy1, ez)] });
+      }
+      if (sec.type === 'hip' || !sAlongX) {
+        faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(-1, 0, 0), pts: [v(sx0, sy1, ez - fasciaH), v(sx0, sy0, ez - fasciaH), v(sx0, sy0, ez), v(sx0, sy1, ez)] });
+        faces.push({ kind: 'fascia', fill: '#FFFFFF', order: 3, n: v(1, 0, 0), pts: [v(sx1, sy0, ez - fasciaH), v(sx1, sy1, ez - fasciaH), v(sx1, sy1, ez), v(sx1, sy0, ez)] });
+      }
+    }
+    return { faces, ridgeZ: maxRidge, planes };
+  }
 
   if (r.type === 'flat') {
     const top = eaveZ + 0.2;
@@ -1043,8 +1175,17 @@ function solarFaces(model: BuildingProject, planes: { pts: V3[] }[]): Face[] {
       if (pts[i].y > y !== pts[j].y > y && x < ((pts[j].x - pts[i].x) * (y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
     return inside;
   };
+  const zOnPlane = (pts: V3[], x: number, y: number) => {
+    const [a, b, c] = pts;
+    let n = v((b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y), (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z), (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+    if (n.z < 0) n = v(-n.x, -n.y, -n.z);
+    return a.z - (n.x * (x - a.x) + n.y * (y - a.y)) / (n.z || 1);
+  };
   for (const p of layout.panels) {
-    const plane = planes.find((pl) => inPlan(pl.pts, p.x, p.y)) ?? planes[0];
+    const hits = planes.filter((pl) => inPlan(pl.pts, p.x, p.y));
+    const plane = hits.length
+      ? hits.reduce((best, cur) => (zOnPlane(cur.pts, p.x, p.y) > zOnPlane(best.pts, p.x, p.y) ? cur : best))
+      : planes[0];
     const [a, b, c] = plane.pts;
     let n = v((b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y), (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z), (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
     if (n.z < 0) n = v(-n.x, -n.y, -n.z);
@@ -1099,19 +1240,21 @@ export function buildFrame(model: BuildingProject): BuildingFrame {
   const top = model.levels[model.levels.length - 1];
   const roof = roofFaces(model, top, eaveZ);
   faces.push(...roof.faces);
-  const rain = drainageFor(model, top, eaveZ);
+  const hasSections = !!(model.roof.sections && model.roof.sections.length);
+  const rain = hasSections ? { faces: [], drainage: null } : drainageFor(model, top, eaveZ);
   faces.push(...rain.faces);
-  if (model.roof.type !== 'flat') faces.push(...solarFaces(model, roof.planes));
+  if (model.roof.type !== 'flat' || hasSections) faces.push(...solarFaces(model, roof.planes));
 
   // Ridge and hip lines: every roof-plane edge except its eave, de-duplicated.
   const seen = new Set<string>();
   const ridgeEdges: [V3, V3][] = [];
-  if (model.roof.type !== 'flat')
+  const eaveZs = hasSections ? model.roof.sections!.map((s) => s.eaveZ) : [eaveZ];
+  if (model.roof.type !== 'flat' || hasSections)
     for (const pl of roof.planes)
       for (let i = 1; i < pl.pts.length; i++) {
         const a = pl.pts[i];
         const b2 = pl.pts[(i + 1) % pl.pts.length];
-        if (Math.abs(a.z - b2.z) < 1e-3 && Math.abs(a.z - eaveZ) < 1e-3) continue; // eave
+        if (Math.abs(a.z - b2.z) < 1e-3 && eaveZs.some((ez) => Math.abs(a.z - ez) < 1e-3)) continue; // eave
         const k = [a, b2].map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`).sort().join('|');
         if (seen.has(k)) continue;
         seen.add(k);

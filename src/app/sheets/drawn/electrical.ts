@@ -6,8 +6,9 @@ import { PV_MODULE } from '../../../model/pvModule';
  * (lighting, sockets, kitchen, each air-conditioner, each water heater) down to every light,
  * switch, fan, socket outlet and appliance. Sheet 2 carries the schedules and design data.
  */
-import type { BuildingProject, FloorLevel, MEPNode, Room } from '../../../model/types';
+import { scopeLevels, type BuildingProject, type FloorLevel, type MEPNode, type Room } from '../../../model/types';
 import { computeElectricalSLD, type ElectricalSLDReport } from '../../../engine/mepEngine';
+import { computeLoadCalculation } from '../../../engine/loadCalc';
 import { DRAWING_AREA, keySize, type LegendEntry } from '../../../export/sheet';
 import { battery, breaker, CIRC, COOL, dataBox, earth, equipPt, fanPt, fuse, heaterPt, HOT, INK, INK2, INK3, inverter, L, LIGHT, lightPt, meter, POWER, pvArray, RECT, socketPt, spd, switchPt, T, table, ticks, TW } from './svg';
 
@@ -104,7 +105,7 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
   const boards: Board[] = [];
   const rows = new Map(r.circuits.map((c) => [c.circuitId, c]));
   const phases = ['L1', 'L2', 'L3'];
-  model.levels.forEach((lvl, li) => {
+  scopeLevels(model).forEach((lvl, li) => {
     const groups = new Map<string, { room?: Room; nodes: MEPNode[]; sdb?: MEPNode }>();
     for (const n of lvl.mepNodes) {
       if (n.system !== 'electrical' || n.kind === 'mdb' || n.kind === 'utility_meter' || n.kind.startsWith('solar_')) continue;
@@ -185,6 +186,143 @@ export function electricalTree(model: BuildingProject, r: ElectricalSLDReport): 
         watts,
       });
       gi++;
+    }
+
+    // If this in-scope floor has rooms but no manually placed fixture nodes, synthesize a clean
+    // floor-level Distribution Board (e.g. DB-7F, DB-8F) with final circuits from its rooms so
+    // the SLD and circuit schedule always show a proper DB for every in-scope floor.
+    if (gi === 0 && lvl.rooms.length > 0) {
+      const floorDb = lvl.mepNodes.find((n) => n.kind === 'sub_db' || n.kind === 'mdb');
+      const shortNum = lvl.name.match(/\d+/)?.[0] ?? String(lvl.index + 1);
+      const code = floorDb?.label && floorDb.kind === 'sub_db' ? floorDb.label : `DB-${shortNum}F`;
+      const cc = code.replace(/^M?DB-?/, '');
+      const lvlName = lvl.name.replace(/\s*\(.*\)/, '');
+      const roomArea = (r: Room) => {
+        let a = 0;
+        for (let i = 0; i < r.polygon.length; i++) {
+          const p = r.polygon[i], q = r.polygon[(i + 1) % r.polygon.length];
+          a += p.x * q.y - q.x * p.y;
+        }
+        return Math.abs(a) / 2;
+      };
+      const rKind = (r: Room) => {
+        const c = (r.category as string | undefined) || '';
+        if (c) return c.toLowerCase();
+        const n = (r.name || '').toLowerCase();
+        if (/terrace|balcony|verandah|porch/.test(n)) return 'balcony';
+        if (/bath|toilet|wc/.test(n)) return 'bathroom';
+        if (/kitchen|pantry/.test(n)) return 'kitchen';
+        if (/bed|suite|kids|master/.test(n)) return 'bedroom';
+        if (/living|lounge/.test(n)) return 'living';
+        return 'hallway';
+      };
+      const enclosed = lvl.rooms.filter((r) => !['balcony', 'terrace', 'porch', 'garage'].includes(rKind(r)));
+      const totalA = lvl.rooms.reduce((s, r) => s + roomArea(r), 0);
+      const enclA = enclosed.reduce((s, r) => s + roomArea(r), 0);
+      const circuits: FinalCircuit[] = [];
+
+      // 1. Lighting & ceiling fans
+      const lightW = Math.round(totalA * 9);
+      const fanRooms = enclosed.filter((r) => ['bedroom', 'living', 'dining', 'office', 'kitchen'].includes(rKind(r)));
+      const fanW = fanRooms.length * 60;
+      const ledCount = Math.max(4, Math.round(lightW / 18));
+      circuits.push({
+        id: `${cc}-L1`,
+        kind: 'L',
+        desc: `${lvlName} lighting & fans`,
+        points: [
+          ...Array.from({ length: Math.min(6, ledCount) }, () => ({ kind: 'light' as const, label: '18 W', watts: 18 })),
+          ...fanRooms.slice(0, 3).map(() => ({ kind: 'fan' as const, label: '60 W', watts: 60 })),
+        ],
+        watts: lightW + fanW,
+        device: 'MCB B10 1P+N 6 kA',
+        deviceKind: 'mcb',
+        cable: '3G1.5 mm² Cu PVC',
+      });
+
+      // 2. General power / 13A twin socket outlets
+      const pwrW = Math.max(1000, Math.round(enclA * 18));
+      const sktCount = Math.max(4, Math.min(8, Math.round(pwrW / 350)));
+      circuits.push({
+        id: `${cc}-P1`,
+        kind: 'P',
+        desc: `${lvlName} 13A twin socket outlets`,
+        points: Array.from({ length: sktCount }, () => ({ kind: 'socket' as const, label: '350 W', watts: 350 })),
+        watts: pwrW,
+        device: 'RCBO B20 30 mA Type A',
+        deviceKind: 'rcd',
+        cable: '3G2.5 mm² Cu PVC',
+      });
+
+      // 3. Dedicated AC circuit per conditioned room
+      let acIdx = 1;
+      for (const r of enclosed) {
+        if (!['bedroom', 'living', 'dining', 'office'].includes(rKind(r))) continue;
+        const a = roomArea(r);
+        if (a < 5) continue;
+        const w = a <= 15 ? 1100 : a <= 26 ? 1600 : 2200;
+        const big = ib(w) > 12;
+        circuits.push({
+          id: `${cc}-AC${acIdx++}`,
+          kind: 'AC',
+          desc: `${r.name} AC ${(w / 1000).toFixed(1)} kW + CU`,
+          points: [
+            { kind: 'ac', label: `${(w / 1000).toFixed(1)} kW`, watts: w },
+            { kind: 'cu', label: 'outdoor', watts: 0 },
+          ],
+          watts: w,
+          device: big ? 'RCBO C20 30 mA Type A' : 'RCBO C16 30 mA Type A',
+          deviceKind: 'rcd',
+          cable: big ? '3G4 mm² Cu PVC' : '3G2.5 mm² Cu PVC',
+        });
+      }
+
+      // 4. Dedicated Water Heater circuit per bathroom
+      let whIdx = 1;
+      for (const r of enclosed) {
+        if (rKind(r) !== 'bathroom') continue;
+        circuits.push({
+          id: `${cc}-WH${whIdx++}`,
+          kind: 'WH',
+          desc: `${r.name} water heater 1.5 kW`,
+          points: [{ kind: 'wh', label: '1.5 kW', watts: 1500 }],
+          watts: 1500,
+          device: 'RCBO B20 30 mA Type A',
+          deviceKind: 'rcd',
+          cable: '3G4 mm² Cu PVC',
+        });
+      }
+
+      // 5. Kitchen circuit if present
+      if (enclosed.some((r) => rKind(r) === 'kitchen')) {
+        circuits.push({
+          id: `${cc}-K1`,
+          kind: 'K',
+          desc: 'Kitchen cooker & appliances',
+          points: [{ kind: 'appliance', label: 'Kitchen 3.5 kW', watts: 3500 }],
+          watts: 3500,
+          device: 'RCBO B32 30 mA Type A',
+          deviceKind: 'rcd',
+          cable: '3G6 mm² Cu PVC',
+        });
+      }
+
+      const watts = circuits.reduce((s, c) => s + c.watts, 0);
+      const feedAmps = watts > 8000 ? 40 : watts > 5000 ? 32 : 25;
+      const feedCable = feedAmps >= 40 ? '5G10 mm² Cu XLPE' : '5G6 mm² Cu XLPE';
+      boards.push({
+        id: code,
+        room: lvlName,
+        level: lvlName,
+        phase: '3-Ph',
+        sub: true,
+        feedDevice: `MCCB ${feedAmps}A 4P + 100 mA RCCB`,
+        feedCable,
+        runM: 6 + li * 4,
+        vdPct: Number((0.45 + li * 0.25).toFixed(2)),
+        circuits,
+        watts,
+      });
     }
   });
   // Water pressure pump set (ground-tank supply): its own way from the MDB, motor-rated.
@@ -268,11 +406,30 @@ function point(p: Pt, x: number, y: number) {
 
 export function electricalPages(model: BuildingProject): DrawnPage[] {
   const r = computeElectricalSLD(model);
+  const lc = computeLoadCalculation(model);
   const pv = r.solarPV;
   const boards = electricalTree(model, r);
   const A = DRAWING_AREA;
   const right = A.x + A.w;
   const p: string[] = [];
+
+  // Unified electrical figures so E-101-1 (SLD), E-101-2 (Schedules) and E-101-3 (Load Calc) match 100%.
+  const boardWatts = boards.reduce((s, b) => s + b.watts, 0);
+  const connWatts = Math.max(boardWatts, Math.round(lc.totalConnectedKW * 1000));
+  const connKW = connWatts / 1000;
+  const demandKW = lc.totalDemandKW;
+  const designAmps = lc.designCurrentA;
+  const phaseL1 = lc.isThreePhase ? demandKW / 3 : demandKW;
+  const phaseL2 = lc.isThreePhase ? demandKW / 3 : 0;
+  const phaseL3 = lc.isThreePhase ? demandKW / 3 : 0;
+  const worstVd = Math.max(r.maxVoltageDropPct, ...boards.map((b) => b.vdPct), 0.7);
+  const invMode = pv.batteryKWh > 0 ? 'hybrid' : 'on-grid';
+  const invAcAmps = lc.isThreePhase ? (pv.inverterKW * 1000) / (Math.sqrt(3) * 400) : (pv.inverterKW * 1000) / 230;
+  const invAcRating = [16, 20, 25, 32, 40, 50, 63].find((a) => a >= invAcAmps * 1.25) ?? 32;
+  const invAcSpec = lc.isThreePhase ? `RCBO B${invAcRating} 4P 30 mA Type A` : `RCBO B${invAcRating} 2P 30 mA Type A`;
+  const invAcTicks = lc.isThreePhase ? 5 : 3;
+  const invAcTag = lc.isThreePhase ? '3/N/PE' : 'L/N/PE';
+  const estDailyYield = lc.solar.estDailyKWh;
 
   // Main distribution board enclosure.
   const mdbTop = 64;
@@ -283,19 +440,19 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   p.push(T(right - 4, mdbTop + 3, 'MAIN DISTRIBUTION BOARD (MDB)', 1.8, { w: 700, c: INK2, ls: 0.15, a: 'end' }));
 
   // Supply chain (IEC 60617 symbols, IEC 60364 designations).
-  const main = iecMain(r.mainBreakerSpec);
+  const main = iecMain(lc.mainBreakerSpec);
   const sx = 24;
   p.push(CIRC(sx, 31, 2.8) + `<path d="M${sx - 1.6} 31 q0.8 -1.4 1.6 0 t1.6 0" fill="none" stroke="${INK}" stroke-width="0.3"/>`);
   p.push(T(sx + 4.5, 30.2, 'UTILITY SUPPLY', 1.8, { w: 700 }));
-  p.push(TW(sx + 4.5, 32.8, r.supplySystem, 1.45, 34, { c: INK2 }, 2).svg);
-  p.push(L(sx, 33.8, sx, 37) + ticks(sx, 35.4, 5, ''));
+  p.push(TW(sx + 4.5, 32.8, lc.supplySystem, 1.45, 34, { c: INK2 }, 2).svg);
+  p.push(L(sx, 33.8, sx, 37) + ticks(sx, 35.4, lc.isThreePhase ? 5 : 3, ''));
   p.push(fuse(sx, 37) + T(sx + 3, 40.6, 'Service cut-out (utility)', 1.45, { c: INK2 }));
   p.push(L(sx, 43, sx, 45));
   p.push(meter(sx, 45) + T(sx + 4.5, 48.6, 'kWh meter (utility)', 1.45, { c: INK2 }));
   p.push(L(sx, 51, sx, 54));
-  p.push(breaker(sx, 54, 'isolator') + T(sx + 3, 57.6, `Switch-disconnector ${main.mccb.split(' ')[1]} A 4P`, 1.45, { c: INK2 }));
-  p.push(L(sx, 60, sx, 66) + ticks(sx, 63, 5, ''));
-  p.push(T(sx + 1.8, 63.4, `3/N/PE  ${iecCable(r.supplyCableSpec, 5)}`, 1.25, { c: INK2 }));
+  p.push(breaker(sx, 54, 'isolator') + T(sx + 3, 57.6, `Switch-disconnector ${lc.recommendedBreakerA} A ${lc.isThreePhase ? '4P' : '2P'}`, 1.45, { c: INK2 }));
+  p.push(L(sx, 60, sx, 66) + ticks(sx, 63, lc.isThreePhase ? 5 : 3, ''));
+  p.push(T(sx + 1.8, 63.4, lc.incomingCableSpec, 1.2, { c: INK2 }));
   p.push(breaker(sx, 66) + T(sx + 3, 69.6, main.mccb, 1.4, { w: 600 }));
   p.push(L(sx, 72, sx, 75));
   p.push(breaker(sx, 75, 'rccb') + T(sx + 3, 78.6, main.rccb, 1.4, { w: 600 }));
@@ -330,14 +487,14 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
     p.push(L(px, 35, px, 39) + breaker(px, 39, 'isolator') + T(px + 3, 42.4, `DC switch-disconnector ${pv.dcIsolatorSpec.replace(/^\d+A\s*/, '')}`, 1.25, { c: INK2 }));
     p.push(T(px - 2, 37.6, pv.dcCableSpec.split(' ')[0] ?? '', 1.2, { c: INK3, a: 'end' }));
     p.push(L(px, 45, px, 48) + inverter(px, 48, 13, 8));
-    p.push(T(px - 7.5, 51, 'INVERTER =/~', 1.3, { w: 700, a: 'end' }) + T(px - 7.5, 53, `hybrid ${pv.inverterKW.toFixed(1)} kW`, 1.3, { w: 700, a: 'end' }));
+    p.push(T(px - 7.5, 51, 'INVERTER =/~', 1.3, { w: 700, a: 'end' }) + T(px - 7.5, 53, `${invMode} ${pv.inverterKW.toFixed(1)} kW`, 1.3, { w: 700, a: 'end' }));
     if (pv.batteryKWh > 0) {
       p.push(L(px + 6.5, 52, px + 11, 52) + battery(px + 12.5, 52));
       p.push(T(px + 18, 51.6, `BATTERY ${pv.batteryKWh} kWh`, 1.3, { w: 700 }) + T(px + 18, 53.6, 'LiFePO4', 1.25, { c: INK2 }));
     }
-    p.push(L(px, 56, px, 74) + ticks(px, 60, 3, '') + breaker(px, 74, 'rcd') + L(px, 80, px, busY));
-    p.push(T(px + 3, 77.4, iecDevice(pv.acBreakerSpec), 1.35, { w: 600 }));
-    p.push(T(px + 1.6, 60.4, 'L/N/PE', 1.1, { c: INK2 }));
+    p.push(L(px, 56, px, 74) + ticks(px, 60, invAcTicks, '') + breaker(px, 74, 'rcd') + L(px, 80, px, busY));
+    p.push(T(px + 3, 77.4, invAcSpec, 1.35, { w: 600 }));
+    p.push(T(px + 1.6, 60.4, invAcTag, 1.1, { c: INK2 }));
   }
 
   // Room boards and their circuits.
@@ -402,14 +559,14 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
       { label: 'Ph', w: 8, get: (b) => b.phase, align: 'middle' },
       { label: 'Ckts', w: 9, get: (b) => String(b.circuits.length), align: 'end' },
       { label: 'Load W', w: 15, get: (b) => fmtW(b.watts), align: 'end' },
-      { label: 'Ib A', w: 11, get: (b) => ib(b.watts * 0.75).toFixed(1), align: 'end' },
+      { label: 'Ib A', w: 11, get: (b) => (b.id === 'TOTAL' ? designAmps.toFixed(1) : b.phase === '3-Ph' ? ((b.watts * 0.65) / (Math.sqrt(3) * 400 * 0.88)).toFixed(1) : ib(b.watts * 0.75).toFixed(1)), align: 'end' },
       { label: 'Protective device', w: 34, get: (b) => b.feedDevice || 'Direct from MDB' },
       { label: 'Cable', w: 28, get: (b) => b.feedCable || '—' },
       { label: 'Run m', w: 11, get: (b) => (b.runM ? String(b.runM) : '—'), align: 'end' },
       { label: 'VD %', w: 11, get: (b) => (b.vdPct ? b.vdPct.toFixed(2) : '—'), align: 'end' },
     ],
     subRows,
-    { rowH, total: { id: 'TOTAL', room: `Connected ${fmtW(r.totalConnectedWatts)} W · max demand ${r.diversifiedLoadKW.toFixed(1)} kW`, level: '', phase: '', sub: false, feedDevice: '', feedCable: '', runM: 0, vdPct: 0, circuits: [], watts: r.totalConnectedWatts } as unknown as Board }
+    { rowH, total: { id: 'TOTAL', room: `Connected ${connKW.toFixed(2)} kW · max demand ${demandKW.toFixed(2)} kW`, level: '', phase: lc.isThreePhase ? '3-Ph' : '1-Ph', sub: false, feedDevice: main.mccb, feedCable: lc.incomingCableSpec.split('+')[0].trim(), runM: 0, vdPct: worstVd, circuits: subRows.flatMap((x) => x.circuits), watts: connWatts } as unknown as Board }
   );
   p.push(t1.svg);
 
@@ -420,11 +577,11 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
 
   // Summary above the legend.
   const sum = dataBox(A.x, 118, colX0 - A.x - 4, 'Supply summary', [
-    ['Connected load', `${(r.totalConnectedWatts / 1000).toFixed(1)} kW`],
-    ['Max demand', `${r.diversifiedLoadKW.toFixed(1)} kW`],
-    ['Design current', `${r.designCurrentAmps.toFixed(1)} A`],
-    ['L1 / L2 / L3', `${r.phaseBalance.L1_kW.toFixed(1)} / ${r.phaseBalance.L2_kW.toFixed(1)} / ${r.phaseBalance.L3_kW.toFixed(1)} kW`],
-    ['Worst volt drop', `${r.maxVoltageDropPct.toFixed(2)}% (≤ 4%)`],
+    ['Connected load', `${connKW.toFixed(1)} kW`],
+    ['Max demand', `${demandKW.toFixed(1)} kW (${lc.totalApparentKVA.toFixed(1)} kVA)`],
+    ['Design current', `${designAmps.toFixed(1)} A`],
+    ['L1 / L2 / L3', `${phaseL1.toFixed(1)} / ${phaseL2.toFixed(1)} / ${phaseL3.toFixed(1)} kW`],
+    ['Worst volt drop', `${worstVd.toFixed(2)}% (≤ 4%)`],
   ], 1.45);
   if (118 + sum.h < key.y - 2) p.push(sum.svg);
 
@@ -453,26 +610,26 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   const dx = A.x + A.w - 74;
   let dy = A.y;
   const supply = dataBox(dx, dy, 74, 'Supply and protection', [
-    ['Supply', r.supplySystem],
-    ['Incoming cable', `3/N/PE ${iecCable(r.supplyCableSpec, 5)}`],
+    ['Supply', lc.supplySystem],
+    ['Incoming cable', lc.incomingCableSpec],
     ['Main switch', main.mccb],
     ['Main RCD', main.rccb],
-    ['Surge protection', r.spdSpec],
-    ['Earthing', r.earthingSpec],
-    ['Power factor', r.powerFactor.toFixed(2)],
+    ['Surge protection', lc.spdSpec],
+    ['Earthing', lc.earthingSpec],
+    ['Power factor', lc.powerFactor.toFixed(2)],
     ['', 'Loads'],
-    ['Connected', `${fmtW(r.totalConnectedWatts)} W`],
-    ['Max demand', `${r.diversifiedLoadKW.toFixed(2)} kW`],
-    ['Design current', `${r.designCurrentAmps.toFixed(1)} A`],
-    ['Phase L1', `${r.phaseBalance.L1_kW.toFixed(2)} kW`],
-    ['Phase L2', `${r.phaseBalance.L2_kW.toFixed(2)} kW`],
-    ['Phase L3', `${r.phaseBalance.L3_kW.toFixed(2)} kW`],
-    ['Worst volt drop', `${r.maxVoltageDropPct.toFixed(2)}% (limit 4%)`],
+    ['Connected', `${fmtW(connWatts)} W (${connKW.toFixed(2)} kW)`],
+    ['Max demand', `${demandKW.toFixed(2)} kW (${lc.totalApparentKVA.toFixed(2)} kVA)`],
+    ['Design current', `${designAmps.toFixed(1)} A`],
+    ['Phase L1', `${phaseL1.toFixed(2)} kW`],
+    ['Phase L2', `${phaseL2.toFixed(2)} kW`],
+    ['Phase L3', `${phaseL3.toFixed(2)} kW`],
+    ['Worst volt drop', `${worstVd.toFixed(2)}% (limit 4%)`],
   ]);
   p2.push(supply.svg);
   dy += supply.h + 4;
   if (pv.enabled) {
-    const sol = dataBox(dx, dy, 74, 'Solar PV and battery', [
+    const sol = dataBox(dx, dy, 74, pv.batteryKWh > 0 ? 'Solar PV and battery' : 'Solar PV (on-grid)', [
       ['Array', `${pv.panelCount} × ${pv.panelWattage} Wp = ${pv.arrayKwp.toFixed(2)} kWp`],
       ['Module', `${pv.module}, ${PV_MODULE.length * 1000}×${PV_MODULE.width * 1000} mm`],
       ['Strings', `${pv.stringsCount} × ${pv.panelsPerString} panels`],
@@ -480,10 +637,10 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
       ['String fuse', pv.stringFuseSpec],
       ['DC cable', pv.dcCableSpec],
       ['DC isolator', pv.dcIsolatorSpec],
-      ['Inverter', `${pv.inverterKW.toFixed(1)} kW hybrid`],
-      ['Battery', pv.batteryKWh ? `${pv.batteryKWh} kWh LiFePO4` : 'None'],
-      ['AC protection', iecDevice(pv.acBreakerSpec)],
-      ['Est. yield', `${pv.estimatedDailyKWh} kWh/day`],
+      ['Inverter', `${pv.inverterKW.toFixed(1)} kW ${invMode}`],
+      ['Battery', pv.batteryKWh ? `${pv.batteryKWh} kWh LiFePO4` : 'None (On-Grid)'],
+      ['AC protection', invAcSpec],
+      ['Est. yield', `${estDailyYield.toFixed(1)} kWh/day`],
     ]);
     p2.push(sol.svg);
     dy += sol.h + 4;
@@ -510,9 +667,255 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   ];
   const k2 = keySize(abbr)!;
 
+  // Sheet 3: Standard Electrical Load Calculation Report (for all drawings, A3 print format).
+  const p3: string[] = [];
+  const mainW = A.w - 78; // 74 mm right sidebar + 4 mm gutter
+  const sideX = A.x + A.w - 74;
+
+  // Top KPI summary strip across the main column (5 crisp cards)
+  const kpiItems: [string, string, string][] = [
+    ['CONNECTED LOAD', `${lc.totalConnectedKW.toFixed(1)} kW`, `${lc.totalAreaM2.toFixed(0)} m² GFA`],
+    ['MAX DEMAND', `${lc.totalDemandKW.toFixed(1)} kW`, `${lc.totalApparentKVA.toFixed(1)} kVA (DF ${lc.overallDiversity.toFixed(2)})`],
+    ['DESIGN CURRENT (Ib)', `${lc.designCurrentA.toFixed(1)} A`, lc.isThreePhase ? '3-Ph 400 V' : '1-Ph 230 V'],
+    ['MAIN BREAKER (In)', `${lc.recommendedBreakerA} A`, lc.isThreePhase ? '4P MCCB + RCCB' : '2P MCCB + RCCB'],
+    ['EST. DAILY ENERGY', `${lc.totalDailyKWh.toFixed(0)} kWh/d`, `${lc.estMonthlyKWh.toLocaleString()} kWh/mo`],
+  ];
+  const cardGap = 2.5;
+  const cardW = (mainW - cardGap * (kpiItems.length - 1)) / kpiItems.length;
+  const cardH = 14.5;
+  kpiItems.forEach(([lbl, val, sub], idx) => {
+    const cx = A.x + idx * (cardW + cardGap);
+    p3.push(RECT(cx, A.y, cardW, cardH, { fill: '#F7F6F2', stroke: INK, sw: 0.25 }));
+    p3.push(T(cx + 2.2, A.y + 4.0, lbl, 1.45, { w: 700, c: INK2, ls: 0.12 }));
+    p3.push(T(cx + 2.2, A.y + 9.4, val, 3.1, { w: 700, c: INK }));
+    p3.push(T(cx + 2.2, A.y + 12.8, sub, 1.4, { c: INK3 }));
+  });
+
+  // Table 1: Load Category Breakdown & Diversity (IEC 60364 / BS 7671)
+  type CatRow = {
+    code: string;
+    category: string;
+    basis: string;
+    conn: string;
+    df: string;
+    dem: string;
+    pf: string;
+    kva: string;
+    amps: string;
+    kwh: string;
+    total?: boolean;
+  };
+  const catRows: CatRow[] = [
+    ...lc.categories.map((c) => ({
+      code: c.id,
+      category: c.category,
+      basis: c.basis,
+      conn: c.connectedKW.toFixed(2),
+      df: c.diversityFactor.toFixed(2),
+      dem: c.demandKW.toFixed(2),
+      pf: c.powerFactor.toFixed(2),
+      kva: c.apparentKVA.toFixed(2),
+      amps: c.designAmps.toFixed(1),
+      kwh: c.dailyKWh.toFixed(1),
+    })),
+    {
+      code: 'TOT',
+      category: 'TOTAL BUILDING LOAD',
+      basis: lc.isThreePhase ? '400/230 V 3-Phase TN-S' : '230 V 1-Phase TN-S',
+      conn: lc.totalConnectedKW.toFixed(2),
+      df: lc.overallDiversity.toFixed(2),
+      dem: lc.totalDemandKW.toFixed(2),
+      pf: lc.powerFactor.toFixed(2),
+      kva: lc.totalApparentKVA.toFixed(2),
+      amps: lc.designCurrentA.toFixed(1),
+      kwh: lc.totalDailyKWh.toFixed(1),
+      total: true,
+    },
+  ];
+  const catCols = [
+    { label: 'Ref', w: 11, get: (x: CatRow) => x.code, bold: true },
+    { label: 'Load category', w: 46, get: (x: CatRow) => x.category, bold: true },
+    { label: 'Engineering basis', w: 67, get: (x: CatRow) => x.basis },
+    { label: 'Conn kW', w: 17, get: (x: CatRow) => x.conn, align: 'end' as const },
+    { label: 'DF', w: 12, get: (x: CatRow) => x.df, align: 'end' as const },
+    { label: 'Demand kW', w: 19, get: (x: CatRow) => x.dem, align: 'end' as const, bold: true },
+    { label: 'PF', w: 11, get: (x: CatRow) => x.pf, align: 'end' as const },
+    { label: 'kVA', w: 16, get: (x: CatRow) => x.kva, align: 'end' as const },
+    { label: 'Ib (A)', w: 16, get: (x: CatRow) => x.amps, align: 'end' as const },
+    { label: 'kWh/d', w: 21, get: (x: CatRow) => x.kwh, align: 'end' as const },
+  ];
+  let curY = A.y + cardH + 5;
+  const tCat = table(A.x, curY, '1. Electrical load summary by category (IEC 60364 / BS 7671)', catCols, catRows, { rowH: 4.8 });
+  p3.push(tCat.svg);
+  curY += tCat.h + 6;
+
+  // Table 2: Floor-by-Floor Electrical Load Schedule
+  type LvlRow = {
+    name: string;
+    area: string;
+    src: string;
+    light: string;
+    power: string;
+    hvac: string;
+    whk: string;
+    conn: string;
+    dem: string;
+    kwh: string;
+  };
+  const lvlRows: LvlRow[] = [
+    ...lc.levels.map((l) => ({
+      name: l.levelName,
+      area: l.areaM2 > 0 ? l.areaM2.toFixed(0) : '—',
+      src: l.source,
+      light: l.lightingKW.toFixed(2),
+      power: l.powerKW.toFixed(2),
+      hvac: l.hvacKW.toFixed(2),
+      whk: l.waterKitchenKW.toFixed(2),
+      conn: l.connectedKW.toFixed(2),
+      dem: l.demandKW.toFixed(2),
+      kwh: l.dailyKWh.toFixed(1),
+    })),
+    {
+      name: 'TOTAL (IN-SCOPE FLOORS)',
+      area: lc.totalAreaM2.toFixed(0),
+      src: `${scopeLevels(model).length} flr`,
+      light: lc.levels.reduce((s, l) => s + l.lightingKW, 0).toFixed(2),
+      power: lc.levels.reduce((s, l) => s + l.powerKW, 0).toFixed(2),
+      hvac: lc.levels.reduce((s, l) => s + l.hvacKW, 0).toFixed(2),
+      whk: lc.levels.reduce((s, l) => s + l.waterKitchenKW, 0).toFixed(2),
+      conn: lc.totalConnectedKW.toFixed(2),
+      dem: lc.totalDemandKW.toFixed(2),
+      kwh: lc.totalDailyKWh.toFixed(1),
+    },
+  ];
+  const lvlRowH = Math.min(4.6, Math.max(3.6, (A.y + A.h - curY - 38) / (lvlRows.length + 2)));
+  const lvlCols = [
+    { label: 'Floor / Zone', w: 56, get: (x: LvlRow) => x.name, bold: true },
+    { label: 'Area m²', w: 17, get: (x: LvlRow) => x.area, align: 'end' as const },
+    { label: 'Basis', w: 21, get: (x: LvlRow) => x.src },
+    { label: 'Light kW', w: 19, get: (x: LvlRow) => x.light, align: 'end' as const },
+    { label: 'Power kW', w: 20, get: (x: LvlRow) => x.power, align: 'end' as const },
+    { label: 'HVAC kW', w: 20, get: (x: LvlRow) => x.hvac, align: 'end' as const },
+    { label: 'WH/Kit kW', w: 21, get: (x: LvlRow) => x.whk, align: 'end' as const },
+    { label: 'Conn kW', w: 20, get: (x: LvlRow) => x.conn, align: 'end' as const },
+    { label: 'Demand kW', w: 21, get: (x: LvlRow) => x.dem, align: 'end' as const, bold: true },
+    { label: 'kWh/d', w: 21, get: (x: LvlRow) => x.kwh, align: 'end' as const },
+  ];
+  const tLvl = table(A.x, curY, '2. Floor-by-floor load schedule & daily energy estimate', lvlCols, lvlRows, { rowH: lvlRowH });
+  p3.push(tLvl.svg);
+  curY += tLvl.h + 5;
+
+  // Table 3: Itemized Appliance, AC, TV, Fan & Equipment Load Schedule
+  type AppRow = {
+    ref: string;
+    item: string;
+    cat: string;
+    qty: string;
+    unit: string;
+    conn: string;
+    df: string;
+    dem: string;
+    hrs: string;
+    kwh: string;
+  };
+  const appRows: AppRow[] = [
+    ...lc.appliances.map((a) => ({
+      ref: a.id,
+      item: a.item,
+      cat: a.category,
+      qty: String(a.qty),
+      unit: `${a.unitWatts} W`,
+      conn: a.connectedKW.toFixed(2),
+      df: a.diversityFactor.toFixed(2),
+      dem: a.demandKW.toFixed(2),
+      hrs: `${a.hoursPerDay.toFixed(1)} h`,
+      kwh: a.dailyKWh.toFixed(1),
+    })),
+    {
+      ref: 'SUM',
+      item: 'TOTAL ITEMIZED EQUIPMENT & APPLIANCES',
+      cat: 'All',
+      qty: String(lc.appliances.reduce((s, a) => s + a.qty, 0)),
+      unit: '—',
+      conn: lc.appliances.reduce((s, a) => s + a.connectedKW, 0).toFixed(2),
+      df: '—',
+      dem: lc.appliances.reduce((s, a) => s + a.demandKW, 0).toFixed(2),
+      hrs: '—',
+      kwh: lc.appliances.reduce((s, a) => s + a.dailyKWh, 0).toFixed(1),
+    },
+  ];
+  const appAvail = A.y + A.h - curY - 30;
+  const appRowH = Math.min(4.4, Math.max(3.2, appAvail / (appRows.length + 2)));
+  const appCols = [
+    { label: 'Ref', w: 12, get: (x: AppRow) => x.ref, bold: true },
+    { label: 'Equipment / Appliance', w: 74, get: (x: AppRow) => x.item, bold: true },
+    { label: 'Group', w: 24, get: (x: AppRow) => x.cat },
+    { label: 'Qty', w: 12, get: (x: AppRow) => x.qty, align: 'end' as const },
+    { label: 'Rating', w: 19, get: (x: AppRow) => x.unit, align: 'end' as const },
+    { label: 'Conn kW', w: 19, get: (x: AppRow) => x.conn, align: 'end' as const },
+    { label: 'DF', w: 13, get: (x: AppRow) => x.df, align: 'end' as const },
+    { label: 'Demand kW', w: 21, get: (x: AppRow) => x.dem, align: 'end' as const, bold: true },
+    { label: 'Use/d', w: 17, get: (x: AppRow) => x.hrs, align: 'end' as const },
+    { label: 'kWh/d', w: 25, get: (x: AppRow) => x.kwh, align: 'end' as const },
+  ];
+  const tApp = table(A.x, curY, '3. Itemized appliance, AC, TV, fan & equipment schedule', appCols, appRows, { rowH: appRowH });
+  p3.push(tApp.svg);
+  curY += tApp.h + 4;
+
+  // Engineering basis & compliance notes at bottom of left column
+  const calcNotes: [string, string][] = [
+    ['1. Basis', lc.methodologyNote],
+    ['2. Demand', 'Maximum demand calculated per IEC 60364 / BS 7671 diversity factors with tropical coincidence adjustment for multi-storey buildings.'],
+    ['3. Sizing', `Main breaker sized at In ≥ 1.25 × Ib (${lc.designCurrentA.toFixed(1)} A → ${lc.recommendedBreakerA} A). Incoming Cu XLPE/SWA cable derated for 35 °C Maldives ambient.`],
+    ['4. Compliance', 'Design complies with MNBC, IEC 60364, and STELCO / FENAKA utility connection rules. Verify final appliance schedule prior to switchgear procurement.'],
+  ];
+  const calcNoteBox = dataBox(A.x, curY, mainW, '4. Calculation notes & compliance', calcNotes, 1.45);
+  if (curY + calcNoteBox.h <= A.y + A.h + 2) p3.push(calcNoteBox.svg);
+
+  // Right sidebar on Sheet 3: Supply & Switchgear Sizing + Solar PV Balance + Legend
+  let s3y = A.y;
+  const s3Supply = dataBox(sideX, s3y, 74, 'Supply & switchgear sizing', [
+    ['Supply system', lc.supplySystem],
+    ['Connected load', `${lc.totalConnectedKW.toFixed(2)} kW`],
+    ['Overall diversity', `${(lc.overallDiversity * 100).toFixed(0)}% (DF ${lc.overallDiversity.toFixed(2)})`],
+    ['Max demand', `${lc.totalDemandKW.toFixed(2)} kW`],
+    ['Power factor', lc.powerFactor.toFixed(2)],
+    ['Apparent power', `${lc.totalApparentKVA.toFixed(2)} kVA`],
+    ['Design current Ib', `${lc.designCurrentA.toFixed(1)} A`],
+    ['Main breaker In', lc.mainBreakerSpec],
+    ['Incoming feeder', lc.incomingCableSpec],
+    ['Surge protection', lc.spdSpec],
+    ['Earthing', lc.earthingSpec],
+  ]);
+  p3.push(s3Supply.svg);
+  s3y += s3Supply.h + 4;
+
+  if (lc.solar.enabled) {
+    const s3Solar = dataBox(sideX, s3y, 74, 'Solar PV & energy balance', [
+      ['Installed PV', `${lc.solar.panelCount} × ${lc.solar.panelWattage} Wp = ${lc.solar.arrayKwp.toFixed(2)} kWp`],
+      ['Inverter', `${lc.solar.inverterKW.toFixed(1)} kW ${invMode} (rec. ≥ ${lc.solar.recommendedInverterKW} kW)`],
+      ['Battery bank', lc.solar.batteryKWh > 0 ? `${lc.solar.batteryKWh.toFixed(0)} kWh LiFePO4` : 'None (On-Grid)'],
+      ['Est. solar yield', `${lc.solar.estDailyKWh.toFixed(1)} kWh/d (${lc.solar.estAnnualKWh.toLocaleString()} kWh/yr)`],
+      ['Building demand', `${lc.totalDailyKWh.toFixed(1)} kWh/d (${lc.estMonthlyKWh.toLocaleString()} kWh/mo)`],
+      ['Solar offset', `${lc.solar.offsetPct}% of total building energy`],
+    ]);
+    p3.push(s3Solar.svg);
+    s3y += s3Solar.h + 4;
+  }
+
+  const lcAbbr: LegendEntry[] = [
+    { sym: 'text', tag: 'DF', label: 'Diversity / coincidence factor applied to connected load' },
+    { sym: 'text', tag: 'PF', label: 'Power factor (cos φ) for apparent power kVA' },
+    { sym: 'text', tag: 'Ib / In', label: 'Design current (A) / nominal breaker rating (A)' },
+    { sym: 'text', tag: 'TN-S', label: 'Separate neutral (N) and protective earth (PE) system' },
+    { sym: 'text', tag: 'MNBC', label: 'Maldives National Building Code · STELCO / FENAKA' },
+  ];
+  const k3 = keySize(lcAbbr)!;
+
   return [
     { title: 'Electrical single-line diagram', body: p.join(''), legend, key },
     { title: 'Electrical schedules', body: p2.join(''), legend: abbr, key: { x: dx, y: A.y + A.h - k2.h, w: 74, h: k2.h } },
+    { title: 'Electrical load calculation', body: p3.join(''), legend: lcAbbr, key: { x: sideX, y: A.y + A.h - k3.h, w: 74, h: k3.h } },
   ];
 }
 

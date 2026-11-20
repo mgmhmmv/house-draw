@@ -98,7 +98,7 @@ function exitDistance(poly: V3[], p: { x: number; y: number }, dir: { x: number;
 }
 
 export function roofFraming(model: BuildingProject): RoofFraming | null {
-  if (model.roof.type === 'flat' || !model.levels.length) return null;
+  if (model.roof.type === 'flat' || !model.levels.length || (model.roof.sections && model.roof.sections.length > 0)) return null;
   const cfg = getRoofStructure(model.roof);
   const meta = ROOF_STRUCTURE_META[cfg.system];
   const spacing = Math.min(2.4, Math.max(0.3, cfg.spacing));

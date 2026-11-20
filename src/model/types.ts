@@ -397,6 +397,8 @@ export interface FloorLevel {
   elevation: number; // meters above ground datum (e.g. 0.45, 3.65)
   floorToFloorHeight: number; // e.g. 3.20m
   slabThickness: number; // e.g. 0.15m
+  /** Context / decorative floor shown in 3D & elevations only; excluded from GFA, BOQ, electrical load & schedules. */
+  decorative?: boolean;
   walls: Wall[];
   openings: Opening[];
   rooms: Room[];
@@ -412,6 +414,24 @@ export interface StructuralGrid {
   yAxes: { label: string; coord: number }[]; // e.g. 1, 2, 3...
 }
 
+export interface RoofSection {
+  type: 'hip' | 'gable' | 'shed' | 'plane';
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  eaveZ: number;
+  pitchDeg: number;
+  overhang?: number;
+  /** For shed roofs: low-eave side ('S' slopes down to south, 'N' north, 'E' east, 'W' west). */
+  slopeTo?: 'N' | 'S' | 'E' | 'W';
+  /** For 'plane' roofs: explicit 3D polygon vertices of a single sloped roof plane. */
+  pts?: { x: number; y: number; z: number }[];
+  /** For 'plane' roofs: vertex-index pairs [i, j] whose edge drops a vertical gable/clerestory wall down to eaveZ. */
+  gableEdges?: [number, number][];
+  material?: RoofMaterial;
+}
+
 export interface RoofConfig {
   type: RoofType;
   pitchDeg: number; // e.g., 24°
@@ -420,6 +440,8 @@ export interface RoofConfig {
   parapetHeight: number; // meters if flat roof
   /** Flat roof used as a deck: glass balustrade round the edge, and a stair from the top floor comes up through it. */
   deck?: boolean;
+  /** Optional multi-wing / multi-level pitched roof sections (e.g. L-shaped hip + lower-level shed roof). */
+  sections?: RoofSection[];
   gutterEnabled?: boolean;
   gutterProfile?: GutterProfile;
   downpipeCount?: number;
@@ -767,6 +789,12 @@ export const WATER_SUPPLY_META: Record<WaterSupplyMode, { label: string; note: s
 
 export function getWaterSupply(project: BuildingProject): WaterSupplyConfig {
   return { mode: project.waterSupply?.mode ?? 'ground_tank_pump', storageLiters: project.waterSupply?.storageLiters ?? 0 };
+}
+
+/** Returns the in-scope (non-decorative) floor levels for GFA, BOQ, electrical load, and engineering schedules. */
+export function scopeLevels(project: BuildingProject): FloorLevel[] {
+  const active = project.levels.filter((l) => !l.decorative);
+  return active.length ? active : project.levels;
 }
 
 export function getSolarConfig(project: BuildingProject): SolarPVConfig {

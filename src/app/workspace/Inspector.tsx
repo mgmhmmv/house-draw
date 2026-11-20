@@ -521,7 +521,9 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
   const site = getSite(model);
   const hvac = getHVACConfig(model);
   const solar = getSolarConfig(model);
-  const rooms = model.levels.flatMap((l) => l.rooms);
+  const activeLevels = model.levels.filter((l) => !l.decorative);
+  const scope = activeLevels.length ? activeLevels : model.levels;
+  const rooms = scope.flatMap((l) => l.rooms);
   const area = computeTotalFloorArea(model);
 
   return (
@@ -529,7 +531,7 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
       <div className="grid grid-cols-3 gap-px border-b border-line bg-line">
         {[
           ['Floor area', `${area.toFixed(0)} m²`],
-          ['Levels', String(model.levels.length)],
+          ['Levels', scope.length < model.levels.length ? `${scope.length}/${model.levels.length}` : String(model.levels.length)],
           ['Rooms', String(rooms.length)],
         ].map(([k, v]) => (
           <div key={k} className="bg-surface px-4 py-3.5">
@@ -540,6 +542,36 @@ function BuildingPanel({ model, edit, focusSolar }: { model: BuildingProject; ed
       </div>
 
       {focusSolar && <SolarSection model={model} edit={edit} solar={solar} />}
+
+      {model.levels.length > 1 && (
+        <Section title="Floors in scope" defaultOpen={model.levels.some((l) => l.decorative)}>
+          <p className="mb-2 text-[11px] leading-snug text-ink-3">
+            Mark existing lower or context floors as decorative to show them in 3D &amp; elevations while excluding them from floor area, BOQ, and electrical load calculations.
+          </p>
+          <div className="space-y-1.5">
+            {model.levels.map((lvl, idx) => (
+              <div key={lvl.id} className="flex items-center justify-between gap-2 text-[12px]">
+                <span className={lvl.decorative ? 'text-ink-3 line-through' : 'font-medium text-ink'}>
+                  {lvl.name}
+                </span>
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={!!lvl.decorative}
+                    onChange={(e) =>
+                      edit((m) => {
+                        m.levels[idx].decorative = e.target.checked || undefined;
+                      })
+                    }
+                    className="h-3.5 w-3.5 accent-accent"
+                  />
+                  Decorative
+                </label>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       <Section title="Roof">
         <Row label="Form">

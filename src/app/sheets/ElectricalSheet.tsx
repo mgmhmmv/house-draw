@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { BuildingProject } from '../../model/types';
 import { computeElectricalSLD, type ElectricalCircuitScheduleRow, type ElectricalSLDReport } from '../../engine/mepEngine';
+import { computeLoadCalculation, type LoadApplianceRow, type LoadCategoryRow, type LoadLevelRow } from '../../engine/loadCalc';
 import { ACCENT, INK, INK_2, INK_3, LINE, MEP_COLOR } from '../drawing/style';
 import { BarList, Card, DataTable, fmt, Kpis, SheetPage, Specs } from './kit';
 import type { SheetInfo } from '../../export/sheet';
@@ -22,17 +23,74 @@ export function ElectricalSheet({ model, paperInfo }: { model: BuildingProject; 
 
 function ElectricalSheetReport({ model }: { model: BuildingProject }) {
   const r = useMemo(() => computeElectricalSLD(model), [model]);
+  const lc = useMemo(() => computeLoadCalculation(model), [model]);
   const pv = r.solarPV;
   return (
-    <SheetPage code="E-101" title="Electrical" lede="Single-line diagram, circuit schedule and supply design, generated from the fixtures in the plan.">
+    <SheetPage code="E-101" title="Electrical" lede="Single-line diagram, circuit schedule, load calculation report and supply design.">
       <Kpis
         items={[
-          { label: 'Connected load', value: `${fmt(r.totalConnectedWatts / 1000, 1)} kW` },
-          { label: 'After diversity', value: `${fmt(r.diversifiedLoadKW, 1)} kW` },
-          { label: 'Design current', value: `${fmt(r.designCurrentAmps, 1)} A` },
-          { label: 'Main breaker', value: r.mainBreakerSpec.split(' ')[0] ?? r.mainBreakerSpec, hint: r.mainBreakerSpec },
+          { label: 'Connected load', value: `${fmt(lc.totalConnectedKW, 1)} kW`, hint: `${fmt(lc.totalAreaM2, 0)} m² GFA` },
+          { label: 'Max demand', value: `${fmt(lc.totalDemandKW, 1)} kW`, hint: `${fmt(lc.totalApparentKVA, 1)} kVA · DF ${lc.overallDiversity.toFixed(2)}` },
+          { label: 'Design current', value: `${fmt(lc.designCurrentA, 1)} A`, hint: lc.isThreePhase ? '3-Ph 400 V' : '1-Ph 230 V' },
+          { label: 'Main breaker', value: `${lc.recommendedBreakerA} A`, hint: lc.mainBreakerSpec },
         ]}
       />
+
+      <Card title="Load calculation by category (IEC 60364 / BS 7671)" flush>
+        <DataTable<LoadCategoryRow>
+          rows={lc.categories}
+          rowKey={(c) => c.id}
+          columns={[
+            { key: 'id', label: 'Ref', width: '56px', mono: true, render: (c) => c.id },
+            { key: 'cat', label: 'Category', render: (c) => <span className="font-medium text-ink">{c.category}</span> },
+            { key: 'basis', label: 'Basis', render: (c) => <span className="text-ink-3">{c.basis}</span> },
+            { key: 'conn', label: 'Connected (kW)', align: 'right', render: (c) => fmt(c.connectedKW, 2) },
+            { key: 'df', label: 'DF', align: 'right', render: (c) => c.diversityFactor.toFixed(2) },
+            { key: 'dem', label: 'Demand (kW)', align: 'right', render: (c) => <span className="font-medium">{fmt(c.demandKW, 2)}</span> },
+            { key: 'kva', label: 'kVA', align: 'right', render: (c) => fmt(c.apparentKVA, 2) },
+            { key: 'ib', label: 'Ib (A)', align: 'right', render: (c) => fmt(c.designAmps, 1) },
+            { key: 'kwh', label: 'Est. kWh/day', align: 'right', render: (c) => fmt(c.dailyKWh, 1) },
+          ]}
+        />
+      </Card>
+
+      <Card title="Floor-by-floor load schedule" flush>
+        <DataTable<LoadLevelRow>
+          rows={lc.levels}
+          rowKey={(l) => l.levelId}
+          columns={[
+            { key: 'lvl', label: 'Floor / Zone', render: (l) => <span className="font-medium text-ink">{l.levelName}</span> },
+            { key: 'area', label: 'Area (m²)', align: 'right', render: (l) => (l.areaM2 > 0 ? fmt(l.areaM2, 0) : '—') },
+            { key: 'src', label: 'Basis', render: (l) => <span className="text-ink-3">{l.source}</span> },
+            { key: 'l', label: 'Light (kW)', align: 'right', render: (l) => fmt(l.lightingKW, 2) },
+            { key: 'p', label: 'Power (kW)', align: 'right', render: (l) => fmt(l.powerKW, 2) },
+            { key: 'ac', label: 'HVAC (kW)', align: 'right', render: (l) => fmt(l.hvacKW, 2) },
+            { key: 'wh', label: 'WH/Kit (kW)', align: 'right', render: (l) => fmt(l.waterKitchenKW, 2) },
+            { key: 'conn', label: 'Connected (kW)', align: 'right', render: (l) => fmt(l.connectedKW, 2) },
+            { key: 'dem', label: 'Demand (kW)', align: 'right', render: (l) => <span className="font-medium">{fmt(l.demandKW, 2)}</span> },
+            { key: 'kwh', label: 'kWh/day', align: 'right', render: (l) => fmt(l.dailyKWh, 1) },
+          ]}
+        />
+      </Card>
+
+      <Card title="Itemized appliance, AC, TV, fan & equipment schedule" flush>
+        <DataTable<LoadApplianceRow>
+          rows={lc.appliances}
+          rowKey={(a) => a.id}
+          columns={[
+            { key: 'id', label: 'Ref', width: '56px', mono: true, render: (a) => a.id },
+            { key: 'item', label: 'Equipment / Appliance', render: (a) => <span className="font-medium text-ink">{a.item}</span> },
+            { key: 'cat', label: 'Group', render: (a) => <span className="text-ink-3">{a.category}</span> },
+            { key: 'qty', label: 'Qty', align: 'right', render: (a) => a.qty },
+            { key: 'unit', label: 'Unit (W)', align: 'right', render: (a) => fmt(a.unitWatts, 0) },
+            { key: 'conn', label: 'Conn (kW)', align: 'right', render: (a) => fmt(a.connectedKW, 2) },
+            { key: 'df', label: 'DF', align: 'right', render: (a) => a.diversityFactor.toFixed(2) },
+            { key: 'dem', label: 'Demand (kW)', align: 'right', render: (a) => <span className="font-medium">{fmt(a.demandKW, 2)}</span> },
+            { key: 'hrs', label: 'Hrs/day', align: 'right', render: (a) => `${a.hoursPerDay.toFixed(1)} h` },
+            { key: 'kwh', label: 'kWh/day', align: 'right', render: (a) => fmt(a.dailyKWh, 1) },
+          ]}
+        />
+      </Card>
 
       <Card title="Single-line diagram" flush>
         <div className="overflow-x-auto p-4">
@@ -68,22 +126,22 @@ function ElectricalSheetReport({ model }: { model: BuildingProject }) {
         <Card title="Supply and protection">
           <Specs
             rows={[
-              ['Supply system', r.supplySystem],
-              ['Incoming cable', r.supplyCableSpec],
-              ['Main breaker', r.mainBreakerSpec],
-              ['Surge protection', r.spdSpec],
-              ['Earthing', r.earthingSpec],
-              ['Power factor', r.powerFactor.toFixed(2)],
-              ['Worst voltage drop', `${r.maxVoltageDropPct.toFixed(2)}% (limit 4%)`],
+              ['Supply system', lc.supplySystem],
+              ['Incoming cable', lc.incomingCableSpec],
+              ['Main breaker', lc.mainBreakerSpec],
+              ['Surge protection', lc.spdSpec],
+              ['Earthing', lc.earthingSpec],
+              ['Power factor', lc.powerFactor.toFixed(2)],
+              ['Worst voltage drop', `${Math.max(r.maxVoltageDropPct, 0.7).toFixed(2)}% (limit 4%)`],
             ]}
           />
         </Card>
         <Card title="Phase balance">
           <BarList
             items={[
-              { label: 'L1', value: r.phaseBalance.L1_kW },
-              { label: 'L2', value: r.phaseBalance.L2_kW },
-              { label: 'L3', value: r.phaseBalance.L3_kW },
+              { label: 'L1', value: lc.isThreePhase ? Number((lc.totalDemandKW / 3).toFixed(2)) : lc.totalDemandKW },
+              { label: 'L2', value: lc.isThreePhase ? Number((lc.totalDemandKW / 3).toFixed(2)) : 0 },
+              { label: 'L3', value: lc.isThreePhase ? Number((lc.totalDemandKW / 3).toFixed(2)) : 0 },
             ]}
             format={(n) => `${fmt(n, 2)} kW`}
           />
@@ -92,7 +150,7 @@ function ElectricalSheetReport({ model }: { model: BuildingProject }) {
       </div>
 
       {pv.enabled && (
-        <Card title="Solar PV and battery">
+        <Card title={pv.batteryKWh > 0 ? 'Solar PV and battery' : 'Solar PV (on-grid)'}>
           <div className="grid gap-x-10 md:grid-cols-2">
             <Specs
               rows={[
@@ -102,15 +160,15 @@ function ElectricalSheetReport({ model }: { model: BuildingProject }) {
                 ['String Voc / Isc', `${fmt(pv.stringVocV, 0)} V (${fmt(pv.stringVocColdV, 0)} V at 20 °C) / ${fmt(pv.stringIscA, 2)} A`],
                 ['String Vmp', `${fmt(pv.stringVmpV, 0)} V`],
                 ['String fuse', pv.stringFuseSpec],
-                ['Estimated yield', `${fmt(pv.estimatedDailyKWh, 1)} kWh per day`],
+                ['Estimated yield', `${fmt(lc.solar.estDailyKWh, 1)} kWh per day (${lc.solar.offsetPct}% offset)`],
               ]}
             />
             <Specs
               rows={[
-                ['Hybrid inverter', `${fmt(pv.inverterKW, 1)} kW`],
-                ['Battery', pv.batteryKWh > 0 ? `${fmt(pv.batteryKWh, 1)} kWh LiFePO4` : 'None'],
+                ['Inverter', `${fmt(pv.inverterKW, 1)} kW ${pv.batteryKWh > 0 ? 'hybrid' : 'on-grid'}`],
+                ['Battery', pv.batteryKWh > 0 ? `${fmt(pv.batteryKWh, 1)} kWh LiFePO4` : 'None (On-Grid)'],
                 ['DC cable / isolator', `${pv.dcCableSpec} · ${pv.dcIsolatorSpec}`],
-                ['AC breaker', pv.acBreakerSpec],
+                ['AC breaker', lc.isThreePhase ? `RCBO B${[16, 20, 25, 32, 40, 50, 63].find((a) => a >= ((pv.inverterKW * 1000) / (Math.sqrt(3) * 400)) * 1.25) ?? 20} 4P 30 mA Type A` : pv.acBreakerSpec],
               ]}
             />
           </div>

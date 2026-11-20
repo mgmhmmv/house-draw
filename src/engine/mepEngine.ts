@@ -2358,7 +2358,9 @@ export function autoPopulateMEPForLevel(
 }
 
 export function computeElectricalSLD(project: BuildingProject): ElectricalSLDReport {
-  const allNodes = project.levels.flatMap((l) => l.mepNodes);
+  const activeLevels = project.levels.filter((l) => !l.decorative);
+  const scopeLvls = activeLevels.length ? activeLevels : project.levels;
+  const allNodes = scopeLvls.flatMap((l) => l.mepNodes);
   const lights = allNodes.filter((n) => n.kind === 'light_ceiling');
   const outlets = allNodes.filter((n) => n.kind === 'outlet_duplex');
   const acs = allNodes.filter((n) => n.kind === 'ac_split' && n.label !== 'EF');
@@ -2501,8 +2503,9 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
     }
   }
 
-  // Water pressure pump set (ground-tank supply): a motor circuit of its own.
-  if (getWaterSupply(project).mode === 'ground_tank_pump') {
+  // Water pressure pump set (ground-tank supply): skip when lower floors are decorative (shared building pump).
+  const hasDecorativeFloors = project.levels.some((l) => l.decorative);
+  if (!hasDecorativeFloors && getWaterSupply(project).mode === 'ground_tank_pump') {
     const pumpKW = computePlumbingRiser(project).pumpKW;
     const row = makeRow('CKT-PUMP', `Water pressure pump set ${pumpKW} kW`, 'L2', Math.round((pumpKW * 1000) / 0.8), 1.0, 1, 0, 10);
     row.breakerRating = '16A Type C RCBO (30mA)';

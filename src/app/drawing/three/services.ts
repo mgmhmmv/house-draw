@@ -135,9 +135,11 @@ export function buildServices(model: BuildingProject): Services {
   });
 
   if (getSolarConfig(model).enabled) {
-    const eq = computePVAndEquipmentRoutes(model, 0);
-    for (const r of [eq.pvToInverter, eq.inverterToMdb, eq.inverterToBess]) add('solar', 0, MEP_COLOR.solar, 0.022, [r.points3D]);
-    add('electrical', 0, MEP_COLOR.power, 0.024, [eq.meterToMdb.points3D]);
+    const invIdx = model.levels.findIndex((l) => l.mepNodes.some((n) => n.kind === 'solar_inv'));
+    const solarLvl = invIdx >= 0 ? invIdx : 0;
+    const eq = computePVAndEquipmentRoutes(model, solarLvl);
+    for (const r of [eq.pvToInverter, eq.inverterToMdb, eq.inverterToBess]) add('solar', solarLvl, MEP_COLOR.solar, 0.022, [r.points3D]);
+    add('electrical', solarLvl, MEP_COLOR.power, 0.024, [eq.meterToMdb.points3D]);
   }
 
   // Merge runs by system, level and colour: a handful of meshes for the whole house.

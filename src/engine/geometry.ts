@@ -324,7 +324,8 @@ export function getRoomFloorColor(room: Room, isLight = true): string {
 
 export function computeTotalFloorArea(project: BuildingProject): number {
   let total = 0;
-  for (const lvl of project.levels) {
+  const active = project.levels.filter((l) => !l.decorative);
+  for (const lvl of active.length ? active : project.levels) {
     for (const r of lvl.rooms) {
       total += polygonArea(r.polygon);
     }
