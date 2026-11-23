@@ -502,9 +502,18 @@ export function SitePlan({ model, k }: { model: BuildingProject; k: number }) {
   return (
     <g pointerEvents="none">
       {/* Plot boundary (property line) */}
-      <rect x={p.x} y={p.y} width={p.w} height={p.d} fill="none" stroke={INK_3} strokeWidth={WEIGHT.light} strokeDasharray="9 3 2 3" vectorEffect={NS} />
+      <polygon points={pts(sl.outline)} fill="none" stroke={INK_3} strokeWidth={WEIGHT.light} strokeDasharray="9 3 2 3" vectorEffect={NS} />
       {/* Boundary wall, inside the property line */}
       {sl.runs.map((r, i) => {
+        if (r.toward) {
+          // A piece of the rounded corner: the wall's thickness measured in towards the arc's centre.
+          const c = r.toward;
+          const inn = (q: P) => {
+            const L = Math.hypot(c.x - q.x, c.y - q.y) || 1;
+            return { x: q.x + ((c.x - q.x) / L) * t, y: q.y + ((c.y - q.y) / L) * t };
+          };
+          return <polygon key={i} data-kind="boundary" data-id="boundary" pointerEvents="all" points={pts([r.a, r.b, inn(r.b), inn(r.a)])} fill="#8A857D" stroke="#8A857D" strokeWidth={WEIGHT.light} vectorEffect={NS} />;
+        }
         const horiz = Math.abs(r.a.y - r.b.y) < 1e-6;
         const inward = r.side === 'N' ? 1 : r.side === 'S' ? -1 : r.side === 'W' ? 1 : -1;
         const x = horiz ? Math.min(r.a.x, r.b.x) : r.a.x + (inward > 0 ? 0 : -t);

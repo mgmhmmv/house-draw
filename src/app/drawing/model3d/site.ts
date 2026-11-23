@@ -11,6 +11,8 @@ export interface SiteRun {
   a: P;
   b: P;
   side: PlotSide;
+  /** A short piece of a rounded plot corner; `toward` is the arc's centre. */
+  toward?: P;
 }
 export interface SiteGatePlaced {
   gate: SiteGate;
@@ -29,6 +31,8 @@ export interface SiteLayout {
   height: number;
   thickness: number;
   runs: SiteRun[];
+  /** The property line, corner to corner (with the rounded corner, if the plot has one). */
+  outline: P[];
   gates: SiteGatePlaced[];
   meter: { at: P; out: P; rot: number } | null;
   /** Total boundary wall length (m), without the openings. */
@@ -76,14 +80,44 @@ export function siteLayout(model: BuildingProject): SiteLayout {
     });
   }
 
+  // A rounded corner: both sides stop short of it by the radius and an arc joins them.
+  const rc = s.roundedCorner && s.roundedCorner.radius > 0 ? { corner: s.roundedCorner.corner, r: Math.min(s.roundedCorner.radius, w / 2, d / 2) } : null;
+  const trim = (side: PlotSide): [number, number] => {
+    if (!rc) return [0, len(side)];
+    const [ns, ew] = [rc.corner[0], rc.corner[1]];
+    const L = len(side);
+    if (side === 'N' || side === 'S') return side !== ns ? [0, L] : ew === 'W' ? [rc.r, L] : [0, L - rc.r];
+    return side !== ew ? [0, L] : ns === 'N' ? [rc.r, L] : [0, L - rc.r];
+  };
+  const CORNERS: P[] = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + d }, { x, y: y + d }];
+  const NAMES = ['NW', 'NE', 'SE', 'SW'];
+  let arc: P[] = [];
+  let arcCentre: P | null = null;
+  if (rc) {
+    const q = CORNERS[NAMES.indexOf(rc.corner)];
+    const sx = rc.corner[1] === 'W' ? 1 : -1;
+    const sy = rc.corner[0] === 'N' ? 1 : -1;
+    const c = { x: q.x + sx * rc.r, y: q.y + sy * rc.r };
+    arcCentre = c;
+    const n = 10;
+    // In clockwise order round the plot, from the side before the corner to the side after it.
+    const startAngle = { NW: Math.PI, NE: -Math.PI / 2, SE: 0, SW: Math.PI / 2 }[rc.corner];
+    arc = Array.from({ length: n + 1 }, (_, i) => {
+      const th = startAngle + ((Math.PI / 2) * i) / n;
+      return { x: c.x + rc.r * Math.cos(th), y: c.y + rc.r * Math.sin(th) };
+    });
+  }
+  const outline = CORNERS.flatMap((q, i) => (rc && NAMES[i] === rc.corner ? arc : [q]));
+
   const runs: SiteRun[] = [];
   let wallLength = 0;
-  if (s.boundary)
+  if (s.boundary) {
     for (const side of ['N', 'E', 'S', 'W'] as PlotSide[]) {
-      const L = len(side);
+      const [t0, t1] = trim(side);
       const cuts = gaps[side].sort((p, q) => p[0] - q[0]);
-      let t = 0;
-      for (const [a, b] of [...cuts, [L, L] as [number, number]]) {
+      let t = t0;
+      for (const [a0, b] of [...cuts, [t1, t1] as [number, number]]) {
+        const a = Math.min(a0, t1);
         if (a - t > 0.05) {
           runs.push({ a: along(side, t), b: along(side, a), side });
           wallLength += a - t;
@@ -91,6 +125,12 @@ export function siteLayout(model: BuildingProject): SiteLayout {
         t = Math.max(t, b);
       }
     }
+    if (rc && arcCentre)
+      for (let i = 0; i < arc.length - 1; i++) {
+        runs.push({ a: arc[i], b: arc[i + 1], side: rc.corner[0] as PlotSide, toward: arcCentre });
+        wallLength += Math.hypot(arc[i + 1].x - arc[i].x, arc[i + 1].y - arc[i].y);
+      }
+  }
 
   // Meter box in the pier beside the pedestrian door (or the main gate), on the street face.
   let meter: SiteLayout['meter'] = null;
@@ -102,5 +142,5 @@ export function siteLayout(model: BuildingProject): SiteLayout {
     meter = { at: { x: end.x + dir.x * 0.45, y: end.y + dir.y * 0.45 }, out: sd.out, rot: sd.rot };
   }
 
-  return { plot: s.plot, boundary: s.boundary, height: s.boundaryHeight, thickness: s.boundaryThickness, runs, gates, meter, wallLength };
+  return { plot: s.plot, boundary: s.boundary, height: s.boundaryHeight, thickness: s.boundaryThickness, runs, outline, gates, meter, wallLength };
 }

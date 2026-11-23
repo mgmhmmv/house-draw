@@ -137,7 +137,10 @@ export function roofFraming(model: BuildingProject): RoofFraming | null {
     const t1 = alongX ? b.maxY : b.maxX;
     const count = Math.max(2, Math.ceil((s1 - s0) / spacing) + 1);
     const dc = meta.chord.d;
-    const zBot = plateTop + dc / 2;
+    // On a low pitch the covering is close above the wall: the truss heel drops so its top chord
+    // stays under the sheeting instead of poking through it near the eaves.
+    const heelClear = Math.min(...[t0, t1].flatMap((t) => [s0, s1].map((q) => under(alongX ? q : t, alongX ? t : q, dc))));
+    const zBot = Math.min(plateTop + dc / 2, heelClear - dc);
     const span = t1 - t0;
     const panels = Math.max(4, 2 * Math.round(span / 2.4));
     for (let i = 0; i < count; i++) {

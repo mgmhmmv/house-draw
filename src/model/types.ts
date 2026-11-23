@@ -751,6 +751,8 @@ export interface SiteConfig {
   boundaryHeight: number;
   boundaryThickness: number;
   gates: SiteGate[];
+  /** One plot corner rounded on the registry plan (e.g. at a road junction), with its radius in metres. */
+  roundedCorner?: { corner: 'NW' | 'NE' | 'SE' | 'SW'; radius: number };
   /** Utility electricity meter built into the boundary wall at a gate pier. */
   meterAtGate: boolean;
   boundaryFinish: BoundaryFinish;
@@ -791,6 +793,7 @@ export function getSite(project: BuildingProject): SiteConfig {
     boundaryHeight: s.boundaryHeight ?? 1.8,
     boundaryThickness: s.boundaryThickness ?? 0.15,
     gates: s.gates ?? [],
+    roundedCorner: s.roundedCorner,
     meterAtGate: s.meterAtGate ?? false,
     boundaryFinish: s.boundaryFinish ?? 'painted_render',
     boundaryColor: s.boundaryColor,
