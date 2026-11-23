@@ -11,13 +11,16 @@
  */
 import type { BuildingProject } from '../../model/types';
 import { getSolarConfig } from '../../model/types';
-import { PV_MODULE } from '../../model/pvModule';
+import { moduleOf } from '../../model/pvModule';
 import { computeSolarArrayLayout } from '../../engine/geometry';
 import { computeElectricalSLD, computePVAndEquipmentRoutes } from '../../engine/mepEngine';
 import { buildFrame, levelOutline } from '../drawing/model3d/faces';
 
 type P3 = [number, number, number];
-const r2 = (n: number) => Math.round(n * 100) / 100;
+/** To the millimetre: positions must land where they are in the model. */
+const mm = (n: number) => Math.round(n * 1000) / 1000;
+/** A path without repeated points. */
+const clean = (pts: P3[]) => pts.filter((p, i) => !i || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1], p[2] - pts[i - 1][2]) > 0.0005);
 const pathLen = (pts: P3[]) => pts.slice(1).reduce((s, p, i) => s + Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1], p[2] - pts[i][2]), 0);
 
 export interface SolarRuns {
@@ -50,6 +53,30 @@ export interface SolarExport {
     }[];
   };
   drawings: { slot: string; name: string; mime: 'image/svg+xml' | 'image/png'; data: string }[];
+}
+
+/** The module as the export states it; a figure the project's datasheet doesn't give is left out. */
+function panelFields(solar: ReturnType<typeof getSolarConfig>): Record<string, number | string> {
+  const m = moduleOf(solar);
+  const raw: Record<string, number | string | undefined> = {
+    maker: m.maker,
+    model: m.model,
+    wp: solar.panelWattage,
+    voc: m.vocV,
+    isc: m.iscA,
+    vmp: m.vmpV,
+    imp: m.impA,
+    length_mm: Math.round(m.length * 1000),
+    width_mm: Math.round(m.width * 1000),
+    thickness_mm: m.thickness !== undefined ? Math.round(m.thickness * 1000) : undefined,
+    weight_kg: m.weightKg,
+    temp_coeff_voc: m.tempCoeffVocPct,
+    temp_coeff_pmax: m.tempCoeffPmaxPct,
+    temp_coeff_isc: m.tempCoeffIscPct,
+    max_system_v: m.maxSystemV,
+    max_series_fuse_a: m.maxSeriesFuseA,
+  };
+  return Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined)) as Record<string, number | string>;
 }
 
 /** Everything but the drawings. Throws with a plain message when the design can't be exported. */
@@ -93,7 +120,7 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
       const plan = f
         ? { w: Math.max(...f.pts.map((q) => q.x)) - Math.min(...f.pts.map((q) => q.x)), d: Math.max(...f.pts.map((q) => q.y)) - Math.min(...f.pts.map((q) => q.y)) }
         : { w: p.width, d: p.depth };
-      panels.push({ stringId: `S${s + 1}`, index: k, x: r2(p.x), y: r2(p.y), w: r2(plan.w), d: r2(plan.d), rotationDeg: p.rotationDeg, zM: r2(zOf(p.x, p.y)) });
+      panels.push({ stringId: `S${s + 1}`, index: k, x: mm(p.x), y: mm(p.y), w: mm(plan.w), d: mm(plan.d), rotationDeg: 0 /* w and d are already the module's size in plan */, zM: mm(zOf(p.x, p.y)) });
     });
   }
 
@@ -106,8 +133,8 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
     for (const n of l.mepNodes) {
       const kind = n.kind === 'solar_inv' ? 'inverter' : n.kind === 'solar_bess' ? 'battery' : n.kind === 'mdb' && isMain(n.label, li) ? 'mdb' : n.kind === 'utility_meter' ? 'meter' : null;
       if (!kind) continue;
-      const zM = r2(l.elevation + 1.5);
-      fixtures.push({ kind, x: r2(n.position.x), y: r2(n.position.y), zM, label: n.label ?? kind.toUpperCase(), floor: l.index ?? li });
+      const zM = mm(l.elevation + 1.5);
+      fixtures.push({ kind, x: mm(n.position.x), y: mm(n.position.y), zM, label: n.label ?? kind.toUpperCase(), floor: l.index ?? li });
       if (kind === 'inverter' && !inv) inv = { x: n.position.x, y: n.position.y, z: zM };
     }
   });
@@ -115,22 +142,22 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
   const floorIdx = [...new Set(fixtures.filter((f) => f.kind !== 'battery').map((f) => f.floor))].sort((a, b) => a - b);
   const floors: SolarExport['geometry']['floors'] = floorIdx.map((fi) => {
     const l = model.levels.find((x, i) => (x.index ?? i) === fi)!;
-    const walls = l.walls.map((w) => ({ id: w.id, a: [r2(w.start.x), r2(w.start.y)] as [number, number], b: [r2(w.end.x), r2(w.end.y)] as [number, number], thicknessM: r2(w.thickness) }));
+    const walls = l.walls.map((w) => ({ id: w.id, a: [mm(w.start.x), mm(w.start.y)] as [number, number], b: [mm(w.end.x), mm(w.end.y)] as [number, number], thicknessM: mm(w.thickness) }));
     const ids = new Set(walls.map((w) => w.id));
     const openings = l.openings
       .filter((o) => ids.has(o.wallId))
       .map((o) => ({
         wallId: o.wallId,
         kind: o.kind,
-        t: Math.round(o.offset * 1000) / 1000,
-        widthM: r2(o.width),
+        t: Math.round(o.offset * 100000) / 100000,
+        widthM: mm(o.width),
         // As drawn on the plan: a leaf hangs on the opening's start jamb and opens to the wall's
         // right (looking from its start to its end, y south) when swingDirection ≥ 0.
         hinge: 'start' as const,
         swing: (o.swingDirection >= 0 ? 'right' : 'left') as 'left' | 'right',
       }));
-    const rooms = l.rooms.map((rm) => ({ name: rm.name, polygon: rm.polygon.map((p) => [r2(p.x), r2(p.y)] as [number, number]) }));
-    return { index: fi, name: l.name.replace(/\s*\(.*\)/, ''), elevationM: r2(l.elevation), walls, openings, rooms };
+    const rooms = l.rooms.map((rm) => ({ name: rm.name, polygon: rm.polygon.map((p) => [mm(p.x), mm(p.y)] as [number, number]) }));
+    return { index: fi, name: l.name.replace(/\s*\(.*\)/, ''), elevationM: mm(l.elevation), walls, openings, rooms };
   });
   if (!inv) throw new Error('Place the inverter in the model first (Electrical): the cable runs are measured to it.');
   const I = inv as { x: number; y: number; z: number };
@@ -153,6 +180,21 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
     [I.x, I.y, I.z],
   ];
 
+  // Height of the roof covering at a plan point (the highest plane there).
+  const roofSurface = (x: number, y: number) => {
+    let z = -Infinity;
+    for (const pl of frame.roofPlanes) {
+      const q = pl.pts;
+      let inside = false;
+      for (let i = 0, j = q.length - 1; i < q.length; j = i++) if (q[i].y > y !== q[j].y > y && x < ((q[j].x - q[i].x) * (y - q[i].y)) / (q[j].y - q[i].y) + q[i].x) inside = !inside;
+      if (!inside) continue;
+      const [a, b, c] = q;
+      const n = { x: (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y), y: (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z), z: (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) };
+      if (Math.abs(n.z) > 1e-9) z = Math.max(z, a.z - (n.x * (x - a.x) + n.y * (y - a.y)) / n.z);
+    }
+    return Number.isFinite(z) ? z : roofZ;
+  };
+
   const cables: SolarExport['geometry']['cables'] = [];
   const perString: SolarRuns['perString'] = [];
   for (let s = 0; s < nStrings; s++) {
@@ -168,12 +210,17 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
     ];
     const lens: Record<string, number> = {};
     for (const e of ends) {
-      // Along the rails to the drop line, then along the drop edge, then the trunk.
-      const pts: P3[] = [e.p, [D.x, e.p[1], e.p[2]], [D.x, D.y, Dz], ...trunk.slice(1)];
-      cables.push({ role: 'dc', stringId: id, polarity: e.pol, points: pts.map((q) => q.map(r2) as P3) });
+      // A given wiring layout (one string): follow it over the roof, then down to the inverter.
+      const planned = nStrings === 1 ? (e.pol === '+' ? solar.routes?.positive : solar.routes?.negative) : undefined;
+      // Otherwise along the rails to the drop line, then along the drop edge, then the trunk.
+      const pts: P3[] =
+        planned && planned.length >= 2
+          ? [...planned.map((q) => [q.x, q.y, roofSurface(q.x, q.y)] as P3), [planned[planned.length - 1].x, planned[planned.length - 1].y, I.z], [I.x, I.y, I.z]]
+          : [e.p, [D.x, e.p[1], e.p[2]], [D.x, D.y, Dz], ...trunk.slice(1)];
+      cables.push({ role: 'dc', stringId: id, polarity: e.pol, points: clean(pts.map((q) => q.map(mm) as P3)) });
       lens[e.pol] = pathLen(pts) + 0.5; // + terminations
     }
-    perString.push({ stringId: id, positiveM: r2(lens['+']), negativeM: r2(lens['-']) });
+    perString.push({ stringId: id, positiveM: mm(lens['+']), negativeM: mm(lens['-']) });
   }
 
   // AC: inverter → main board along the routed path (same floor), else straight runs.
@@ -182,10 +229,11 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
   const invLevel = model.levels.findIndex((l) => l.mepNodes.some((n) => n.kind === 'solar_inv'));
   try {
     const routes = computePVAndEquipmentRoutes(model, Math.max(0, invLevel));
-    acPts = routes.inverterToMdb.points3D.map((p) => [r2(p.x), r2(p.z), r2(p.y)] as P3);
+    acPts = routes.inverterToMdb.points3D.map((p) => [mm(p.x), mm(p.z), mm(p.y)] as P3);
   } catch {
     /* fall back below */
   }
+  if (solar.routes?.ac && solar.routes.ac.length >= 2) acPts = solar.routes.ac.map((q) => [mm(q.x), mm(q.y), I.z] as P3);
   if (acPts.length < 2 && mdb) acPts = [[I.x, I.y, I.z], [mdb.x, I.y, I.z], [mdb.x, mdb.y, mdb.zM]];
   if (acPts.length >= 2) cables.push({ role: 'ac', points: acPts });
   const acRunM = acPts.length >= 2 ? pathLen(acPts) + 1.0 : 0;
@@ -198,41 +246,24 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
   // Roofs: the covered roof, and any open terrace below it that carries panels.
   const roofs: SolarExport['geometry']['roofs'] = [];
   const covered = levelOutline(top, (r) => r.category !== 'balcony');
-  covered.forEach((poly, i) => roofs.push({ name: i ? `Roof ${i + 1}` : 'Roof', heightM: r2(roofZ), polygon: poly[0].map(([x, y]) => [r2(x), r2(y)] as [number, number]) }));
+  covered.forEach((poly, i) => roofs.push({ name: i ? `Roof ${i + 1}` : 'Roof', heightM: mm(roofZ), polygon: poly[0].map(([x, y]) => [mm(x), mm(y)] as [number, number]) }));
   const terrace = levelOutline(top, (r) => r.category === 'balcony');
-  terrace.forEach((poly, i) => roofs.push({ name: i ? `Terrace ${i + 1}` : 'Terrace', heightM: r2(top.elevation), polygon: poly[0].map(([x, y]) => [r2(x), r2(y)] as [number, number]) }));
+  terrace.forEach((poly, i) => roofs.push({ name: i ? `Terrace ${i + 1}` : 'Terrace', heightM: mm(top.elevation), polygon: poly[0].map(([x, y]) => [mm(x), mm(y)] as [number, number]) }));
 
   const sld = computeElectricalSLD(model);
-  const phase: 1 | 3 = /3-Ph/.test(sld.supplySystem) ? 3 : 1;
+  const phase: 1 | 3 = solar.inverterPhase ?? (/3-Ph/.test(sld.supplySystem) ? 3 : 1);
 
   return {
     version: 1,
     source: { app: 'maavadiyaa', projectId: meta.projectId, projectName: meta.projectName, modelVersion: meta.modelVersion, viewUrl: meta.viewUrl, exportedAt: new Date().toISOString() },
-    panel: {
-      maker: PV_MODULE.maker,
-      model: PV_MODULE.model,
-      wp: solar.panelWattage,
-      voc: PV_MODULE.vocV,
-      isc: PV_MODULE.iscA,
-      vmp: PV_MODULE.vmpV,
-      imp: PV_MODULE.impA,
-      length_mm: PV_MODULE.length * 1000,
-      width_mm: PV_MODULE.width * 1000,
-      thickness_mm: PV_MODULE.thickness * 1000,
-      weight_kg: PV_MODULE.weightKg,
-      temp_coeff_voc: PV_MODULE.tempCoeffVocPct,
-      temp_coeff_pmax: PV_MODULE.tempCoeffPmaxPct,
-      temp_coeff_isc: PV_MODULE.tempCoeffIscPct,
-      max_system_v: PV_MODULE.maxSystemV,
-      max_series_fuse_a: PV_MODULE.maxSeriesFuseA,
-    },
+    panel: panelFields(solar),
     system: {
       inverterKw: solar.inverterKW,
       batteryKwh: solar.batteryKWh,
       phase,
       strings: perString.map((p, i) => ({ id: p.stringId, panelsInSeries: panels.filter((q) => q.stringId === p.stringId).length, parallelRuns: 1, mppt: i + 1 })),
     },
-    runs: { method: '3d-route', dcRunM: r2(dcRunM), acRunM: r2(acRunM), earthRunM: r2(earthRunM), perString },
+    runs: { method: '3d-route', dcRunM: mm(dcRunM), acRunM: mm(acRunM), earthRunM: mm(earthRunM), perString },
     geometry: { roofs, panels, cables, fixtures, floors },
     drawings: [],
   };

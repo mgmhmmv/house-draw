@@ -1,3 +1,4 @@
+import type { PVModuleSpec } from './types';
 /**
  * The PV module the app draws and wires: Luxen LuxPower Series 5, LNVU-590ND
  * (570–590 W mono bifacial, 144 half-cell N-type M10, glass/glass), from the maker's datasheet.
@@ -32,18 +33,23 @@ export const PV_MODULE = {
 /** Coolest cell temperature the string voltage is checked at (tropical sites, early morning). */
 const T_MIN_C = 20;
 
-/** String figures for `n` modules in series. */
-export function pvString(n: number) {
-  const coldFactor = 1 + (PV_MODULE.tempCoeffVocPct / 100) * (T_MIN_C - 25);
+/** String figures for `n` modules in series, for the project's module (the default otherwise). */
+export function pvString(n: number, module?: PVModuleSpec) {
+  const m = module ?? PV_MODULE;
+  const coldFactor = 1 + ((m.tempCoeffVocPct ?? PV_MODULE.tempCoeffVocPct) / 100) * (T_MIN_C - 25);
   return {
-    vocV: Number((n * PV_MODULE.vocV).toFixed(1)),
-    vocColdV: Number((n * PV_MODULE.vocV * coldFactor).toFixed(1)),
-    vmpV: Number((n * PV_MODULE.vmpV).toFixed(1)),
-    iscA: PV_MODULE.iscA,
-    impA: PV_MODULE.impA,
+    vocV: Number((n * m.vocV).toFixed(1)),
+    vocColdV: Number((n * m.vocV * coldFactor).toFixed(1)),
+    vmpV: Number((n * m.vmpV).toFixed(1)),
+    iscA: m.iscA,
+    impA: m.impA,
     /** String fuse / DC breaker at 1.56 × Isc (IEC 62548), rounded up to a standard size. */
-    fuseA: [15, 20, 25, 30, 32].find((a) => a >= PV_MODULE.iscA * 1.56) ?? 32,
+    fuseA: [15, 20, 25, 30, 32].find((a) => a >= m.iscA * 1.56) ?? 32,
   };
 }
 
 export const PV_MODULE_LABEL = `${PV_MODULE.maker} ${PV_MODULE.model}`;
+
+/** The project's module and its label. */
+export const moduleOf = (solar: { module?: PVModuleSpec }): PVModuleSpec => solar.module ?? PV_MODULE;
+export const moduleLabel = (solar: { module?: PVModuleSpec }) => (solar.module ? [solar.module.maker, solar.module.model].filter(Boolean).join(' ') : PV_MODULE_LABEL);

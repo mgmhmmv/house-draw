@@ -1,4 +1,4 @@
-import { PV_MODULE } from '../model/pvModule';
+import { moduleOf, PV_MODULE } from '../model/pvModule';
 import {
   BuildingProject,
   FloorLevel,
@@ -467,8 +467,8 @@ export function computeSolarArrayLayout(project: BuildingProject): ComputedSolar
   const isSideways = rotDeg === 90 || rotDeg === 270;
 
   // Portrait module: short side across the row, long side up the slope (Luxen LNVU-590ND).
-  const baseW = PV_MODULE.width;
-  const baseD = PV_MODULE.length;
+  const baseW = moduleOf(solar).width;
+  const baseD = moduleOf(solar).length;
   const modW = isSideways ? baseD : baseW;
   const modD = isSideways ? baseW : baseD;
   const gap = PV_MODULE.clampGap;

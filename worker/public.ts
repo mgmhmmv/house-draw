@@ -46,7 +46,7 @@ export function facadeOnly(model: Obj, title: string): Obj {
     design: model.design,
     site: model.site,
     solar: solar
-      ? { enabled: solar.enabled, panelCount: solar.panelCount, panelWattage: solar.panelWattage, inverterKW: 0, batteryKWh: 0, offsetX: solar.offsetX, offsetY: solar.offsetY, rotationDeg: solar.rotationDeg, roofFace: solar.roofFace, columns: solar.columns, strings: solar.strings, panelsPerString: solar.panelsPerString, serviceGapEvery: solar.serviceGapEvery, serviceGapWidth: solar.serviceGapWidth, panelOffsets: solar.panelOffsets }
+      ? { enabled: solar.enabled, panelCount: solar.panelCount, panelWattage: solar.panelWattage, inverterKW: 0, batteryKWh: 0, offsetX: solar.offsetX, offsetY: solar.offsetY, rotationDeg: solar.rotationDeg, roofFace: solar.roofFace, columns: solar.columns, strings: solar.strings, panelsPerString: solar.panelsPerString, serviceGapEvery: solar.serviceGapEvery, serviceGapWidth: solar.serviceGapWidth, panelOffsets: solar.panelOffsets, module: isObj(solar.module) ? { model: '', length: solar.module.length, width: solar.module.width, vocV: 0, iscA: 0, vmpV: 0, impA: 0 } : undefined }
       : undefined,
     hvac: { enabled: false },
   };

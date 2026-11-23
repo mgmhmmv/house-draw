@@ -201,6 +201,25 @@ export type SelectableElementKind =
   | 'boundary'
   | 'gate';
 
+/** A PV module's datasheet figures (sizes in metres). Figures the datasheet doesn't give stay unset. */
+export interface PVModuleSpec {
+  maker?: string;
+  model: string;
+  length: number;
+  width: number;
+  thickness?: number;
+  weightKg?: number;
+  vocV: number;
+  iscA: number;
+  vmpV: number;
+  impA: number;
+  tempCoeffVocPct?: number;
+  tempCoeffPmaxPct?: number;
+  tempCoeffIscPct?: number;
+  maxSystemV?: number;
+  maxSeriesFuseA?: number;
+}
+
 export interface SolarPVConfig {
   enabled: boolean;
   panelCount: number; // e.g. 12 panels
@@ -215,6 +234,12 @@ export interface SolarPVConfig {
   /** Strings wired to the inverter, and panels in each: the array is laid out one string per row. */
   strings?: number;
   panelsPerString?: number;
+  /** This project's own module, when it isn't the default (see pvModule.ts). */
+  module?: PVModuleSpec;
+  /** Inverter phases when known from the actual inverter; otherwise follows the building's supply. */
+  inverterPhase?: 1 | 3;
+  /** Cable routes in plan, when they follow a given wiring layout (single string). */
+  routes?: { positive?: Point2D[]; negative?: Point2D[]; ac?: Point2D[] };
   /** Open service gap between blocks of this many columns (0 = none), for cleaning and maintenance. */
   serviceGapEvery?: number;
   /** Width of each service gap, metres (default 0.6). */

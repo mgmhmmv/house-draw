@@ -1,4 +1,4 @@
-import { PV_MODULE } from '../../../model/pvModule';
+import { moduleOf } from '../../../model/pvModule';
 /**
  * Electrical single-line diagram on A3, from the supply to every point: utility supply, cut-out,
  * meter, isolator, main switch, RCD, SPD, busbar and earthing in the MDB; the solar PV, inverter
@@ -6,7 +6,7 @@ import { PV_MODULE } from '../../../model/pvModule';
  * (lighting, sockets, kitchen, each air-conditioner, each water heater) down to every light,
  * switch, fan, socket outlet and appliance. Sheet 2 carries the schedules and design data.
  */
-import { scopeLevels, type BuildingProject, type FloorLevel, type MEPNode, type Room } from '../../../model/types';
+import { getSolarConfig, scopeLevels, type BuildingProject, type FloorLevel, type MEPNode, type Room } from '../../../model/types';
 import { computeElectricalSLD, type ElectricalSLDReport } from '../../../engine/mepEngine';
 import { computeLoadCalculation } from '../../../engine/loadCalc';
 import { DRAWING_AREA, keySize, type LegendEntry } from '../../../export/sheet';
@@ -631,7 +631,7 @@ export function electricalPages(model: BuildingProject): DrawnPage[] {
   if (pv.enabled) {
     const sol = dataBox(dx, dy, 74, pv.batteryKWh > 0 ? 'Solar PV and battery' : 'Solar PV (on-grid)', [
       ['Array', `${pv.panelCount} × ${pv.panelWattage} Wp = ${pv.arrayKwp.toFixed(2)} kWp`],
-      ['Module', `${pv.module}, ${PV_MODULE.length * 1000}×${PV_MODULE.width * 1000} mm`],
+      ['Module', `${pv.module}, ${Math.round(moduleOf(getSolarConfig(model)).length * 1000)}×${Math.round(moduleOf(getSolarConfig(model)).width * 1000)} mm`],
       ['Strings', `${pv.stringsCount} × ${pv.panelsPerString} panels`],
       ['String Voc / Isc', `${pv.stringVocV} V / ${pv.stringIscA} A`],
       ['String fuse', pv.stringFuseSpec],

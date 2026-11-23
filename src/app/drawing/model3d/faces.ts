@@ -1117,7 +1117,7 @@ function canopyFaces(panels: ReturnType<typeof computeSolarArrayLayout>['panels'
   // Higher at the north edge, falling to the south.
   const zAt = (y: number) => base + (maxY - y) * tilt;
   for (const p of panels) {
-    const rot = (p.rotationDeg * Math.PI) / 180;
+    const rot = p.rotationDeg % 180 === 90 ? 0 : (p.rotationDeg * Math.PI) / 180; // a landscape panel's width/depth are already its plan size
     const hw = p.width / 2;
     const hd = p.depth / 2;
     const corner = (sx: number, sy: number) => {
@@ -1192,7 +1192,7 @@ function solarFaces(model: BuildingProject, planes: { pts: V3[] }[]): Face[] {
     const nl = Math.hypot(n.x, n.y, n.z) || 1;
     n = v(n.x / nl, n.y / nl, n.z / nl);
     const zAt = (x: number, y: number) => a.z - (n.x * (x - a.x) + n.y * (y - a.y)) / (n.z || 1) + 0.1;
-    const rot = (p.rotationDeg * Math.PI) / 180;
+    const rot = p.rotationDeg % 180 === 90 ? 0 : (p.rotationDeg * Math.PI) / 180; // a landscape panel's width/depth are already its plan size
     const hw = p.width / 2;
     const hd = p.depth / 2;
     const corner = (sx: number, sy: number) => {

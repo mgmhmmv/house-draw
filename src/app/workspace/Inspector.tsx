@@ -1,4 +1,4 @@
-import { PV_MODULE, PV_MODULE_LABEL, pvString } from '../../model/pvModule';
+import { moduleLabel, moduleOf, pvString } from '../../model/pvModule';
 import { useState, type ReactNode } from 'react';
 import { ASSETS, assetFor, CATEGORIES } from '../drawing/assets/catalog';
 import { computePlumbingRiser } from '../../engine/mepEngine';
@@ -861,7 +861,7 @@ function SiteSelection({
 function SolarStrings({ edit, solar }: { edit: (fn: (m: BuildingProject) => void) => void; solar: ReturnType<typeof getSolarConfig> }) {
   const strings = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
   const per = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / strings));
-  const voc = pvString(per).vocColdV;
+  const voc = pvString(per, solar.module).vocColdV;
   const set = (st: number, pp: number) =>
     edit((m) => (m.solar = { ...getSolarConfig(m), strings: st, panelsPerString: pp, panelCount: st * pp, panelOffsets: {}, columns: undefined }));
   return (
@@ -875,7 +875,7 @@ function SolarStrings({ edit, solar }: { edit: (fn: (m: BuildingProject) => void
       <Row label="String voltage">
         <Readout>
           <span className={voc > 550 ? 'text-warn' : ''}>
-            {voc.toFixed(0)} V Voc at 20 °C · {pvString(per).vmpV.toFixed(0)} V Vmp{voc > 550 ? ' · over a typical 550 V input' : ''}
+            {voc.toFixed(0)} V Voc at 20 °C · {pvString(per, solar.module).vmpV.toFixed(0)} V Vmp{voc > 550 ? ' · over a typical 550 V input' : ''}
           </span>
         </Readout>
       </Row>
@@ -926,7 +926,7 @@ function SolarSection({ model, edit, solar, collapsed }: { model: BuildingProjec
           <SolarStrings edit={edit} solar={solar} />
           <Row label="Panel">
             <Readout>
-              {PV_MODULE_LABEL} · {PV_MODULE.length * 1000} × {PV_MODULE.width * 1000} mm
+              {moduleLabel(solar)} · {Math.round(moduleOf(solar).length * 1000)} × {Math.round(moduleOf(solar).width * 1000)} mm
             </Readout>
           </Row>
           <Row label="Panel rating">

@@ -197,7 +197,7 @@ export function selectionOutline(model: BuildingProject, id: string, kind: Selec
     const p = computeSolarArrayLayout(model).panels.find((q) => q.index === i);
     if (p) {
       const roofTop = Math.max(...model.levels.map((l) => l.elevation + Math.max(...l.walls.map((w) => w.height), 2.4)));
-      return boxAt(p.x, roofTop + 1.2, p.y, p.width + 0.04, 2.6, p.depth + 0.04, (-p.rotationDeg * Math.PI) / 180);
+      return boxAt(p.x, roofTop + 1.2, p.y, p.width + 0.04, 2.6, p.depth + 0.04, p.rotationDeg % 180 === 90 ? 0 : (-p.rotationDeg * Math.PI) / 180);
     }
   }
   return null;

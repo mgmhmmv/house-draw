@@ -1,4 +1,4 @@
-import { PV_MODULE_LABEL, pvString } from '../model/pvModule';
+import { moduleLabel, pvString } from '../model/pvModule';
 import {
   BuildingProject,
   FloorLevel,
@@ -2529,7 +2529,7 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
   const stringsCount = solar.strings && solar.strings > 0 ? solar.strings : solar.panelCount >= 8 ? 2 : 1;
   const panelsPerString = solar.panelsPerString && solar.panelsPerString > 0 ? solar.panelsPerString : Math.max(1, Math.ceil(solar.panelCount / stringsCount));
   const arrayKwp = Number(((solar.panelCount * solar.panelWattage) / 1000).toFixed(2));
-  const str = pvString(panelsPerString);
+  const str = pvString(panelsPerString, solar.module);
   const stringVocV = str.vocV;
   const stringIscA = str.iscA;
   const acBreakerAmps = solar.inverterKW > 7 ? 40 : 32;
@@ -2600,7 +2600,7 @@ export function computeElectricalSLD(project: BuildingProject): ElectricalSLDRep
       stringVocColdV: str.vocColdV,
       stringVmpV: str.vmpV,
       stringIscA,
-      module: PV_MODULE_LABEL,
+      module: moduleLabel(solar),
       inverterKW: solar.inverterKW,
       batteryKWh: solar.batteryKWh,
       dcCableSpec: '2×6.0mm² EN 50618 H1Z2Z2-K 1.5kV DC',
