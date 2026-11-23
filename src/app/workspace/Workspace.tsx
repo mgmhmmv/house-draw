@@ -353,11 +353,14 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
     const back = { sheet, level: safeLevel };
     setSelection(null);
     setPlacing(null);
-    const out: SolarExport['drawings'] = [];
-    const jobs: { id: string; slots: string[] }[] = [
-      { id: 'A-201', slots: ['elevation_south', 'elevation_north', 'elevation_east', 'elevation_west'] },
-      { id: 'R-101', slots: ['roof_plan'] },
-      { id: '3D-VIEW', slots: ['view_3d'] },
+    const sheets: { slot: string; label: string; svg: string }[] = [];
+    // The printed floor plan of each floor the export carries (meter, inverter or main board on it).
+    const floorIndexes = solarExport(model, { projectId, projectName: project.name, modelVersion: project.version, viewUrl: null }).geometry.floors.map((f) => f.index).filter((i) => i <= 4);
+    const jobs: { id: string; level: number; slots: string[]; onePage?: boolean }[] = [
+      ...floorIndexes.map((index) => ({ id: 'A-101', level: Math.max(0, model.levels.findIndex((l, i) => (l.index ?? i) === index)), slots: [`floor_plan_${index}`], onePage: true })),
+      { id: 'A-201', level: 0, slots: ['elevation_south', 'elevation_north', 'elevation_east', 'elevation_west'] },
+      { id: 'R-101', level: 0, slots: ['roof_plan'] },
+      { id: '3D-VIEW', level: 0, slots: ['view_3d'] },
     ];
     try {
       for (const j of jobs) {
@@ -365,21 +368,29 @@ export default function Workspace({ projectId, sheetParam }: { projectId: string
         if (!def) continue;
         onStep(`Drawing ${def.name.toLowerCase()}…`);
         navigate(`/p/${projectId}/${def.slug}`, { replace: true });
-        setLevelIndex(0);
+        setLevelIndex(j.level);
         await sleep(def.id === '3D-VIEW' ? 1600 : 900);
-        const pages = await composePages({ project, model, sheetId: def.id, sheetCode: def.code, levelName: levels[0]?.name, levelIndex: 0 });
-        for (const [i, svg] of pages.entries()) {
+        const pages = await composePages({ project, model, sheetId: def.id, sheetCode: def.code, levelName: levels[j.level]?.name, levelIndex: j.level });
+        for (const [i, svg] of (j.onePage ? pages.slice(0, 1) : pages).entries()) {
           const slot = j.slots[i] ?? `${j.slots[0]}_${i + 1}`;
-          const label = `${project.name} — ${slot.replace(/_/g, ' ')}`;
-          // Vector where it is light; a heavy sheet (an elevation full of 3D linework, the 3D
-          // render) goes as a print-resolution PNG so the whole share stays within IslePOS's 5 MB.
-          if (svg.length <= 450 * 1024) out.push({ slot, name: `${label}.svg`, mime: 'image/svg+xml', data: `<?xml version="1.0" encoding="UTF-8"?>\n${svg}` });
-          else out.push({ slot, name: `${label}.png`, mime: 'image/png', data: await svgToPngBase64(svg, 2480) });
+          sheets.push({ slot, label: `${project.name} — ${slot.replace(/_/g, ' ')}`, svg });
         }
       }
     } finally {
       navigate(`/p/${projectId}/${back.sheet.slug}`, { replace: true });
       setLevelIndex(back.level);
+    }
+    // Vector where it is light; a heavy sheet (3D linework, the 3D render) goes as a PNG. If the
+    // whole share would pass IslePOS's 5 MB, the PNGs step down in resolution until it fits.
+    let out: SolarExport['drawings'] = [];
+    for (const width of [2480, 2000, 1600, 1280]) {
+      onStep('Preparing the drawings…');
+      out = [];
+      for (const q of sheets) {
+        if (q.svg.length <= 450 * 1024) out.push({ slot: q.slot, name: `${q.label}.svg`, mime: 'image/svg+xml', data: `<?xml version="1.0" encoding="UTF-8"?>\n${q.svg}` });
+        else out.push({ slot: q.slot, name: `${q.label}.png`, mime: 'image/png', data: await svgToPngBase64(q.svg, width) });
+      }
+      if (out.reduce((n, d) => n + d.data.length, 0) <= 4.4 * 1024 * 1024) break;
     }
     return out;
   };
