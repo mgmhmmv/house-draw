@@ -684,7 +684,7 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
                   ))}
                 </g>
                 {mode === 'plan' && s.opening.label && showText(TEXT.tag) && (
-                  <OpeningTag s={s} frame={geo.frames.get(s.opening.wallId)!} />
+                  <OpeningTag s={s} frame={geo.frames.get(s.opening.wallId)!} rooms={level.rooms} />
                 )}
               </g>
             ))}
@@ -767,7 +767,7 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
           ))}
 
           {/* Section markers */}
-          {mode === 'plan' && <PowerMarks level={level} />}
+          {mode === 'plan' && <PowerMarks level={level} tags={tags} kText={kText} />}
           {mode === 'plan' && model.sections.map((s) => <SectionMark key={s.id} s={s} k={print || layout ? 1e6 : k} />)}
 
           {/* Selection */}
@@ -1110,9 +1110,21 @@ function Grid({ model, bounds, k }: { model: BuildingProject; bounds: { minX: nu
   );
 }
 
-function OpeningTag({ s, frame }: { s: ReturnType<typeof openingSymbol>; frame: ReturnType<typeof wallFrame> }) {
+/** Is the point inside any of the rooms? */
+const inAnyRoom = (rooms: FloorLevel['rooms'], x: number, y: number) =>
+  rooms.some((r) => {
+    let inside = false;
+    const q = r.polygon;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) if (q[i].y > y !== q[j].y > y && x < ((q[j].x - q[i].x) * (y - q[i].y)) / (q[j].y - q[i].y) + q[i].x) inside = !inside;
+    return inside;
+  });
+
+function OpeningTag({ s, frame, rooms }: { s: ReturnType<typeof openingSymbol>; frame: ReturnType<typeof wallFrame>; rooms: FloorLevel['rooms'] }) {
   const o = s.opening;
-  const side = o.kind === 'door' ? -(o.swingDirection >= 0 ? 1 : -1) : 1;
+  // A window on an outside wall has its mark outside the building, clear of the room's name.
+  const reach = frame.wall.thickness / 2 + 0.28;
+  const outward = [1, -1].find((k) => !inAnyRoom(rooms, s.center.x + frame.n.x * k * reach, s.center.y + frame.n.y * k * reach));
+  const side = o.kind === 'door' ? -(o.swingDirection >= 0 ? 1 : -1) : outward ?? 1;
   const at = { x: s.center.x + frame.n.x * side * (frame.wall.thickness / 2 + 0.28), y: s.center.y + frame.n.y * side * (frame.wall.thickness / 2 + 0.28) };
   const isDoor = o.kind === 'door';
   return (
@@ -1132,27 +1144,49 @@ function OpeningTag({ s, frame }: { s: ReturnType<typeof openingSymbol>; frame: 
 const POWER_MARK = '#B42318';
 
 /** Where the power comes in: the electricity meter, the main board and the inverter, named on the plan. */
-function PowerMarks({ level }: { level: FloorLevel }) {
+function PowerMarks({ level, tags, kText }: { level: FloorLevel; tags: ReturnType<typeof roomTag>[]; kText: number }) {
   const NAMES: Record<string, string> = { utility_meter: 'METER', mdb: 'D-BOARD', solar_inv: 'INVERTER' };
   const nodes = level.mepNodes.filter((n) => NAMES[n.kind] && (n.kind !== 'mdb' || level.index === 0 || !n.label || /^MDB(-1)?$/i.test(n.label.trim())));
   const H = 0.3;
-  const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+  type Box = { x0: number; x1: number; y0: number; y1: number };
+  const hits = (a: Box, b: Box) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  // Room names and areas are never covered.
+  const taken: Box[] = tags.map((t) => {
+    const scale = Math.min(1, Math.max(0.65, t.room_w / 2.6));
+    const nameSize = Math.max(TEXT.roomName * scale, 11 / kText);
+    const areaSize = Math.max(TEXT.roomArea * scale, 9.5 / kText);
+    const w = Math.max(t.room.name.length * nameSize * 0.62, 7 * areaSize * 0.55) + 0.1;
+    return { x0: t.at.x - w / 2, x1: t.at.x + w / 2, y0: t.at.y - nameSize * 1.1, y1: t.at.y + areaSize * 1.6 };
+  });
+  // A tag stays on its own side of the walls: in the point's room, or outside the building.
+  const roomOf = (x: number, y: number) =>
+    level.rooms.find((r) => {
+      let inside = false;
+      const q = r.polygon;
+      for (let i = 0, j = q.length - 1; i < q.length; j = i++) if (q[i].y > y !== q[j].y > y && x < ((q[j].x - q[i].x) * (y - q[i].y)) / (q[j].y - q[i].y) + q[i].x) inside = !inside;
+      return inside;
+    }) ?? null;
+  const sameSide = (b: Box, room: FloorLevel['rooms'][number] | null) => [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]].every(([x, y]) => roomOf(x, y)?.id === room?.id);
   return (
     <g pointerEvents="none">
       {nodes.map((n) => {
         const text = NAMES[n.kind];
         const w = text.length * 0.125 + 0.16;
         const { x, y } = n.position;
-        // The tag sits above its point; a tag that would cover another steps up, on a leader line.
-        let cy = y - 0.42;
-        while (placed.some((q) => x - w / 2 < q.x1 && x + w / 2 > q.x0 && cy - H / 2 < q.y1 && cy + H / 2 > q.y0)) cy -= H + 0.06;
-        placed.push({ x0: x - w / 2, x1: x + w / 2, y0: cy - H / 2, y1: cy + H / 2 });
+        const room = roomOf(x, y);
+        const at = (cx: number, cy: number): Box => ({ x0: cx - w / 2, x1: cx + w / 2, y0: cy - H / 2, y1: cy + H / 2 });
+        // Above its point, else beside it, else below, else further up on a longer leader.
+        const side = w / 2 + 0.2;
+        const tries: [number, number][] = [[x, y - 0.42], [x - side, y], [x + side, y], [x, y + 0.42], [x - side, y - 0.42], [x + side, y - 0.42], [x, y - 0.78], [x, y - 1.14]];
+        const free = (b: Box) => !taken.some((q) => hits(b, q));
+        const [cx, cy] = tries.find(([a, c]) => free(at(a, c)) && sameSide(at(a, c), room)) ?? tries.find(([a, c]) => free(at(a, c))) ?? tries[0];
+        taken.push(at(cx, cy), { x0: x - 0.1, x1: x + 0.1, y0: y - 0.1, y1: y + 0.1 });
         return (
           <g key={n.id}>
-            <line x1={x} y1={y} x2={x} y2={cy} stroke={POWER_MARK} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+            <line x1={x} y1={y} x2={cx} y2={cy} stroke={POWER_MARK} strokeWidth={WEIGHT.light} vectorEffect={NS} />
             <circle cx={x} cy={y} r={0.09} fill={POWER_MARK} stroke="#fff" strokeWidth={WEIGHT.hair} vectorEffect={NS} />
-            <rect x={x - w / 2} y={cy - H / 2} width={w} height={H} rx={0.05} fill={POWER_MARK} />
-            <text x={x} y={cy + 0.06} textAnchor="middle" fontSize={0.17} fontWeight={700} fill="#fff">
+            <rect x={cx - w / 2} y={cy - H / 2} width={w} height={H} rx={0.05} fill={POWER_MARK} />
+            <text x={cx} y={cy + 0.06} textAnchor="middle" fontSize={0.17} fontWeight={700} fill="#fff">
               {text}
             </text>
           </g>

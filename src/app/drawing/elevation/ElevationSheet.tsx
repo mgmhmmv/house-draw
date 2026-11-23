@@ -539,19 +539,23 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
       )}
 
       {/* Level datums: dashed right across, named on the left, value marker on the right */}
-      {[{ name: 'Natural ground', z: 0 }, ...datums.filter((dt) => Math.abs(dt.z) > 0.01)].map((dt, i) => (
+      {[{ name: 'Natural ground', z: 0 }, ...datums.filter((dt) => Math.abs(dt.z) > 0.01)].map((dt, i, all) => {
+        // Two levels close together (a low plinth): the lower one is lettered under its line.
+        const under = all.some((o) => o.z > dt.z && o.z - dt.z < textSize * 1.4);
+        return (
         <g key={i}>
           <line x1={dimX - 0.25} y1={-dt.z} x2={datumX + 1.6} y2={-dt.z} stroke={INK_3} strokeWidth={WEIGHT.hair} strokeDasharray="6 3" opacity={0.8} />
-          <text x={dimX - 0.45} y={-dt.z - textSize * 0.35} textAnchor="end" fontSize={textSize * 0.92} fontWeight={700} fill={INK} letterSpacing={textSize * 0.04} display={detail ? undefined : 'none'}>
+          <text x={dimX - 0.45} y={under ? -dt.z + textSize * 1.0 : -dt.z - textSize * 0.35} textAnchor="end" fontSize={textSize * 0.92} fontWeight={700} fill={INK} letterSpacing={textSize * 0.04} display={detail ? undefined : 'none'}>
             {`${dt.name.toUpperCase()}${/level|ground/i.test(dt.name) ? '' : ' LEVEL'}`}
           </text>
-          <path d={`M${datumX} ${-dt.z}l${-0.16} ${-0.24}h0.32Z`} fill={INK} />
-          <text x={datumX + 0.3} y={-dt.z - 0.1} fontSize={textSize} fontWeight={600} fill={INK_2} style={{ fontVariantNumeric: 'tabular-nums' }}>
+          <path d={`M${datumX} ${-dt.z}l${-0.16} ${under ? 0.24 : -0.24}h0.32Z`} fill={INK} />
+          <text x={datumX + 0.3} y={under ? -dt.z + textSize * 1.0 : -dt.z - 0.1} fontSize={textSize} fontWeight={600} fill={INK_2} style={{ fontVariantNumeric: 'tabular-nums' }}>
             {dt.z > 0.0005 ? '+' : dt.z < -0.0005 ? '' : '±'}
             {dt.z.toFixed(3)}
           </text>
         </g>
-      ))}
+        );
+      })}
 
       {/* Height dimensions */}
       <g stroke={INK_2} strokeWidth={WEIGHT.hair}>
@@ -566,7 +570,7 @@ function DrawingView({ p, k, fs, info }: { p: Placed; k: number; fs: (paper: num
           if (!fits) {
             // Too short to letter along the line (e.g. the plinth): write it beside, horizontally.
             return (
-              <text key={i} x={dimX - 0.25} y={m + textSize * 0.35} textAnchor="end" fontSize={textSize} fill={INK_2} stroke="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              <text key={i} x={dimX + 0.2} y={m + textSize * 0.35} textAnchor="start" fontSize={textSize} fill={INK_2} stroke="none" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 {fmtMM(len)}
               </text>
             );
