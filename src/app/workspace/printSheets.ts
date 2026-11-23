@@ -73,6 +73,8 @@ export function legendFor(sheetId: string, model: BuildingProject, levelIndex = 
       ];
       if (level.columns.length) out.push({ sym: 'column', label: 'Reinforced concrete column' });
       if (level.mepNodes.some((n) => n.model || n.kind === 'ac_split' || n.kind === 'ceiling_fan')) out.push({ sym: 'dashed', color: '#8A857D', label: 'Overhead fitting (AC unit, fan, light), dashed' });
+      const power: [string, string, string][] = [['utility_meter', 'M', 'Electricity meter'], ['mdb', 'DB', 'Main distribution board'], ['solar_inv', 'INV', 'Solar inverter']];
+      for (const [kind, tag, label] of power) if (level.mepNodes.some((n) => n.kind === kind && (kind !== 'mdb' || level.index === 0 || !n.label || /^MDB(-1)?$/i.test(n.label.trim())))) out.push({ sym: 'chip', tag, color: '#B42318', label: `${label}, marked on the plan` });
       if (model.sections.length) out.push({ sym: 'section', tag: model.sections[0].label?.[0] ?? 'A', label: 'Section line and mark, see sections sheet A-301' });
       return out;
     }

@@ -767,6 +767,7 @@ function PlanSurface(p: Props & { paper: SheetInfo | null; canPaper: boolean; pa
           ))}
 
           {/* Section markers */}
+          {mode === 'plan' && <PowerMarks level={level} />}
           {mode === 'plan' && model.sections.map((s) => <SectionMark key={s.id} s={s} k={print || layout ? 1e6 : k} />)}
 
           {/* Selection */}
@@ -1124,6 +1125,39 @@ function OpeningTag({ s, frame }: { s: ReturnType<typeof openingSymbol>; frame: 
       <text x={at.x} y={at.y + 0.055} textAnchor="middle" fontSize={0.14} fontWeight={600} fill={INK_2}>
         {o.label}
       </text>
+    </g>
+  );
+}
+
+const POWER_MARK = '#B42318';
+
+/** Where the power comes in: the electricity meter, the main board and the inverter, named on the plan. */
+function PowerMarks({ level }: { level: FloorLevel }) {
+  const NAMES: Record<string, string> = { utility_meter: 'METER', mdb: 'D-BOARD', solar_inv: 'INVERTER' };
+  const nodes = level.mepNodes.filter((n) => NAMES[n.kind] && (n.kind !== 'mdb' || level.index === 0 || !n.label || /^MDB(-1)?$/i.test(n.label.trim())));
+  const H = 0.3;
+  const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+  return (
+    <g pointerEvents="none">
+      {nodes.map((n) => {
+        const text = NAMES[n.kind];
+        const w = text.length * 0.125 + 0.16;
+        const { x, y } = n.position;
+        // The tag sits above its point; a tag that would cover another steps up, on a leader line.
+        let cy = y - 0.42;
+        while (placed.some((q) => x - w / 2 < q.x1 && x + w / 2 > q.x0 && cy - H / 2 < q.y1 && cy + H / 2 > q.y0)) cy -= H + 0.06;
+        placed.push({ x0: x - w / 2, x1: x + w / 2, y0: cy - H / 2, y1: cy + H / 2 });
+        return (
+          <g key={n.id}>
+            <line x1={x} y1={y} x2={x} y2={cy} stroke={POWER_MARK} strokeWidth={WEIGHT.light} vectorEffect={NS} />
+            <circle cx={x} cy={y} r={0.09} fill={POWER_MARK} stroke="#fff" strokeWidth={WEIGHT.hair} vectorEffect={NS} />
+            <rect x={x - w / 2} y={cy - H / 2} width={w} height={H} rx={0.05} fill={POWER_MARK} />
+            <text x={x} y={cy + 0.06} textAnchor="middle" fontSize={0.17} fontWeight={700} fill="#fff">
+              {text}
+            </text>
+          </g>
+        );
+      })}
     </g>
   );
 }
