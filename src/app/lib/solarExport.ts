@@ -245,10 +245,29 @@ export function solarExport(model: BuildingProject, meta: { projectId: string; p
 
   // Roofs: the covered roof, and any open terrace below it that carries panels.
   const roofs: SolarExport['geometry']['roofs'] = [];
-  const covered = levelOutline(top, (r) => r.category !== 'balcony');
-  covered.forEach((poly, i) => roofs.push({ name: i ? `Roof ${i + 1}` : 'Roof', heightM: mm(roofZ), polygon: poly[0].map(([x, y]) => [mm(x), mm(y)] as [number, number]) }));
-  const terrace = levelOutline(top, (r) => r.category === 'balcony');
-  terrace.forEach((poly, i) => roofs.push({ name: i ? `Terrace ${i + 1}` : 'Terrace', heightM: mm(top.elevation), polygon: poly[0].map(([x, y]) => [mm(x), mm(y)] as [number, number]) }));
+  if (model.roof.type === 'flat') {
+    const covered = levelOutline(top, (r) => r.category !== 'balcony');
+    covered.forEach((poly, i) => roofs.push({ name: i ? `Roof ${i + 1}` : 'Roof', heightM: mm(roofZ), polygon: poly[0].map(([x, y]) => [mm(x), mm(y)] as [number, number]) }));
+    // Open terraces on the top floor, room by room.
+    for (const rm of top.rooms.filter((r) => r.category === 'balcony')) roofs.push({ name: rm.name || 'Terrace', heightM: mm(top.elevation), polygon: rm.polygon.map((q) => [mm(q.x), mm(q.y)] as [number, number]) });
+  } else {
+    // A pitched roof: each slope at its true outline (overhang included), named by the way it faces.
+    const used = new Map<string, number>();
+    for (const pl of frame.roofPlanes) {
+      const [a, b, c] = pl.pts;
+      let nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
+      let ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+      const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      if (nz < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const face = Math.abs(nx) >= Math.abs(ny) ? (nx > 0 ? 'East' : 'West') : ny > 0 ? 'South' : 'North';
+      const k = (used.get(face) ?? 0) + 1;
+      used.set(face, k);
+      roofs.push({ name: `${face} slope${k > 1 ? ` ${k}` : ''}`, heightM: mm(Math.min(...pl.pts.map((q) => q.z))), polygon: pl.pts.map((q) => [mm(q.x), mm(q.y)] as [number, number]) });
+    }
+  }
 
   const sld = computeElectricalSLD(model);
   const phase: 1 | 3 = solar.inverterPhase ?? (/3-Ph/.test(sld.supplySystem) ? 3 : 1);
