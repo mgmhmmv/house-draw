@@ -75,7 +75,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  me: () => request<{ user: User | null }>('GET', '/api/auth/me'),
+  me: () => request<{ user: User | null; owner?: boolean }>('GET', '/api/auth/me'),
+  passwordLogin: (email: string, password: string) => request<{ ok: true }>('POST', '/api/auth/password', { email, password }),
+  setPassword: (token: string, password: string) => request<{ ok: true }>('POST', '/api/auth/set-password', { token, password }),
+  people: () => request<{ people: { email: string; name: string; createdAt: number; hasPassword: boolean }[] }>('GET', '/api/auth/people'),
+  invitePerson: (email: string, name?: string) => request<{ email: string; url: string; expiresAt: number }>('POST', '/api/auth/people', { email, name }),
+  removePerson: (email: string) => request<{ ok: true }>('POST', '/api/auth/people/remove', { email }),
   logout: () => request<{ ok: true }>('POST', '/api/auth/logout'),
   logoutAll: () => request<{ ok: true }>('POST', '/api/auth/logout-all'),
 

@@ -7,6 +7,7 @@ import { TEMPLATES } from '../lib/templates';
 import { Avatar, Button, Field, Input, LogoMark, Segmented, toast } from '../ui';
 import { getStudio, saveStudio, type StudioProfile } from '../lib/studio';
 import { PlanGlyph } from './PlanGlyph';
+import { PeopleSettings } from './PeopleSettings';
 
 function Page({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
@@ -49,7 +50,7 @@ export function TemplatesPage({ onUse }: { onUse: (templateId: string) => void }
 }
 
 export function SettingsPage() {
-  const { user } = useAuth();
+  const { user, owner } = useAuth();
   const [theme, setTheme] = useTheme();
   if (!user) return null;
   return (
@@ -76,6 +77,7 @@ export function SettingsPage() {
             ]}
           />
         </div>
+        {owner && <PeopleSettings />}
         <IsleposSettings />
         <StudioSettings />
       </div>

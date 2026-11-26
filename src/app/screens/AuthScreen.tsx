@@ -41,6 +41,71 @@ function LocalSignIn() {
   );
 }
 
+/** Email and password, for people the studio owner invited. */
+function PasswordSignIn() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <form
+      className="mt-6 space-y-3"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError('');
+        const r = await fetch('/api/auth/password', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        }).catch(() => null);
+        if (r?.ok) {
+          window.location.href = '/';
+          return;
+        }
+        const j = await r?.json().catch(() => null);
+        setError(j?.message || 'Sign-in failed. Try again.');
+        setBusy(false);
+      }}
+    >
+      <div className="flex items-center gap-3 text-2xs uppercase tracking-wide text-ink-3">
+        <span className="h-px flex-1 bg-line" /> or with email <span className="h-px flex-1 bg-line" />
+      </div>
+      <input
+        type="email"
+        required
+        autoComplete="username"
+        placeholder="Email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        className="h-11 w-full rounded-ctl border border-line bg-surface px-3.5 text-[15px] text-ink outline-none focus:border-accent"
+      />
+      <input
+        type="password"
+        required
+        autoComplete="current-password"
+        placeholder="Password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        className="h-11 w-full rounded-ctl border border-line bg-surface px-3.5 text-[15px] text-ink outline-none focus:border-accent"
+      />
+      {error && (
+        <p className="text-sm text-danger" role="alert">
+          {error}
+        </p>
+      )}
+      <button
+        type="submit"
+        disabled={busy || !email || !password}
+        className="flex h-11 w-full items-center justify-center rounded-ctl bg-ink text-[15px] font-medium text-page transition-colors hover:bg-ink/85 disabled:opacity-50"
+      >
+        {busy ? 'Signing in…' : 'Sign in'}
+      </button>
+    </form>
+  );
+}
+
 export function AuthScreen() {
   const error = new URLSearchParams(window.location.search).get('error');
   return (
@@ -65,6 +130,7 @@ export function AuthScreen() {
               <GoogleMark />
               Continue with Google
             </a>
+            <PasswordSignIn />
             <LocalSignIn />
             <p className="mt-6 text-center text-[13px] text-ink-3">Access is by invitation only.</p>
           </div>

@@ -11,6 +11,7 @@
  * in place of verifying its signature.
  */
 import { Env, HttpError, json, newId, now } from './http';
+import { passwordRoutes } from './passwordAuth';
 
 const SESSION_COOKIE = 'as_session';
 const OAUTH_COOKIE = 'as_oauth';
@@ -71,13 +72,14 @@ export async function currentUser(env: Env, req: Request): Promise<User | null> 
   const token = readCookie(req, SESSION_COOKIE);
   if (!token) return null;
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT u.id, u.email, u.name, u.can_sign_in FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = ? AND s.expires_at > ?`
   )
     .bind(await sha256(token), now())
-    .first<User>();
-  if (!row || !allowed(env).has(row.email.toLowerCase())) return null;
-  return row;
+    .first<User & { can_sign_in: number }>();
+  // In: on the Google allowlist, or invited by the owner (and not since removed).
+  if (!row || (!allowed(env).has(row.email.toLowerCase()) && row.can_sign_in !== 1)) return null;
+  return { id: row.id, email: row.email, name: row.name };
 }
 
 export async function requireUser(env: Env, req: Request): Promise<User> {
@@ -94,7 +96,33 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> {
 
 export async function handleAuth(env: Env, req: Request, path: string): Promise<Response> {
   if (path === '/api/auth/me' && req.method === 'GET') {
-    return json({ user: await currentUser(env, req), providers: { google: !!env.GOOGLE_CLIENT_ID } });
+    const user = await currentUser(env, req);
+    return json({ user, owner: !!user && allowed(env).has(user.email.toLowerCase()), providers: { google: !!env.GOOGLE_CLIENT_ID, password: true } });
+  }
+
+  // Invited people: email and password (see passwordAuth.ts).
+  if (path === '/api/auth/password' || path === '/api/auth/set-password' || path === '/api/auth/people' || path === '/api/auth/people/remove') {
+    return passwordRoutes(env, req, path, {
+      sha256,
+      random: () => random(),
+      startSession: async (userId) => {
+        const t = now();
+        const token = random();
+        await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+          .bind(await sha256(token), userId, t, t + SESSION_TTL_MS)
+          .run();
+        return cookie(req, SESSION_COOKIE, token, SESSION_TTL_MS / 1000);
+      },
+      requireOwner: async () => {
+        const user = await requireUser(env, req);
+        if (!allowed(env).has(user.email.toLowerCase())) throw new HttpError(403, 'owner_only', 'Only the studio owner can manage people.');
+        return user;
+      },
+      origin: () => {
+        const o = appOrigin(env, req);
+        return /^(localhost|127\.0\.0\.1)$/.test(new URL(o).hostname) ? o : `https://${new URL(req.url).host}`;
+      },
+    });
   }
 
   if (path === '/api/auth/google' && req.method === 'GET') {

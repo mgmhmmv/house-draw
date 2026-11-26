@@ -15,6 +15,7 @@ const Workspace = lazy(() => import('./workspace/Workspace'));
 // The public 3D view link: no login, no app chrome.
 const PublicViewer = lazy(() => import('./screens/PublicViewer'));
 const SharePage = lazy(() => import('./screens/SharePage'));
+const SetPasswordPage = lazy(() => import('./screens/SetPasswordPage'));
 
 function FullPageSpinner() {
   return (
@@ -34,12 +35,22 @@ function Routes() {
   const shared = matchPath('/v/:token', path);
   const isleShare = matchPath('/s/:token', path);
 
+  const setPw = path === '/set-password';
+
   useEffect(() => {
-    if (shared || isleShare) return;
+    if (shared || isleShare || setPw) return;
     if (!ready) return;
     if (!user && !isAuthRoute) navigate('/login', { replace: true });
     if (user && isAuthRoute) navigate('/', { replace: true });
-  }, [ready, user, isAuthRoute, navigate, shared, isleShare]);
+  }, [ready, user, isAuthRoute, navigate, shared, isleShare, setPw]);
+
+  if (setPw) {
+    return (
+      <Suspense fallback={<FullPageSpinner />}>
+        <SetPasswordPage />
+      </Suspense>
+    );
+  }
 
   if (isleShare) {
     return (
